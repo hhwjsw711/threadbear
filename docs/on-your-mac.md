@@ -127,6 +127,12 @@ File references are where to look.
   can put text on the clipboard (OSC 52) but not read it. Clicking a Terminal
   file link reads the OS hostname to recognize a link to this same machine;
   it does not look it up on the network. Links go through the usual open gate.
+- **The Mac’s text services:** the GPUI app keeps the current selected plain
+  words in memory for AppKit’s Services menu and discards that snapshot when
+  the window closes. Choosing Look Up, Translate, Writing Tools, Share or a
+  Service hands those words to that system feature or the service you picked.
+  Passwords, revealed secret fields and one-time-code fields are excluded. A
+  returned edit is checked against the same field, selection and original words.
 - **Files:** the data folder `~/Library/Application Support/Threadbear`
   (threads, settings, `secrets/`, runner releases, the pinned release key
   `upstream-signers`, the Mac app's `app-drafts.json` and the GPUI app's

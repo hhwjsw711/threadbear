@@ -4999,3 +4999,25 @@ Fixes from Codex's review of the slice before:
   systems keep the file symbol.
 - Native regression tests synthesize their own film and PDF, including path
   replacement, size/output caps, version mismatch and delayed callbacks.
+
+### 2026-11-13 The Mac’s services for selected words (`rich.textservices`)
+
+- AppKit receives a frozen plain-text selection from the focused Input,
+  Textarea or Editor, otherwise the reply’s selected words. Passwords,
+  revealed secret fields and one-time-code fields suppress older reply selections.
+- Look Up uses the public definition popover (also Control-Command-D and
+  a force-pressure hook), Translate the public macOS 14.4+ SwiftUI presentation,
+  and Services/Writing Tools the custom-view AppKit requestor experience.
+  Writing Tools is offered only when macOS says it is available. Share uses
+  the system’s picker. No hidden text editor stands in for these actions.
+- Returns recheck the original window/field/range/text and editability, then
+  make one undoable edit. Reply, picture, multi-cursor and active IME selections
+  are send-only. Late, duplicate or invalid returns cannot overwrite another draft.
+- The window root observes focus and actual selection/document changes;
+  caret blinks do not recopy long selected drafts. Native pages keep their own
+  responder chain and selection. Reply-menu Copy keeps plain text and HTML.
+- Shared selection tests cover Unicode/Undo, stale ranges/text, read-only and
+  expired fields, secrets, extra cursors/pictures and IME clause/preedit boundaries.
+  Native focus specs exercise actual AppKit requestors on private pasteboards.
+- A physical trackpad force click has not been tried; its public pressure-stage
+  hook is wired. Other systems omit the Mac services.

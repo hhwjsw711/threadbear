@@ -70,6 +70,11 @@ const ALLOWED_LINES: &[(&str, &str, usize)] = &[
     ("gpui/src/handover.rs", "let mut command = std::process::Command::new(\"/usr/bin/open\");", 1),
     ("gpui/src/app_update.rs", "let out = Command::new(\"/usr/bin/git\").args(rules::rev_parse_arguments(checkout)).stdin(Stdio::null()).output().ok()?;", 1),
     ("gpui/src/app_update.rs", "let child = Command::new(program).args(arguments).current_dir(installed::home_dir()).stdin(Stdio::null()).stdout(out).stderr(err).spawn();", 1),
+    // Build-time SDK/compiler discovery and the fixed Translate source compile.
+    // No app runtime, link, file or runner content supplies these commands.
+    ("gpui/build.rs", "let sdk = Command::new(\"xcrun\").args([\"--sdk\", \"macosx\", \"--show-sdk-path\"]).output().expect(\"find macOS SDK\");", 1),
+    ("gpui/build.rs", "let compiler = Command::new(\"xcrun\").args([\"--find\", \"swiftc\"]).output().expect(\"find swiftc\");", 1),
+    ("gpui/build.rs", "let status = Command::new(&compiler).args([\"-parse-as-library\", \"-emit-object\", \"-O\", \"-import-objc-header\", \"native/text_selection.h\", \"-module-name\", \"ThreadbearTranslation\", \"-target\", &format!(\"{arch}-apple-macosx13.0\"), \"-sdk\", sdk, \"-module-cache-path\"]).arg(out.join(\"swift-modules\"))", 1),
     // Encodes the gate's checked descriptor (an application's icon is its icns file).
     ("gpui/native/file_icons.m", "int tb_file_icon_png(int fd, long long length, void **output) {", 1),
     // A test that reads Launch Services' list for Chrome's id, to see an

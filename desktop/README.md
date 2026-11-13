@@ -155,6 +155,15 @@ image dimensions or its loading/failure state. On a Mac,
 `bash desktop/scripts/test-media-hover.sh` checks descriptor ownership, bounds,
 private snapshots and late decoder callbacks with generated media.
 
+The Mac selection bridge is `gpui/src/native_text.rs` and
+`native/text_selection.m`; Translate's public SwiftUI popover is the small
+`native/translation.swift` anchor. A root plugin watches focus/selection
+changes once per window. It passes frozen plain text to AppKit; a return
+rechecks the original field, range, words and editability before an undoable edit.
+`native-text` automation uses real AppKit requestors with unique pasteboards;
+its test-only entrypoints are absent from release builds. Native focus specs
+carry `@real-screen` and run on Tinker Desk under the host lease.
+
 ## Seeing it on a server
 
 `scripts/shot.sh OUT_DIR [--home DIR] [--click X,Y | --type TEXT | --key KEY]...`

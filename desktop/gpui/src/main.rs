@@ -119,6 +119,7 @@ mod terminal;
 mod terminal_element;
 mod thread;
 mod text_services;
+mod native_text;
 mod thread_map;
 mod tips;
 mod thread_panels;
@@ -253,6 +254,7 @@ fn main() {
     let links = deep_links::receive(&application);
     application.run(|cx| {
         gpui_kit::init(cx);
+        native_text::init(cx);
         // Every window's colours as sRGB, before the first opens (colour_space.rs).
         colour_space::install(cx);
         composer_media::install(cx);

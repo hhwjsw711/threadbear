@@ -1530,7 +1530,7 @@ impl Composer {
                     .disabled(creating)
                     // NSTextView's right-click menu: spelling, then Cut, Copy and
                     // Paste, then Spelling and Grammar to Speech.
-                    .context_menu(move |_, _, cx| crate::composer_spelling::context_menu(&menu_owner, &menu_input, cx))
+                    .context_menu(move |_, window, cx| crate::composer_spelling::context_menu(&menu_owner, &menu_input, window, cx))
                     .text_size(px(style::size::COMPOSER))
                     .line_height(px(style::size::BODY_LINE))
                     .token(move |ctx, _window, cx| match token_owner.upgrade() {

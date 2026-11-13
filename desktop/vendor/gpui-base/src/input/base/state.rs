@@ -3540,6 +3540,25 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.last_layout.as_ref().map(|l| l.line_height)
     }
 
+    /// Changes whenever the document is edited, including Undo and Redo.
+    /// Consumers can refresh a selection snapshot without copying the text
+    /// on every caret blink or layout notification.
+    pub fn document_revision(&self) -> u64 { self.document_revision }
+
+    /// Secret fields stay out of system text consumers even when their
+    /// mask has been revealed. This shares the presentation's privacy flag.
+    pub fn is_sensitive(&self) -> bool {
+        self.masked || self.accessibility.as_ref().is_some_and(|a| !a.value_exposed())
+    }
+
+    /// Whether a replacement can target just the active selection. A
+    /// system text service returns one string, not a multi-cursor edit.
+    pub fn is_single_selection(&self) -> bool { self.selections.is_single() }
+
+    /// A service must not replace an IME clause while its larger preedit is
+    /// still marked: normal replacement would consume that whole preedit.
+    pub fn has_composition(&self) -> bool { self.ime_marked_range.is_some() }
+
     /// Returns the active selection as a byte range into the text.
     ///
     /// With multiple cursors, this reads only the active selection.

@@ -442,7 +442,7 @@ fn link_menu(menu: PopupMenu, pane: &WeakEntity<ThreadPane>, row: &Row, window: 
     match target {
         None => {
             let open = entity.read(cx).row_open(row);
-            ThreadPane::row_context_menu(row.clone(), menu, pane.clone(), open, cx)
+            ThreadPane::row_context_menu(row.clone(), menu, pane.clone(), open, window, cx)
         }
         Some(LinkTarget::Web(url)) => {
             let profiles = offered_profiles();

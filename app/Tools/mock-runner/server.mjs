@@ -1867,6 +1867,16 @@ async function dispatch(client, method, p) {
     case 'mock.notice':
       broadcastNotice(p.level ?? 'warning', String(p.message ?? ''));
       return { ok: true };
+    // A final/corrected text event for an existing assistant item. Its
+    // identity stays the same, so the app replaces the visible markdown
+    // rather than appending a different reply (selection invalidation specs).
+    case 'mock.replaceReply': {
+      const thread = need(p.threadId);
+      const before = [...thread.events].reverse().find(event => event.type === 'assistant.text');
+      if (!before) throw { code: -32602, message: 'no reply to replace' };
+      persist(thread.summary.id, { type: 'assistant.text', itemId: before.itemId, text: String(p.text ?? '') }, before.turnId);
+      return { itemId: before.itemId };
+    }
     case 'mock.stream':
       return startStream(need(p.threadId).summary.id, p);
     // A thread with the id and title given, idle with nothing in it, for a

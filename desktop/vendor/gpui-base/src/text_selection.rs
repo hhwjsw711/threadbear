@@ -2957,6 +2957,32 @@ fn with_text_selection_scope<T>(
 pub struct TextSelection;
 
 impl TextSelection {
+    /// The word actually drawn under this point in the active selection
+    /// scope. It neither changes selection nor reads clipped or hidden text.
+    pub fn word_at(position: Point<Pixels>, window: &Window, cx: &mut App) -> Option<String> {
+        let state = live_text_selection_state(window, cx)?;
+        state.update(cx, |state, cx| {
+            let endpoint = state.endpoint(position, Some(window), cx);
+            if !endpoint.inside_text { return None }
+            let participant = endpoint.participant?.upgrade()?;
+            let participant = participant.read(cx);
+            let runs = participant.runs.borrow();
+            let run = runs.iter().find(|run| run.bounds.contains(&position))?;
+            if run.text.len() != run.layout.len() { return None }
+            let offset = run.layout.index_for_position(position).ok()?;
+            let range = word_range_at(&run.text, offset)?;
+            let word = run.text.get(range)?;
+            (!word.trim().is_empty()).then(|| word.to_owned())
+        })
+    }
+
+    /// The visible end of the current geometry selection, for a system
+    /// definition popover. Participant-local select-all can have no endpoint.
+    pub fn selection_cursor(window: &Window, cx: &mut App) -> Option<Point<Pixels>> {
+        let state = live_text_selection_state(window, cx)?;
+        state.read(cx).snapshot()?.window_points().map(|points| points.cursor())
+    }
+
     /// Returns whether `position` hits selectable text in the active scope.
     ///
     /// Uses the current frame's registered text geometry and hitboxes without

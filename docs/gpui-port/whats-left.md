@@ -148,10 +148,11 @@ you go.
   window list, the sidebar's and Settings' arrow keys and the Updates
   icon's popover are in since 12 Nov (`tour.about`, `menu.edit`,
   `menu.window`, `sidebar.keys`, `updates.popover`)
-- [ ] GPUI's text boxes have no spelling or grammar checks, Substitutions,
-  Look Up, Translate, Writing Tools or Services on selected words: its input
-  isn't an AppKit text view. The Swift app's menu bar has none of these
-  either, but its boxes had them on the right-click menu
+- [x] The Mac's spelling/grammar checks, Substitutions and Speech, with
+  Look Up, Translate, Writing Tools and Services on selected words. The shared
+  selection getter serves both spelling/Speech and the native responder bridge;
+  returned text is checked against the original editable selection. Other
+  systems omit these Mac services (`composer.spelling`, `rich.textservices`).
 - [x] The archive and hibernate flights: the open thread's page drops into
   the Archived heading or sinks into the moon, and the heading's box bounces
   (`juice.archiveflight`, `juice.hibernateflight`). A drawn card with a

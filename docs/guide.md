@@ -265,6 +265,13 @@ plain document (a `.command`, an app, a kind Threadbear can't place).
 Another Mac's program never opens here, and its replies never show
 pictures from this Mac.
 
+On a Mac, selected words offer Look Up, Translate, Services and, where the
+Mac supports it, Writing Tools. The app menu's Services uses the selection
+in the focused text box, or the selected words in a reply. Passwords and
+one-time codes stay out of these menus. A Service can replace an unchanged
+selection in a text box, and Undo restores it. Replies, picture selections,
+multiple cursors and an active input-method composition are copy-only.
+
 On Windows, file links and their hover cards only read local drives. A UNC
 share, mapped network drive or device path is refused, including through a
 local symbolic link or junction. A local link to another local file works.

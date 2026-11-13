@@ -181,6 +181,7 @@ async fn run(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &Value,
     }
     // The web runtime (web_runtime.rs): its install, Not now, and a check
     // that it draws, each waited on as asked.
+    if cmd["cmd"] == "native-text" { return crate::native_text::automation(window, cmd, cx).await; }
     if cmd["cmd"] == "webRuntime" {
         return crate::web_runtime::automation(cmd, cx).await;
     }
@@ -994,6 +995,7 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         // Words selected in a reply, and the bar over them (selection_bar.rs),
         // as the Swift app's; a follow-up in the Explain pane (explain_pane.rs).
         "select-text" => crate::selection_bar::select_command(app, cmd, window, cx),
+        "text-selection-source" => Ok(json!({"words":crate::text_services::front_selection(window,cx).map(|(words,_)|words),"terminalFocused":crate::terminal::has_focus(window,cx)})),
         "text-lines" => crate::selection_bar::text_lines_command(app, cmd, window, cx),
         "selection" => crate::selection_bar::selection_command(app, window, cx),
         "explain" => crate::explain_pane::explain_command(app, cmd, window, cx),

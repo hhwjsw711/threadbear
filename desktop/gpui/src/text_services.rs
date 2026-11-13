@@ -260,13 +260,23 @@ pub(crate) fn system_replacement() -> bool {
 
 /// Where the selected words are.
 #[derive(Clone)]
-// For Services and Look Up (thread 0ff64630), which come after.
-#[allow(dead_code)]
 pub(crate) enum SelectionSource {
-    /// A text box (the message box): `range` is what was selected, in bytes.
     TextBox { input: WeakEntity<TextareaState>, range: Range<usize> },
-    /// The open thread's replies. Read only.
+    TextField { input: WeakEntity<gpui_kit::component::input::InputState>, range: Range<usize> },
+    Editor { input: WeakEntity<gpui_kit::component::input::EditorState>, range: Range<usize> },
     Reply,
+}
+
+impl SelectionSource {
+    pub(crate) fn is_editable(&self, cx: &App) -> bool {
+        macro_rules! editable { ($input:expr) => { $input.upgrade().is_some_and(|input| { let state=input.read(cx); !state.is_sensitive() && !state.has_composition() && state.is_single_selection() && state.presentation().is_editable() }) }; }
+        match self {
+            Self::TextBox {input,..} => editable!(input),
+            Self::TextField {input,..} => editable!(input),
+            Self::Editor {input,..} => editable!(input),
+            Self::Reply => false,
+        }
+    }
 }
 
 thread_local! {
@@ -283,8 +293,6 @@ pub(crate) fn register_text_box(input: &Entity<TextareaState>) {
 }
 
 /// The text box with the keyboard in `window`, if it's one of the app's.
-// For Services and Look Up (thread 0ff64630), which come after.
-#[allow(dead_code)]
 pub(crate) fn focused_text_box(window: &Window, cx: &App) -> Option<Entity<TextareaState>> {
     BOXES.with_borrow(|boxes| boxes.iter().filter_map(|b| b.upgrade()).find(|b| b.read(cx).focus_handle(cx).is_focused(window)))
 }
@@ -292,36 +300,217 @@ pub(crate) fn focused_text_box(window: &Window, cx: &App) -> Option<Entity<Texta
 /// The words selected now, and where: the text box with the keyboard if it
 /// has a selection, otherwise the words selected in a reply. `None` with
 /// nothing selected.
-// For Services and Look Up (thread 0ff64630), which come after.
-#[allow(dead_code)]
-pub(crate) fn front_selection(window: &mut Window, cx: &mut App) -> Option<(String, SelectionSource)> {
-    if let Some(input) = focused_text_box(window, cx) {
-        let state = input.read(cx);
-        let range = state.selected_range();
-        if !range.is_empty() {
-            let text = state.value().get(range.clone()).unwrap_or_default().to_owned();
-            return Some((text, SelectionSource::TextBox { input: input.downgrade(), range }));
-        }
-        return None;
+/// GPUI keeps a logical focus handle while a native page has the actual
+/// keyboard. Its old input selection must not leak into system text menus.
+pub(crate) fn app_has_keyboard(window: &Window) -> bool {
+    #[cfg(target_os = "macos")]
+    if let Some(view) = crate::web_panels::native_view(window) {
+        return threadbear_web::keyboard_holder(view) == threadbear_web::KeyboardHolder::App;
     }
-    let words = gpui_kit::base::TextSelection::selected_text(window, cx);
-    (!words.is_empty()).then(|| (words.to_string(), SelectionSource::Reply))
+    let _ = window;
+    true
+}
+
+pub(crate) fn front_selection(window: &mut Window, cx: &mut App) -> Option<(String, SelectionSource)> {
+    use gpui_kit::component::{input::AnyInputState, WindowExt as _};
+    if !app_has_keyboard(window) || crate::terminal::has_focus(window,cx) { return None }
+    macro_rules! selection {
+        ($input:expr, $variant:ident) => {{
+            let input=$input;
+            let state=input.read(cx);
+            if state.is_sensitive() { return None }
+            let range=state.selected_range();
+            if range.is_empty() || range.len()>1024*1024 { return None }
+            let selected=state.selected_text();
+            Some((selected.to_string(),SelectionSource::$variant {input:input.downgrade(),range}))
+        }};
+    }
+    // All plain text fields participate. A secure or one-time-code field
+    // must suppress a reply's older selection rather than exposing it.
+    if let Some(input)=window.focused_input(cx) {
+        return match input {
+            AnyInputState::Input(input)=>selection!(input,TextField),
+            AnyInputState::Textarea(input)=>selection!(input,TextBox),
+            AnyInputState::Editor(input)=>selection!(input,Editor),
+            AnyInputState::Otp(_)=>None,
+        }
+    }
+    // A just-focused composer can precede the registry's next paint.
+    if let Some(input)=focused_text_box(window,cx) { return selection!(input,TextBox) }
+    let words=gpui_kit::base::TextSelection::selected_text(window,cx);
+    (!words.is_empty() && words.len()<=1024*1024).then(||(words,SelectionSource::Reply))
+}
+
+/// A message's context menu must never use words selected in a different
+/// input. The app menu can use front_selection; a reply menu is reply-only.
+pub(crate) fn reply_menu_selection(window: &mut Window, cx: &mut App) -> Option<String> {
+    match front_selection(window, cx) {
+        Some((words, SelectionSource::Reply)) => Some(words),
+        _ => None,
+    }
 }
 
 /// Put `with` in place of the selection `source` names, only if it's still
 /// that same text box, with that same range selected, holding `expected`:
 /// a Service's answer never lands somewhere the keyboard moved to since.
 /// It's one edit Undo takes back. `false` when nothing was changed.
-// For Services and Look Up (thread 0ff64630), which come after.
-#[allow(dead_code)]
 pub(crate) fn replace_if_unchanged(source: &SelectionSource, expected: &str, with: &str, window: &mut Window, cx: &mut App) -> bool {
-    let SelectionSource::TextBox { input, range } = source else { return false };
-    let Some(input) = input.upgrade() else { return false };
-    input.update(cx, |state, cx| {
-        if state.selected_range() != *range || state.value().get(range.clone()) != Some(expected) {
-            return false;
+    if expected.contains('\u{fffc}') { return false }
+    macro_rules! replace {
+        ($input:expr,$range:expr) => {{
+            let Some(input)=$input.upgrade() else{return false};
+            input.update(cx,|state,cx|{
+                if state.has_composition() || !state.is_single_selection() || state.is_sensitive() || !state.presentation().is_editable() || state.selected_range()!=*$range || state.selected_text().to_string()!=expected {return false}
+                state.replace(with.to_owned(),window,cx);
+                true
+            })
+        }};
+    }
+    match source {
+        SelectionSource::TextBox {input,range}=>replace!(input,range),
+        SelectionSource::TextField {input,range}=>replace!(input,range),
+        SelectionSource::Editor {input,range}=>replace!(input,range),
+        SelectionSource::Reply=>false,
+    }
+}
+
+#[cfg(all(test, feature = "automation"))]
+mod selection_tests {
+    use super::{front_selection, replace_if_unchanged, SelectionSource};
+    use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState, Editor, EditorState, Undo};
+    use gpui_kit::prelude::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{div, Entity, EntityInputHandler as _, Focusable as _, TestAppContext, Window, WindowOptions};
+
+    struct Fields { input: Entity<InputState>, textarea: Entity<TextareaState>, editor: Entity<EditorState> }
+    impl Render for Fields {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().flex().flex_col().child(Input::new(&self.input)).child(Textarea::new(&self.textarea)).child(Editor::new(&self.editor))
         }
-        state.replace(with.to_owned(), window, cx);
-        true
-    })
+    }
+    fn fields(cx: &mut TestAppContext) -> (gpui_kit::AnyWindowHandle, Entity<Fields>) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| gpui_kit::open_window(WindowOptions::default(),cx,|window,cx|cx.new(|cx|Fields {
+            input:cx.new(|cx|InputState::new(window,cx)),
+            textarea:cx.new(|cx|TextareaState::new(window,cx)),
+            editor:cx.new(|cx|EditorState::new(window,cx)),
+        })).unwrap())
+    }
+
+    #[gpui_kit::test]
+    fn every_plain_text_field_is_a_selection_source(cx: &mut TestAppContext) {
+        let (handle,fields)=fields(cx);
+        cx.update_window(handle,|_,window,cx|{
+            let (input,textarea,editor)={let f=fields.read(cx);(f.input.clone(),f.textarea.clone(),f.editor.clone())};
+            macro_rules! check {
+                ($input:expr,$kind:ident)=>{{
+                    let input=$input;
+                    input.update(cx,|state,cx|{state.set_value("café 🐾",window,cx);state.set_selected_range(0..5,cx);state.focus(window,cx);
+                        crate::web_panels::keyboard_to_app(window);
+                    });
+                    window.render_frame(cx);
+                    let (words,source)=front_selection(window,cx).expect("plain selection");
+                    assert_eq!(words,"café");assert!(matches!(source,SelectionSource::$kind{..}));
+                    assert!(replace_if_unchanged(&source,&words,"coffee",window,cx));
+                    assert_eq!(&*input.read(cx).value(),"coffee 🐾");
+                    input.read(cx).focus_handle(cx).dispatch_action(&Undo,window,cx);
+                    window.render_frame(cx);
+                    assert_eq!(&*input.read(cx).value(),"café 🐾");
+                }};
+            }
+            check!(input,TextField);check!(textarea,TextBox);check!(editor,Editor);
+        }).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn service_returns_refuse_changed_range_text_readonly_and_expired_sources(cx: &mut TestAppContext) {
+        let (handle,fields)=fields(cx);
+        cx.update_window(handle,|_,window,cx|{
+            let input=fields.read(cx).input.clone();
+            input.update(cx,|s,cx|{s.set_value("first second",window,cx);s.set_selected_range(0..5,cx);});
+            let source=SelectionSource::TextField{input:input.downgrade(),range:0..5};
+            input.update(cx,|s,cx|s.set_selected_range(6..12,cx));
+            assert!(!replace_if_unchanged(&source,"first","wrong",window,cx));
+            input.update(cx,|s,cx|{s.set_value("other second",window,cx);s.set_selected_range(0..5,cx);});
+            assert!(!replace_if_unchanged(&source,"first","wrong",window,cx));
+            input.update(cx,|s,cx|s.set_readonly(true,cx));
+            assert!(!replace_if_unchanged(&source,"other","wrong",window,cx));
+            assert!(!replace_if_unchanged(&SelectionSource::Reply,"other","wrong",window,cx));
+            let temporary=cx.new(|cx|InputState::new(window,cx));
+            let expired=SelectionSource::TextField{input:temporary.downgrade(),range:0..1};
+            drop(temporary);
+            assert!(!replace_if_unchanged(&expired,"a","wrong",window,cx));
+        }).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn revealed_secret_fields_do_not_become_text_service_sources(cx: &mut TestAppContext) {
+        let (handle,fields)=fields(cx);
+        cx.update_window(handle,|_,window,cx|{
+            let input=fields.read(cx).input.clone();
+            input.update(cx,|s,cx|{s.set_value("secret",window,cx);s.set_selected_range(0..6,cx);s.focus(window,cx);
+                crate::web_panels::keyboard_to_app(window);
+            });
+            window.render_frame(cx);
+            input.update(cx,|s,_|s.set_accessibility(gpui_kit::base::input::InputAccessibility::new(None).with_value_exposed(false)));
+            assert!(front_selection(window,cx).is_none());
+            assert!(!replace_if_unchanged(&SelectionSource::TextField{input:input.downgrade(),range:0..6},"secret","wrong",window,cx));
+        }).unwrap();
+    }
+    #[gpui_kit::test]
+    fn a_service_never_replaces_an_extra_caret_or_picture_selection(cx: &mut TestAppContext) {
+        let (handle,fields)=fields(cx);
+        cx.update_window(handle,|_,window,cx|{
+            let input=fields.read(cx).textarea.clone();
+            input.update(cx,|s,cx|{
+                s.set_value("first\n\u{fffc}\nsecond",window,cx);
+                s.set_selected_range(0..5,cx); // the active word
+                s.add_selection(6..9,cx); // a second selection on the picture
+            });
+            let source=SelectionSource::TextBox{input:input.downgrade(),range:0..5};
+            assert!(!replace_if_unchanged(&source,"first","rewritten",window,cx));
+            assert_eq!(&*input.read(cx).value(),"first\n\u{fffc}\nsecond");
+            assert!(!source.is_editable(cx),"one returned string cannot target several selections");
+        }).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_reply_menu_never_takes_a_focused_fields_selection(cx: &mut TestAppContext) {
+        let (handle,fields)=fields(cx);
+        cx.update_window(handle,|_,window,cx|{
+            let input=fields.read(cx).input.clone();
+            input.update(cx,|s,cx|{s.set_value("private draft",window,cx);s.set_selected_range(0..13,cx);s.focus(window,cx);
+                crate::web_panels::keyboard_to_app(window);
+            });
+            window.render_frame(cx);
+            assert_eq!(front_selection(window,cx).unwrap().0,"private draft");
+            assert!(super::reply_menu_selection(window,cx).is_none(),"a message's menu must not search, share or copy a field");
+        }).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_service_never_replaces_a_larger_ime_preedit(cx: &mut TestAppContext) {
+        let (handle,fields)=fields(cx);
+        cx.update_window(handle,|_,window,cx|{
+            let (input,textarea,editor)={let f=fields.read(cx);(f.input.clone(),f.textarea.clone(),f.editor.clone())};
+            macro_rules! check { ($input:expr,$kind:ident)=>{{
+                let input=$input;
+                input.update(cx,|s,cx|{
+                    s.set_value("",window,cx);
+                    s.replace_and_mark_text_in_range(None,"café 🐾",Some(0..4),window,cx);
+                });
+                let source=SelectionSource::$kind{input:input.downgrade(),range:0..5};
+                assert_eq!(input.read(cx).selected_text().to_string(),"café");
+                assert!(!replace_if_unchanged(&source,"café","coffee",window,cx));
+                assert_eq!(&*input.read(cx).value(),"café 🐾");
+                assert!(!source.is_editable(cx));
+                // Once the IME commits, the same selection can be replaced.
+                input.update(cx,|s,cx|s.unmark_text(window,cx));
+                assert!(replace_if_unchanged(&source,"café","coffee",window,cx));
+                assert_eq!(&*input.read(cx).value(),"coffee 🐾");
+            }}; }
+            check!(input,TextField);check!(textarea,TextBox);check!(editor,Editor);
+        }).unwrap();
+    }
+
 }

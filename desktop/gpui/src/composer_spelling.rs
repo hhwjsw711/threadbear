@@ -261,7 +261,7 @@ impl Composer {
 
 /// The box's right-click menu, NSTextView's: the guesses for a misspelled
 /// word, then Cut, Copy and Paste, then the four submenus.
-pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<TextareaState>, cx: &mut App) -> NativeMenu {
+pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<TextareaState>, window: &mut Window, cx: &mut App) -> NativeMenu {
     let mut menu = NativeMenu::new();
     let composer = composer.upgrade();
     // Checked now, the word clicked in included: the marks may be waiting for
@@ -293,6 +293,15 @@ pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<Texta
         .menu("Select All", Box::new(SelectAll));
     if !text_services::AVAILABLE {
         return menu;
+    }
+    menu = menu.separator()
+        .menu_with_disabled("Look Up", !crate::native_text::has_lookup(window, cx), Box::new(crate::native_text::LookUp))
+        .menu_with_disabled("Services…", !crate::native_text::has_selection(window, cx), Box::new(crate::native_text::Services));
+    if crate::native_text::translate_available() {
+        menu = menu.menu_with_disabled("Translate", !has_selection, Box::new(crate::native_text::Translate));
+    }
+    if crate::native_text::writing_tools_available() {
+        menu = menu.menu_with_disabled("Writing Tools", !has_selection, Box::new(crate::native_text::WritingTools));
     }
     let checks = composer.as_ref().map(|c| c.read(cx).checks(cx)).unwrap_or_default();
     // "Show Spelling and Grammar" and "Show Substitutions" are AppKit's
@@ -343,7 +352,7 @@ pub(crate) fn menu_command(composer: &Entity<Composer>, cmd: &serde_json::Value,
         let caret = start + at.char_indices().nth(1).map_or(at.len(), |(i, _)| i);
         input.update(cx, |s, cx| s.set_selected_range(caret..caret, cx));
     }
-    let menu = context_menu(&composer.downgrade(), &input, cx);
+    let menu = context_menu(&composer.downgrade(), &input, window, cx);
     let Some(choose) = cmd["choose"].as_str() else {
         return Ok(serde_json::json!(format!("ok {}", serde_json::to_string(&menu.titles()).unwrap_or_default())));
     };

@@ -238,10 +238,10 @@ impl ThreadPane {
             .on_mouse_down(MouseButton::Left, crate::selection_bar::pressed(self.summary.id.clone(), &row))
             .children(glow)
             .child(body)
-            .context_menu(move |menu, _, cx| {
+            .context_menu(move |menu, window, cx| {
                 // An open tool or thinking row says Collapse, as a group does.
                 let open = weak.upgrade().is_some_and(|pane| pane.read(cx).row_open(&menu_row));
-                Self::row_context_menu(menu_row.clone(), menu, weak.clone(), open, cx)
+                Self::row_context_menu(menu_row.clone(), menu, weak.clone(), open, window, cx)
             })
             .into_any_element()
     }
