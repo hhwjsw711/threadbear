@@ -43,6 +43,7 @@ Feature: The Mac's text services use the current selection
     Then the shared text selection is "older reply words"
     When I give the Terminal the keyboard
     Then no reply words are offered to system text services
+    And the Terminal keeps the Mac Look Up shortcut
 
   @rich.textservices @swift-pending @windows-pending @linux-pending @real-screen
   Scenario: A reply replacement clears the system Services snapshot without a focus change
@@ -51,3 +52,9 @@ Feature: The Mac's text services use the current selection
     Then the automatic Services snapshot contains "old words to be replaced"
     When that reply is replaced with "a different reply"
     Then the automatic Services snapshot has no old reply words
+
+  @rich.textservices @swift-pending @windows-pending @linux-pending @real-screen
+  Scenario: The Look Up shortcut reaches the focused message box
+    When I select "dictionary" for a Mac Service
+    And I use the Mac Look Up shortcut
+    Then the selected words are offered to Look Up once

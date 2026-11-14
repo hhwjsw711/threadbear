@@ -15,11 +15,17 @@ mod mac {
     use std::{cell::RefCell, collections::HashMap, ffi::c_void, sync::{atomic::{AtomicU64, Ordering}, Mutex}};
     const LIMIT: usize = 1024 * 1024;
     struct WatchedInput { id: EntityId, _subscription: Subscription }
+    #[cfg(feature="automation")]
+    static LOOKUP_REQUESTS: AtomicU64 = AtomicU64::new(0);
+    #[cfg(feature="automation")]
+    static LOOKUP_SHORTCUTS: AtomicU64 = AtomicU64::new(0);
     static NEXT: AtomicU64 = AtomicU64::new(1);
     static ANSWERS: Mutex<Option<mpsc::Sender<(u64, String)>>> = Mutex::new(None);
     #[derive(Clone)]
     struct Snapshot { owner: u64, token: u64, words: String, source: SelectionSource, window: AnyWindowHandle }
     thread_local! {
+        #[cfg(feature="automation")]
+        static LOOKUP_WORDS: RefCell<Option<String>> = RefCell::new(None);
         static WATCHED: RefCell<HashMap<u64, WatchedInput>> = RefCell::new(HashMap::new());
         static CURRENT: RefCell<HashMap<u64, Snapshot>> = RefCell::new(HashMap::new());
         static REQUESTS: RefCell<HashMap<u64, Snapshot>> = RefCell::new(HashMap::new());
@@ -52,7 +58,30 @@ mod mac {
         }
     }
     struct SelectionServices;
-    impl gpui_kit::base::RootPlugin for SelectionServices {}
+    impl gpui_kit::base::RootPlugin for SelectionServices {
+        fn decorate(&self, surface:AnyElement, _: &gpui_kit::base::Root, _: &mut Window, _: &mut App) -> impl IntoElement {
+            // Keyboard and action listeners belong above the focused input.
+            // The plugin's painted overlay is its sibling, outside that path.
+            div().size_full()
+                .on_action(|_:&LookUp,w,cx|lookup(w,cx))
+                .on_action(|_:&Translate,w,cx|translate(w,cx))
+                .on_action(|_:&WritingTools,w,cx|writing_tools(w,cx))
+                .on_action(|_:&Services,w,cx|services(w,cx))
+                .capture_key_down(|event,w,cx|{
+                    let key=&event.keystroke;
+                    if key.key=="d" && key.modifiers.platform && key.modifiers.control && !key.modifiers.alt && !key.modifiers.shift
+                        && text_services::app_has_keyboard(w) && !crate::terminal::has_focus(w,cx) && has_lookup(w,cx) {
+                        #[cfg(feature="automation")]
+                        LOOKUP_SHORTCUTS.fetch_add(1,Ordering::Relaxed);
+                        let handle=Window::window_handle(w);
+                        cx.defer(move|cx|{let _=handle.update(cx,|_,w,cx|lookup(w,cx));});
+                        cx.stop_propagation();
+                    }else{queue_refresh(w,cx)}
+                })
+                .on_key_up(|_,w,cx|queue_refresh(w,cx))
+                .child(surface)
+        }
+    }
     impl Render for SelectionServices {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement { watch() }
     }
@@ -211,7 +240,13 @@ mod mac {
         if words.is_empty() || words.len()>4096{return}
         let Some(view)=view(window) else{return};
         let retained=unsafe{tb_selection_retain(view)} as usize;
-        cx.spawn(async move |_| unsafe{tb_selection_lookup(retained as *mut c_void,words.as_ptr(),words.len(),f32::from(at.x) as f64,f32::from(at.y) as f64)}).detach();
+        cx.spawn(async move |_| {
+            #[cfg(feature="automation")] {
+                LOOKUP_REQUESTS.fetch_add(1,Ordering::Relaxed);
+                LOOKUP_WORDS.with_borrow_mut(|last|*last=Some(words.clone()));
+            }
+            unsafe{tb_selection_lookup(retained as *mut c_void,words.as_ptr(),words.len(),f32::from(at.x) as f64,f32::from(at.y) as f64)}
+        }).detach();
     }
     fn word_at(at:Point<Pixels>,window:&mut Window,cx:&mut App)->Option<String> {
         if !text_services::app_has_keyboard(window) || crate::terminal::has_focus(window,cx){return None}
@@ -309,22 +344,8 @@ mod mac {
     pub(super) fn watch()->AnyElement {
         canvas(|_,_,_|{},|_,_,window,cx|{
             watch_window(window,cx);
-            window.on_action(std::any::TypeId::of::<LookUp>(),|_,phase,window,cx|{if phase.bubble(){lookup(window,cx);cx.stop_propagation();}});
-            window.on_action(std::any::TypeId::of::<Translate>(),|_,phase,window,cx|{if phase.bubble(){translate(window,cx);cx.stop_propagation();}});
-            window.on_action(std::any::TypeId::of::<WritingTools>(),|_,phase,window,cx|{if phase.bubble(){writing_tools(window,cx);cx.stop_propagation();}});
-            window.on_action(std::any::TypeId::of::<Services>(),|_,phase,window,cx|{if phase.bubble(){services(window,cx);cx.stop_propagation();}});
             window.on_mouse_event(|_:&MouseUpEvent,phase,window,cx|{if phase.capture(){PRESSURE.with_borrow_mut(|all|{all.insert(crate::thread::window_key(window),false);});queue_refresh(window,cx)}});
             window.on_mouse_event(|_:&MouseDownEvent,phase,window,cx|{if phase.capture(){PRESSURE.with_borrow_mut(|all|{all.insert(crate::thread::window_key(window),false);});queue_refresh(window,cx)}});
-            window.on_key_event(|event:&KeyDownEvent,phase,window,cx|{
-                if !phase.capture(){return}
-                let key=&event.keystroke;
-                if key.key=="d" && key.modifiers.platform && key.modifiers.control && !key.modifiers.alt && !key.modifiers.shift {
-                    let handle=Window::window_handle(window);
-                    cx.defer(move|cx|{let _=handle.update(cx,|_,w,cx|lookup(w,cx));});
-                    cx.stop_propagation();
-                }else{queue_refresh(window,cx)}
-            });
-            window.on_key_event(|_:&KeyUpEvent,phase,window,cx|{if phase.bubble(){queue_refresh(window,cx)}});
             window.on_mouse_event(|event:&MousePressureEvent,phase,window,cx|{
                 if !phase.capture(){return}
                 let high=event.stage==PressureStage::Force;
@@ -353,7 +374,7 @@ mod mac {
             "state"=>cx.update_window(window,|_,window,cx|{
                 let selected=text_services::front_selection(window,cx);
                 let cached=CURRENT.with_borrow(|all|all.get(&crate::thread::window_key(window)).map(|s|s.words.clone()));
-                json!({"words":selected.as_ref().map(|(words,_)|words),"snapshotWords":cached,"editable":selected.as_ref().is_some_and(|(_,source)|source.is_editable(cx)),"translate":translate_available(),"writingTools":writing_tools_available()})
+                json!({"lookupRequests":LOOKUP_REQUESTS.load(Ordering::Relaxed),"lookupShortcuts":LOOKUP_SHORTCUTS.load(Ordering::Relaxed),"lookupWords":LOOKUP_WORDS.with_borrow(|last|last.clone()),"words":selected.as_ref().map(|(words,_)|words),"snapshotWords":cached,"editable":selected.as_ref().is_some_and(|(_,source)|source.is_editable(cx)),"translate":translate_available(),"writingTools":writing_tools_available()})
             }).map_err(|e|e.to_string()),
             "begin"=>{
                 let view=cx.update_window(window,|_,window,_|view(window).map(|view|unsafe{tb_selection_retain(view)} as usize)).map_err(|e|e.to_string())?.ok_or("no AppKit view")?;

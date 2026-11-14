@@ -85,3 +85,27 @@ Then('the automatic Services snapshot has no old reply words',async function(thi
   assert.equal(state.snapshotWords,null,'A cleared reply must not remain in the AppKit Services requestor');
   await assert.rejects(()=>native(this,'begin'),/no requestor for this selection/);
 });
+
+const lookupRequests=new WeakMap<ThreadbearWorld,number>();
+When('I use the Mac Look Up shortcut',async function(this:ThreadbearWorld){
+  lookupRequests.set(this,(await native(this,'state')).lookupRequests);
+  await this.app.do({cmd:'menu-key',key:'d',modifiers:['cmd','ctrl']});
+  await this.app.dump();await sleep(100);
+});
+Then('the selected words are offered to Look Up once',async function(this:ThreadbearWorld){
+  const state=await native(this,'state');
+  assert.equal(state.lookupWords,'dictionary','The exact selected words must reach AppKit');
+  assert.equal(state.lookupRequests,lookupRequests.get(this)!+1,
+    'Control-Command-D must reach the native selection action from the focused composer');
+  await native(this,'dismiss');
+});
+
+Then('the Terminal keeps the Mac Look Up shortcut',async function(this:ThreadbearWorld){
+  if(process.platform!=='darwin'||process.env.TB_REAL_SCREEN!=='1')return;
+  const before=await native(this,'state');
+  await this.app.do({cmd:'menu-key',key:'d',modifiers:['cmd','ctrl']});
+  await this.app.dump();await sleep(100);
+  const after=await native(this,'state');
+  assert.equal(after.lookupRequests,before.lookupRequests,'Terminal focus must not send stale reply words');
+  assert.equal(after.lookupShortcuts,before.lookupShortcuts,'The wrapper must let the Terminal receive its shortcut');
+});
