@@ -232,8 +232,9 @@ scroll view, and a scroll view that gets any of a gesture takes the rest itself,
 so swipes passed every test here and failed on Mike's trackpad twice (7 Nov).
 `app/Tools/post-gesture.swift` sends them through the window server. Someone
 else may be using that desktop: first check nothing's recording it
-(`pgrep -fl ffmpeg`) and that your window really is in front (`front`, then a
-look at the screen). Wake its screen with `caffeinate -u`, or the events go nowhere.
+(the `recording()` guard in `features/tools/real-screen.ts` checks executable
+names, including variants) and that your window really is in front (`front`,
+then a look at the screen). Wake its screen with `caffeinate -u`, or the events go nowhere.
 
 ## The GPUI port
 

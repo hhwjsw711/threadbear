@@ -10,12 +10,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GpuiDriver } from '../support/gpui.ts';
 import { sleep } from '../support/driver.ts';
-import { assertInFront, swiftTool, windowFrame } from './real-screen.ts';
+import { assertInFront, recording, swiftTool, windowFrame } from './real-screen.ts';
 
 export async function checkBoardGestures(app: GpuiDriver): Promise<void> {
   if (process.platform !== 'darwin' || process.env.TB_REAL_SCREEN !== '1') throw new Error('Board gestures need a test Mac and TB_REAL_SCREEN=1');
-  try { execFileSync('pgrep', ['-x', 'ffmpeg'], { stdio: 'ignore' }); throw new Error('A recording is running; no GUI events posted'); }
-  catch (error) { if ((error as { status?: number }).status !== 1) throw error; }
+  if (recording()) throw new Error('A recording is running; no GUI events posted');
   const gesture = swiftTool('post-gesture');
   let backId: string | undefined;
   let natural = true;

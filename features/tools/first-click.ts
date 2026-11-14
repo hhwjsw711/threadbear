@@ -19,15 +19,11 @@ import path from 'node:path';
 import { GpuiDriver } from '../support/gpui.ts';
 import { sleep, type Dump } from '../support/driver.ts';
 import { startSites, stopSites } from '../support/web-pages.ts';
-import { assertInFront, windowFrame, work } from './real-screen.ts';
+import { assertInFront, recording, windowFrame, work } from './real-screen.ts';
 
 const archive = process.env.TB_WEB_RUNTIME_ARCHIVE;
 if (!archive) throw new Error('TB_WEB_RUNTIME_ARCHIVE is the pinned web runtime archive');
-try {
-  if (execFileSync('/usr/bin/pgrep', ['-fl', 'ffmpeg'], { encoding: 'utf8' }).trim()) throw new Error('something is recording this screen; no events posted');
-} catch (error) {
-  if ((error as { status?: number }).status !== 1) throw error;
-}
+if (recording()) throw new Error('something is recording this screen; no events posted');
 
 // The front app's pid, and one real click (moved there first, as a hand does).
 const tool = path.join(work, 'first-click');

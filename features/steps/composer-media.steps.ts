@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { sleep } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
+import { recording } from '../tools/real-screen.ts';
 
 const sample = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../support/sample.png');
 
@@ -159,7 +160,7 @@ When('I paste a promised photo beside a normal picture', async function (this: T
   const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../tools/picture-promise.m');
   execFileSync('/usr/bin/clang', ['-fobjc-arc', '-framework', 'AppKit', '-framework', 'ApplicationServices', source, '-o', binary], { stdio: 'pipe' });
   // Refuse to post events over someone else's recording.
-  try { const recording = execFileSync('/usr/bin/pgrep', ['-fl', 'ffmpeg'], { encoding: 'utf8' }); if (recording.trim()) throw new Error('Tinker Desk is recording; refusing the real drag'); } catch (error) { if ((error as { status?: number }).status !== 1) throw error; }
+  if (recording()) throw new Error('Tinker Desk is recording; refusing the real drag');
   const pid = (this.app as unknown as { pid: number }).pid;
   const child = spawn(binary, [sample, String(pid)], { stdio: ['ignore', 'pipe', 'pipe'] });
   let sourceErrors = '';

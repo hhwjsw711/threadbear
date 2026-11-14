@@ -85,15 +85,36 @@ if CGGetActiveDisplayList(32, &ids, &count) == .success {
   return execFileSync(displayer).toString().trim().split('\n').filter(Boolean).map((l) => l.split(' ').map(Number));
 }
 
-/** Throws if anything on this machine is recording the screen (AGENTS.md: check `pgrep -fl ffmpeg` first). */
-export function recording(): string {
-  try {
-    return execFileSync('/usr/bin/pgrep', ['-fl', 'ffmpeg'], { encoding: 'utf8' }).trim();
-  } catch (error) {
-    // pgrep says 1 for "none"; anything else is a failure to look, which mustn't pass as "none".
-    if ((error as { status?: number }).status === 1) return '';
-    throw error;
+/** Process identities without arguments. Any failure to look throws. */
+export function executableProcesses(read = () => {
+  // Linux exe can be hidden for another user's process; keep comm as a
+  // fallback there. macOS comm already gives the executable path.
+  const fields = process.platform === 'linux' ? ['exe', 'comm'] : ['comm'];
+  return fields.map(field => execFileSync('/bin/ps', [
+    '-Aww', '-o', 'pid=', '-o', `${field}=`,
+  ], { encoding: 'utf8' })).join('\n');
+}): { pid: number; name: string }[] {
+  // macOS comm and Linux exe give the executable path without arguments.
+  // pgrep -f matches script text carried by shells/caffeinate; without -f,
+  // pgrep truncates names and can miss a long encoder name's ffmpeg suffix.
+  const found: { pid: number; name: string }[] = [];
+  for (const line of read().split('\n')) {
+    const row = /^\s*(\d+)\s+(.+)$/.exec(line);
+    if (!row) continue;
+    const name = path.basename(row[2].trim());
+    found.push({ pid: Number(row[1]), name });
   }
+  if (!found.length) throw new Error('Could not read process executable names');
+  return found;
+}
+
+/** Encoder PIDs and names, or empty when none are running. Lookup failures throw. */
+export function recording(read = executableProcesses): string {
+  const found = new Map<number, string>();
+  for (const p of read()) {
+    if (/ffmpeg/i.test(p.name) && !found.has(p.pid)) found.set(p.pid, p.name);
+  }
+  return [...found].map(([pid, name]) => `${pid} ${name}`).join('\n');
 }
 
 const stacker = path.join(work, 'windows-above');
