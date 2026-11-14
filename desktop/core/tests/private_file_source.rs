@@ -31,6 +31,8 @@ const ALLOWED: &[&str] = &[
 /// exactly as many times as listed:
 /// - the automation's web runtime smoke test saving its picture where the
 ///   spec asked (debug builds only);
+/// - the automation's screenshot export to the script's chosen path (debug
+///   builds only), keeping its umask, permissions and links like image.save;
 /// - the open gate opening a file it has checked, to read only
 ///   (`open_without_waiting`: read(true), O_NOFOLLOW, nothing written).
 /// - an existing user file saved in place by the text editor, keeping its mode.
@@ -41,6 +43,7 @@ const ALLOWED: &[&str] = &[
 const ALLOWED_LINES: &[(&str, &str, usize)] = &[
     ("core/src/local_preview.rs", "let mut options = std::fs::OpenOptions::new();", 1),
     ("gpui/src/web_runtime.rs", "std::fs::write(path, &png).map_err(|e| format!(\"couldn't save the picture: {e}\"))?;", 1),
+    ("gpui/src/automation_screenshot.rs", "std::fs::write(path, encoded.into_inner())?;", 1),
     ("core/src/open_policy.rs", "let mut options = std::fs::OpenOptions::new();", 1),
     ("core/src/open_policy.rs", "{ std::fs::OpenOptions::new().write(true).open(path) }", 1),
     ("gpui/src/agent_browser.rs", "let mut open = std::fs::OpenOptions::new();", 1),
