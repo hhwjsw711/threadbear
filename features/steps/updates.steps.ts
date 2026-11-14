@@ -40,6 +40,10 @@ When("the app's next version is waiting for a Mac to build it on", async functio
   await this.app.do({ cmd: 'updates', preview: 'waiting' });
 });
 
+When("the app's next version is waiting for main to settle", async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'updates', preview: 'settling' });
+});
+
 When('no Mac is trusted to build the app\'s next version', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'updates', preview: 'no-builder' });
 });

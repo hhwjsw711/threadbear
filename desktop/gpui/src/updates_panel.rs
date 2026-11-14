@@ -778,7 +778,7 @@ fn section(title: &'static str, content: Vec<AnyElement>, cx: &App) -> AnyElemen
 /// The automation's `updates` (the Swift app's): `show` opens or closes the
 /// panel; with nothing, whether the icon has its dot, its tooltip, and what
 /// the panel says about the app and the runner. `preview` makes up the app's
-/// own update first (`staged`, `building`, `failed`, `waiting` or `none`), as
+/// own update first (`staged`, `building`, `settling`, `failed`, `waiting` or `none`), as
 /// the Swift app's; this app has no right-click popover (`rightClick`).
 pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
     // What a restart onto an update leaves for the next launch, put back as
@@ -805,8 +805,8 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
         return Ok(json!("ok"));
     }
     if let Some(state) = cmd["preview"].as_str() {
-        if !["staged", "building", "failed", "waiting", "no-builder", "none"].contains(&state) {
-            return Err("preview is staged, building, failed, waiting, no-builder or none".into());
+        if !["staged", "building", "settling", "failed", "waiting", "no-builder", "none"].contains(&state) {
+            return Err("preview is staged, building, settling, failed, waiting, no-builder or none".into());
         }
         app.update(cx, |t, cx| t.preview_update(state, cx));
     }

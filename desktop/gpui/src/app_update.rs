@@ -2,7 +2,8 @@
 // (core's app_update.rs has the rules). Twenty seconds after launch, every
 // five minutes, and within seconds of main moving, it reads main's tree of
 // desktop/ in the checkout it was built from, and when that differs from what's
-// running it builds that commit into ~/Applications/.Threadbear GPUI.app.next
+// running it waits for ten quiet minutes before building the latest main into
+// ~/Applications/.Threadbear GPUI.app.next
 // (desktop/scripts/stage-update.sh, from the bundle). The Rust release build
 // takes every core for minutes, so the script builds on a Mac among
 // runner.json's updateBuildHosts and only the binaries come back. Check hosts
@@ -54,6 +55,8 @@ pub(crate) struct AppUpdater {
     /// again until main moves on).
     pub(crate) building: Option<String>,
     pub(crate) failed: Option<String>,
+    quiet_main: rules::BuildDebounce,
+    settling: bool,
     /// The last build found no Mac to build on; the next look tries again.
     pub(crate) waiting_for_host: bool,
     /// The last build found no Mac trusted to build it (stage-update.sh's 5:
@@ -405,7 +408,7 @@ impl Threadbear {
         });
         let restarts = self.restart_looks(cx);
         self.updater.tasks = vec![looks, restarts];
-        // A merge to main is built within seconds, not at the next look: its
+        // A merge to main is noticed within seconds, not at the next look: its
         // ref is written in refs/heads, or packed into the git folder.
         let git = Path::new(&checkout).join(".git");
         if git.is_dir() {
@@ -441,15 +444,17 @@ impl Threadbear {
         }));
     }
 
-    /// Reads main's desktop/ tree and starts a build if it's new.
+    /// Reads main's desktop/ tree, including during a build, and waits for
+    /// nearby landings to settle before requesting another.
     pub(crate) fn check_for_update(&mut self, cx: &mut Context<Self>) {
         let Some(running) = self.updater.running.clone() else { return };
-        if self.updater.building.is_some() || self.updater.preview {
+        if self.updater.preview || self.updater.restarting {
             return;
         }
         // followMain: false in runner.json stops the runner rebuilding, and
         // the app too (on-your-mac.md promises both). Only an explicit false.
         if self.runner_settings.as_ref().and_then(|s| s["followMain"].as_bool()) == Some(false) {
+            self.updater.settling = false;
             return;
         }
         let checkout = running.checkout.clone();
@@ -457,16 +462,30 @@ impl Threadbear {
             let tree = cx.background_executor().spawn(async move { main_tree(&checkout) }).await;
             this.update(cx, |t, cx| {
                 let Some(tree) = tree else { return };
+                let ready = t.updater.quiet_main.ready(&tree, std::time::Instant::now());
+                // followMain can have changed while git was being read.
+                if t.runner_settings.as_ref().and_then(|s| s["followMain"].as_bool()) == Some(false) {
+                    t.updater.settling = false;
+                    return;
+                }
                 // What's staged may have been swapped in or dropped by hand.
                 t.updater.staged = staged_build();
-                match rules::decide(&tree, &running, t.updater.staged.as_ref(), t.updater.building.as_deref(), t.updater.failed.as_deref()) {
+                t.updater.settling = false;
+                match rules::decide(&tree, &running, t.updater.staged.as_ref(), t.updater.building.as_deref(), t.updater.failed.as_deref(), t.updater.restarting) {
                     Action::Nothing => {}
                     Action::DropStaged => {
                         let _ = std::fs::remove_dir_all(next_dir());
                         t.updater.staged = None;
                         note("dropped the staged build; main is what's running again");
                     }
-                    Action::Build(tree) => t.start_update_build(tree, running.checkout.clone(), cx),
+                    Action::Build(tree) => {
+                        if ready {
+                            t.start_update_build(tree, running.checkout.clone(), cx);
+                        } else {
+                            t.updater.settling = true;
+                            t.updater.waiting_for_host = false;
+                        }
+                    }
                 }
                 // The app menu's Restart to Update is there only while one is staged.
                 t.menus_stale = true;
@@ -478,6 +497,9 @@ impl Threadbear {
     }
 
     fn start_update_build(&mut self, tree: String, checkout: String, cx: &mut Context<Self>) {
+        if self.updater.building.is_some() || self.updater.restarting {
+            return;
+        }
         let Some(script) = script() else { return };
         let (program, arguments) = rules::build_command(&script.to_string_lossy(), &checkout, &next_dir().to_string_lossy());
         let log = open_log();
@@ -525,7 +547,7 @@ impl Threadbear {
                 }
                 None => self.updater.failed = Some(tree),
             },
-            // No Mac answered to build on: the next look tries again.
+            // No Mac answered, or its lease was busy: the next look tries again.
             Some(4) => self.updater.waiting_for_host = true,
             // None is trusted to: also tried again, once Mike names one.
             Some(5) => {}
@@ -536,6 +558,11 @@ impl Threadbear {
                 note(&format!("the update build failed ({status:?}); not tried again until main moves on"));
                 self.updater.failed = Some(tree);
             }
+        }
+        // Main may have moved during the build. Observe it now, considering
+        // only that latest tree, rather than replaying each landing.
+        if status == Some(0) {
+            self.check_for_update(cx);
         }
         cx.notify();
     }
@@ -820,6 +847,7 @@ impl Threadbear {
             running: u.running.as_ref().map(|b| b.short.clone()),
             staged: u.staged.as_ref().map(|b| b.short.clone()),
             building: u.building.is_some(),
+            settling: u.settling && self.runner_settings.as_ref().and_then(|s| s["followMain"].as_bool()) != Some(false),
             failed: u.failed.is_some() && u.staged.is_none(),
             waiting: u.waiting_for_host && u.staged.is_none() && u.building.is_none(),
             // Only the installed app's reasons: every other launch is meant
@@ -830,7 +858,7 @@ impl Threadbear {
         }
     }
 
-    /// A made-up update that's "staged", "building", "failed", "waiting" or "no-builder"
+    /// A made-up update that's "staged", "building", "settling", "failed", "waiting" or "no-builder"
     /// (or none, on abc1234), for a scripted app's pictures and specs, as
     /// the Swift app's `previewUpdate`. Only scripts reach it, through the
     /// Updates panel's `updates` command.
@@ -841,6 +869,7 @@ impl Threadbear {
         u.running = Some(build("abc1234"));
         u.staged = (state == "staged").then(|| build("def5678"));
         u.building = (state == "building").then(|| "def5678".to_owned());
+        u.settling = state == "settling";
         u.failed = (state == "failed").then(|| "def5678".to_owned());
         u.waiting_for_host = state == "waiting";
         u.no_builder = state == "no-builder";

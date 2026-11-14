@@ -272,6 +272,8 @@ pub struct AppSide {
     /// Short commit waiting to be swapped in.
     pub staged: Option<String>,
     pub building: bool,
+    /// Main changed recently; let nearby desktop changes settle first.
+    pub settling: bool,
     pub failed: bool,
     /// The GPUI app's build found no Mac to build on, and tries again at its
     /// next look (the Swift app builds where it is, so never).
@@ -286,7 +288,7 @@ pub struct AppSide {
 
 impl AppSide {
     pub fn is_pending(&self) -> bool {
-        self.staged.is_some() || self.building || self.waiting
+        self.staged.is_some() || self.building || self.waiting || self.settling
     }
 }
 
@@ -556,6 +558,9 @@ pub fn app_line(a: &AppSide) -> String {
     }
     if a.waiting {
         return "The app has a new version on main, waiting for a Mac to build it on.".to_owned();
+    }
+    if a.settling {
+        return "The app has a new version on main, waiting for ten quiet minutes before building.".to_owned();
     }
     if a.failed {
         return "The app's last build from main failed. The log says why.".to_owned();
@@ -1025,6 +1030,13 @@ mod tests {
         let waiting = AppSide { running: Some("abc1234".into()), waiting: true, ..Default::default() };
         assert!(shown(&waiting, None) && !needs_you(&waiting, None));
         assert_eq!(app_line(&waiting), "The app has a new version on main, waiting for a Mac to build it on.");
+    }
+
+    #[test]
+    fn an_app_waiting_for_main_to_settle_is_pending() {
+        let app = AppSide { settling: true, ..Default::default() };
+        assert!(app.is_pending() && shown(&app, None) && !needs_you(&app, None));
+        assert_eq!(app_line(&app), "The app has a new version on main, waiting for ten quiet minutes before building.");
     }
 
     // Mike, 13 Nov: a countdown that starts again when he does something,

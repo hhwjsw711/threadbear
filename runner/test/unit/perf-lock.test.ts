@@ -76,6 +76,52 @@ test('measurements wait, explain why, and keep both locks for their whole run', 
   assert.match(second.output, /second/);
 });
 
+test('an updater defers without queueing when either host lock is busy', async (t) => {
+  const h = host(t);
+  for (const name of ['.cache/threadbear-perf.lock', '.cache/threadbear-check/lock']) {
+    fs.mkdirSync(path.dirname(path.join(h.home, name)), { recursive: true });
+    const holder = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $f, ">>", $ARGV[0]) or die $!; flock($f, LOCK_EX) or die $!; $|=1; print "held\\n"; sleep 60', path.join(h.home, name)]);
+    const done = new Promise((resolve) => holder.on('exit', resolve));
+    t.after(() => holder.kill());
+    await new Promise((resolve) => holder.stdout!.once('data', resolve));
+    // h.run adds the pidfile argument; put --try before it in a tiny shim.
+    const shim = path.join(h.home, 'try.pl');
+    fs.writeFileSync(shim, `exec 'perl', ${JSON.stringify(helper)}, '--try', @ARGV;`);
+    const updater = h.run(['sh', '-c', 'echo updater-ran'], {}, undefined, false, shim);
+    const result = await Promise.race([updater.done, pause(2000).then(() => 'queued')]);
+    if (result === 'queued') updater.stdin!.end();
+    assert.equal(result, 75, updater.output);
+    assert.doesNotMatch(updater.output, /updater-ran/);
+    holder.kill();
+    await done;
+    // In particular, the first lock isn't retained while deferring on the second.
+    const next = h.run(['sh', '-c', 'echo next']);
+    assert.equal(await next.done, 0, next.output);
+  }
+});
+
+test('an updater leaves a free host to an existing live waiter', async (t) => {
+  const h = host(t);
+  const waiting = path.join(h.home, '.cache/threadbear-perf.lock.waiting');
+  fs.mkdirSync(waiting, { recursive: true });
+  fs.writeFileSync(path.join(waiting, String(process.pid)), `${Math.floor(Date.now() / 1000)}\n`);
+  const shim = path.join(h.home, 'try.pl');
+  fs.writeFileSync(shim, `exec 'perl', ${JSON.stringify(helper)}, '--try', @ARGV;`);
+  const updater = h.run(['sh', '-c', 'echo updater-ran'], {}, undefined, false, shim);
+  assert.equal(await updater.done, 75, updater.output);
+  assert.doesNotMatch(updater.output, /updater-ran/);
+  // A note left by a killed waiter, whose pid now belongs to this newer
+  // process, cannot hold updates forever.
+  fs.writeFileSync(path.join(waiting, String(process.pid)), '1\n');
+  const reused = h.run(['sh', '-c', 'echo updater-ran'], {}, undefined, false, shim);
+  assert.equal(await reused.done, 0, reused.output);
+  fs.rmSync(path.join(waiting, String(process.pid)));
+  fs.writeFileSync(path.join(waiting, '99999999'), '1\n');
+  const free = h.run(['sh', '-c', 'echo updater-ran'], {}, undefined, false, shim);
+  assert.equal(await free.done, 0, free.output);
+  assert.match(free.output, /updater-ran/);
+});
+
 test('a waiter is told who holds the perf lock, and the note goes with the holder', async (t) => {
   // lsof can't tell a holder from a waiter: both have the file open.
   const h = host(t);

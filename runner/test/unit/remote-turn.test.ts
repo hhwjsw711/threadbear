@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 const ROOT = path.join(import.meta.dirname, '..', '..', '..');
 const SCRIPT = path.join(ROOT, 'desktop', 'scripts', 'remote.sh');
 
-test('a run waiting for its turn stops at once on TERM, and never reaches the host', async (t) => {
+for (const tryOnly of [false, true]) test(tryOnly ? 'an updater skips a busy checkout without contacting the host' : 'a run waiting for its turn stops at once on TERM, and never reaches the host', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-turn-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const bin = path.join(home, 'bin');
@@ -35,13 +35,19 @@ test('a run waiting for its turn stops at once on TERM, and never reaches the ho
   const env: Record<string, string | undefined> = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` };
   delete env.XDG_CACHE_HOME;
   delete env.THREADBEAR_REMOTE_KEY;
-  const run = spawn('/bin/bash', [SCRIPT, 'somehost', '--', 'true'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  const run = spawn('/bin/bash', [SCRIPT, 'somehost', ...(tryOnly ? ['--try'] : []), '--', 'true'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
   t.after(() => run.kill('SIGKILL'));
   let stderr = '';
   run.stderr.on('data', (d) => (stderr += d));
   // close, not exit: it waits for everything holding the run's stderr, so a
   // lock waiter left behind (still holding it) fails this too (Codex).
   const closed = new Promise<number | null>((r) => run.on('close', (code) => r(code)));
+  if (tryOnly) {
+    const code = await Promise.race([closed, new Promise<'late'>((r) => setTimeout(() => r('late'), 5000))]);
+    assert.equal(code, 75, stderr);
+    assert.ok(!fs.existsSync(called), 'a deferred updater never contacts the host');
+    return;
+  }
   const end = Date.now() + 15_000;
   while (!stderr.includes('Waiting for another remote.sh run')) {
     assert.ok(Date.now() < end, `never said it was waiting: ${stderr}`);

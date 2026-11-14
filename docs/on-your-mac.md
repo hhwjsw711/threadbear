@@ -291,21 +291,29 @@ File references are where to look.
   follows the `main` of the checkout it was installed from in the same way
   (`desktop/gpui/src/app_update.rs`): it reads main's `desktop/` tree with
   `git rev-parse` 20 seconds after it opens, every 5 minutes and within
-  seconds of main changing, and when that differs from what it runs, it runs
+  seconds of main changing. When that differs from what it runs, it waits
+  until that tree has stayed the same for ten minutes, then runs
   `stage-update.sh` from its own bundle at background priority
   (`desktop/scripts/stage-update.sh`). That clones the checkout into
   `~/Library/Caches/Threadbear/update-desktop`, and with `updateBuildHosts` in
   `runner.json` (never `checkHosts`), copies the clone's files (not its history) with rsync over
-  ssh to the first of them that's a Mac and answers, builds there under
+  ssh to the first of them that's a Mac, answers and is free, builds there under
   `~/.cache/threadbear-check/gpui` and copies the two binaries back with scp
   (`desktop/scripts/remote.sh`). Remote commands and performance tools keep
   `~/.cache/threadbear-perf.lock` and `~/.cache/threadbear-check/lock` on the
-  host while they run, waiting for other builds, checks and measurements,
-  with a note beside the first (`threadbear-perf.lock.holder`: its pid, when
+  host while they run, waiting for other builds, checks and measurements.
+  Automatic update builds try both locks without waiting, and leave a host
+  with live measurement waiters alone. A busy host makes the app try again
+  at a later look, reading the latest main then; a build already running
+  finishes with both locks held. The first has a note beside it
+  (`threadbear-perf.lock.holder`: its pid, when
   it took the lock and what it's running) so a waiting run can say who it's
   waiting for. The holder deletes it when it finishes. Each waiting run keeps
   a file in `threadbear-perf.lock.waiting` until it gets the lock, so the
-  others can say how many are queued ahead.
+  others can say how many are queued ahead. An updater also checks the
+  process start time, so a dead waiter's note whose pid has been reused
+  cannot keep deferring updates. A deferred attempt removes its own helper
+  folder on the host.
   Temporary wrappers under the run's temp folder background Cargo and Swift
   builds and are removed when the run ends. Performance runs register their
   process groups and start times in `~/.cache/threadbear-check/perf-children-*`

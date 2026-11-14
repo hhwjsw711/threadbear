@@ -139,22 +139,46 @@ pub fn tree_from_rev_parse(output: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Nothing,
-    /// Main's tree differs from what's running and nothing staged, being
-    /// built or known to fail matches it.
+    /// Main's tree differs from what's running, no build is staged or under
+    /// way, and this tree isn't known to fail.
     Build(String),
     /// What's staged no longer matches main, and main is what's running
     /// already: drop it.
     DropStaged,
 }
 
-pub fn decide(main_tree: &str, running: &BuildInfo, staged: Option<&BuildInfo>, building: Option<&str>, failed: Option<&str>) -> Action {
+pub fn decide(main_tree: &str, running: &BuildInfo, staged: Option<&BuildInfo>, building: Option<&str>, failed: Option<&str>, restarting: bool) -> Action {
+    if restarting || building.is_some() {
+        return Action::Nothing;
+    }
     if main_tree == running.app_tree {
         return if staged.is_some() { Action::DropStaged } else { Action::Nothing };
     }
-    if staged.is_some_and(|s| s.app_tree == main_tree) || building == Some(main_tree) || failed == Some(main_tree) {
+    // Let a staged build go in before starting another. Otherwise an idle
+    // restart can cut off the new build just after it starts.
+    if staged.is_some() || failed == Some(main_tree) {
         return Action::Nothing;
     }
     Action::Build(main_tree.to_owned())
+}
+
+/// Nearby landings become one update build. Compare the desktop tree, so a
+/// runner-only landing doesn't extend the wait. Observe during a build too:
+/// when it ends, only the newest tree is considered, with its own quiet time.
+#[derive(Default)]
+pub struct BuildDebounce {
+    observed: Option<(String, std::time::Instant)>,
+}
+
+impl BuildDebounce {
+    pub fn ready(&mut self, tree: &str, now: std::time::Instant) -> bool {
+        let (last, since) = self.observed.get_or_insert_with(|| (tree.to_owned(), now));
+        if last != tree {
+            *last = tree.to_owned();
+            *since = now;
+        }
+        now.saturating_duration_since(*since) >= std::time::Duration::from_secs(10 * 60)
+    }
 }
 
 /// Puts the staged bundle in the installed one's place in one exchange, so
@@ -446,16 +470,40 @@ mod tests {
     #[test]
     fn decides_whether_to_build() {
         let running = build("aaa", "t1");
-        assert_eq!(decide("t1", &running, None, None, None), Action::Nothing);
-        assert_eq!(decide("t2", &running, None, None, None), Action::Build("t2".into()));
+        assert_eq!(decide("t1", &running, None, None, None, false), Action::Nothing);
+        assert_eq!(decide("t2", &running, None, None, None, false), Action::Build("t2".into()));
         // Already staged, being built or known to fail: leave it.
-        assert_eq!(decide("t2", &running, Some(&build("bbb", "t2")), None, None), Action::Nothing);
-        assert_eq!(decide("t2", &running, None, Some("t2"), None), Action::Nothing);
-        assert_eq!(decide("t2", &running, None, None, Some("t2")), Action::Nothing);
-        // Main moved on past a failed or staged tree: build the new one.
-        assert_eq!(decide("t3", &running, Some(&build("bbb", "t2")), None, Some("t2")), Action::Build("t3".into()));
+        assert_eq!(decide("t2", &running, Some(&build("bbb", "t2")), None, None, false), Action::Nothing);
+        assert_eq!(decide("t2", &running, None, Some("t2"), None, false), Action::Nothing);
+        // A look that finishes after a newer main was read must not start
+        // another build alongside the one already running.
+        assert_eq!(decide("t3", &running, None, Some("t2"), None, false), Action::Nothing);
+        assert_eq!(decide("t2", &running, None, None, Some("t2"), false), Action::Nothing);
+        // A staged build goes in first; the new app considers the latest main.
+        assert_eq!(decide("t3", &running, Some(&build("bbb", "t2")), None, Some("t2"), false), Action::Nothing);
+        assert_eq!(decide("t3", &running, None, None, Some("t2"), false), Action::Build("t3".into()));
         // Main is back to what's running while something else is staged.
-        assert_eq!(decide("t1", &running, Some(&build("bbb", "t2")), None, None), Action::DropStaged);
+        assert_eq!(decide("t1", &running, Some(&build("bbb", "t2")), None, None, false), Action::DropStaged);
+        // During handover next has already moved into place, but the old
+        // app is still alive. Its pending git read mustn't rebuild t2.
+        assert_eq!(decide("t2", &running, None, None, None, true), Action::Nothing);
+    }
+
+    #[test]
+    fn update_builds_wait_for_the_latest_desktop_tree_to_settle() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut quiet = BuildDebounce::default();
+        assert!(!quiet.ready("t2", now));
+        assert!(!quiet.ready("t2", now + Duration::from_secs(599)));
+        assert!(quiet.ready("t2", now + Duration::from_secs(600)));
+        // More landings during a build collapse into the newest tree.
+        assert!(!quiet.ready("t3", now + Duration::from_secs(601)));
+        assert!(!quiet.ready("t4", now + Duration::from_secs(900)));
+        assert!(!quiet.ready("t4", now + Duration::from_secs(1499)));
+        assert!(quiet.ready("t4", now + Duration::from_secs(1500)));
+        // A busy host retry, or a landing outside desktop/, keeps its wait.
+        assert!(quiet.ready("t4", now + Duration::from_secs(1800)));
     }
 
     /// A moment that would restart: staged, loaded, nothing typed or under

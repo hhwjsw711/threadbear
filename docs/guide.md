@@ -1929,7 +1929,13 @@ see it pick back up rather than go quiet.
 
 The new desktop app follows `main` too, from the
 checkout you installed it from. Its build takes every core of a Mac for
-minutes, so it builds on another Mac you name for it (`updateBuildHosts`
+minutes. It waits for ten minutes with no changes to the desktop app before
+asking for a build, so several landings close together become one update.
+If the build Mac is busy or has tests or timings queued, it tries again
+later, trying the other Macs on your build list first. While changes keep
+landing or those Macs stay busy, the update keeps waiting. A build already
+running finishes before anything else uses that Mac.
+It builds on another Mac you name for it (`updateBuildHosts`
 in `runner.json`, a list of ssh hosts) and only the finished app comes
 back. That Mac's build is what yours runs next, so name one you trust as
 much as this one: a check host (`checkHosts`) only runs tests and never

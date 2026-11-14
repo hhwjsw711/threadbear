@@ -1576,6 +1576,16 @@ the restart is asked for.
 
 ### App restarts
 
+The GPUI app waits until main's `desktop/` tree has stayed the same for ten
+minutes before requesting an update build. Landings outside that tree do not
+restart the wait. It observes changes during a build too, keeps one build
+at a time, lets a staged version go in before building another, and considers
+only the latest tree afterwards. Automatic remote update builds try both
+host leases without queueing; a busy host or a live
+measurement waiter defers the update until a later look. A build already
+running keeps its leases until its work and cleanup finish. Only
+`updateBuildHosts` can supply the binaries, as before.
+
 An agent that changed the Mac app lands it; the app restarts onto the new
 build by itself once Mike leaves it idle, or sooner if he picks Restart to
 Update. The agent wants to know when it has, to check the change in the

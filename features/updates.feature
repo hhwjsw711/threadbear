@@ -60,6 +60,16 @@ Feature: The Updates panel
 
   # The app's own update is made up (`updates` with `preview`): a scripted
   # app never follows main, as only the installed one does.
+  # Exercised by core's BuildDebounce tests and remote lease tests. An
+  # installed updater is required to observe this over real landings.
+  @system.selfupdate @swift-pending @manual
+  Scenario: Automatic update builds leave queued screen tests and timings ahead
+    When several changes to the desktop app land on main within ten minutes
+    Then the updater waits until the latest desktop tree has settled for ten minutes
+    And it requests only that latest tree once no update build is running
+    And a busy build Mac or one with timings queued makes it try again later
+    And a build already running finishes with the host kept exclusive
+
   @system.selfupdate
   Scenario: The app's next version waiting says so in the Updates panel
     When the app's next version, def5678, is ready
@@ -91,6 +101,12 @@ Feature: The Updates panel
     When the app's next version is waiting for a Mac to build it on
     And I open the Updates panel
     Then the Updates panel lists "The app has a new version on main, waiting for a Mac to build it on."
+
+  @system.selfupdate @swift-pending
+  Scenario: A new version waits for nearby changes to settle before building
+    When the app's next version is waiting for main to settle
+    And I open the Updates panel
+    Then the Updates panel lists "The app has a new version on main, waiting for ten quiet minutes before building."
 
   # Check hosts only run tests: what an update's build host sends back runs
   # here, so it's only one named in updateBuildHosts (Daybreak 108). With
