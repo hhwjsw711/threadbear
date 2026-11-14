@@ -611,10 +611,10 @@ test('network diagnostics stop at a bounded cause depth and code count', async (
   await assert.rejects(convexPoster('https://x.convex.cloud', fake)('query', 'sync:runnersList', {}), (e) => e === deep);
 
   const many = new TypeError('fetch failed', { cause: new AggregateError([
-    { code: 'ECONNRESET' }, { code: 'ENOTFOUND' }, { code: 'ETIMEDOUT' }, { code: 'EPIPE' },
+    { code: 'ECONNRESET', name: 'AbortError' }, { code: 'ENOTFOUND', name: 'TimeoutError' }, { code: 'ETIMEDOUT' }, { code: 'EPIPE' },
   ]) });
   const several = (async () => { throw many; }) as typeof fetch;
-  await assert.rejects(convexPoster('https://x.convex.cloud', several)('query', 'sync:runnersList', {}), { message: 'fetch failed (ECONNRESET, ENOTFOUND, ETIMEDOUT)' });
+  await assert.rejects(convexPoster('https://x.convex.cloud', several)('query', 'sync:runnersList', {}), { message: 'fetch failed (ECONNRESET, AbortError, ENOTFOUND)' });
 });
 
 test('a lost reply body reports its network cause without retrying or exposing response text', async () => {
@@ -631,6 +631,12 @@ test('a lost reply body reports its network cause without retrying or exposing r
   assert.equal(attempts, 1, 'a lost reply may follow a committed write');
   const malformed = (async () => new Response('private invalid JSON response')) as typeof fetch;
   await assert.rejects(convexPoster('https://x.convex.cloud', malformed)('mutation', 'sync:saveSchedule', {}), { message: "Couldn't read the Convex reply (HTTP 200)" });
+  for (const name of ['TimeoutError', 'AbortError']) {
+    const timed = (async () => new Response(new ReadableStream({ start(c) {
+      c.error(new DOMException('private timeout details', name));
+    } }))) as typeof fetch;
+    await assert.rejects(convexPoster('https://x.convex.cloud', timed)('mutation', 'sync:saveSchedule', {}), { message: `Couldn't read the Convex reply (HTTP 200) (${name})` });
+  }
 });
 
 test('malformed network causes cannot replace the original failure with private text', async () => {

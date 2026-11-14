@@ -21,8 +21,9 @@ export function withNetworkCause(error: unknown): unknown {
       const item = pending[i];
       if (!item || typeof item !== 'object' || seen.has(item)) continue;
       seen.add(item);
-      const e = item as { code?: unknown; cause?: unknown; errors?: unknown };
+      const e = item as { code?: unknown; name?: unknown; cause?: unknown; errors?: unknown };
       if (typeof e.code === 'string' && NETWORK_CODES.has(e.code)) codes.add(e.code);
+      if (codes.size < 3 && (e.name === 'TimeoutError' || e.name === 'AbortError')) codes.add(e.name);
       if (e.cause) pending.push(e.cause);
       if (Array.isArray(e.errors)) pending.push(...e.errors.slice(0, 4));
     }

@@ -1009,9 +1009,9 @@ runs. If the run ends with nothing for you, the thread goes back into the
 archive, so a watcher you've put away only lands in your inbox when it has
 something you need to act on.
 
-Scheduled messages sent while a thread is busy go into its queue. Pausing,
-deleting or editing the schedule stops or changes future runs; it doesn't
-take back messages already queued, which keep the words they had when sent.
+If a scheduled message has already entered a busy thread's queue, pausing,
+deleting or editing its schedule doesn't take it back. It keeps the words
+it had when sent.
 
 If an update leaves a thread on the old runner while a command finishes,
 its scheduled messages can still start turns there. An old runner from before
