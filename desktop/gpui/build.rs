@@ -26,7 +26,7 @@ fn main() {
         cc::Build::new().file("native/media_views.m").flag("-fobjc-arc").flag("-Wno-deprecated-declarations").compile("threadbear_media_views");
         cc::Build::new().file("native/menu_icons.m").flag("-fobjc-arc").compile("threadbear_menu_icons");
         cc::Build::new().file("native/file_icons.m").flag("-fobjc-arc").compile("threadbear_file_icons");
-        let mut text = cc::Build::new(); text.file("native/text_selection.m").flag("-fobjc-arc").flag("-Wno-deprecated-declarations"); if std::env::var_os("CARGO_FEATURE_AUTOMATION").is_some() { text.define("TB_TEXT_TEST", None); } text.compile("threadbear_text_selection");
+        let mut text = cc::Build::new(); text.file("native/text_selection.m").flag("-fobjc-arc").flag("-fobjc-arc-exceptions").flag("-Wno-deprecated-declarations"); if std::env::var_os("CARGO_FEATURE_AUTOMATION").is_some() { text.define("TB_TEXT_TEST", None); } text.compile("threadbear_text_selection");
         // SwiftUI exposes the system Translate popover for custom content.
         // This small anchor has no editor; all text/replacement stays behind
         // the same frozen selection checks as Services. Link its static object

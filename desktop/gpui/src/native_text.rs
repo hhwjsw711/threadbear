@@ -302,7 +302,7 @@ mod mac {
         let handle=Window::window_handle(window);
         cx.spawn(async move|cx|{
             let shown=unsafe{tb_selection_writing(retained as *mut c_void)};
-            if !shown {let _=cx.update(|cx|handle.update(cx,|_,window,cx|window.push_notification("Writing Tools isn't available on this Mac.",cx)));}
+            if !shown {let _=cx.update(|cx|handle.update(cx,|_,window,cx|window.push_notification("Writing Tools couldn't open for this selection.",cx)));}
         }).detach();
     }
     pub(super) fn writing_tools_available()->bool {unsafe{tb_selection_writing_available()}}

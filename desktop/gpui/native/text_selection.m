@@ -51,7 +51,7 @@ static BOOL tb_plain_type(NSPasteboardType type) {
 }
 @end
 
-@interface TBSelectionProxy : NSResponder
+@interface TBSelectionProxy : NSResponder <NSMenuItemValidation>
 @property(nonatomic, weak) NSView *view;
 @property(nonatomic) uint64_t window;
 @property(nonatomic) uint64_t snapshot;
@@ -59,6 +59,17 @@ static BOOL tb_plain_type(NSPasteboardType type) {
 @property(nonatomic) BOOL editable;
 @end
 @implementation TBSelectionProxy
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+  NSView *view = self.view;
+  return item.action == @selector(copy:) && self.words.length && self.snapshot &&
+    view.window == NSApp.keyWindow && view.window.firstResponder == view;
+}
+- (void)copy:(id)sender {
+  id<NSServicesMenuRequestor> request = [self validRequestorForSendType:NSPasteboardTypeString returnType:nil];
+  if ([request conformsToProtocol:@protocol(NSServicesMenuRequestor)]) {
+    [request writeSelectionToPasteboard:NSPasteboard.generalPasteboard types:@[NSPasteboardTypeString]];
+  }
+}
 - (void)dealloc {
   uint64_t window = _window;
   if (NSThread.isMainThread) tb_services_closed(window);
@@ -131,9 +142,11 @@ bool tb_selection_services(void *retained, double x, double y) {
   return true;
 }
 
-// AppKit's limited, pasteboard-backed Writing Tools experience for custom
-// views. It uses the same frozen requestor as Services; no text view is
-// created and no result can bypass the Rust selection check.
+// AppKit adds its pasteboard-backed Writing Tools items to a view's native
+// contextual menu. Merely declaring showWritingTools: on NSResponder does
+// not implement that action on a custom NSView (GPUIView raises an exception).
+// Use the public context-menu path and the existing Services requestor:
+// https://developer.apple.com/documentation/appkit/supporting-writing-tools-via-the-pasteboard
 bool tb_selection_writing_available(void) {
   if (@available(macOS 15.2, *)) return NSWritingToolsCoordinator.isWritingToolsAvailable;
   return false;
@@ -141,8 +154,39 @@ bool tb_selection_writing_available(void) {
 bool tb_selection_writing(void *retained) {
   NSView *view = CFBridgingRelease(retained);
   if (!NSThread.isMainThread || !view.window || !tb_selection_writing_available()) return false;
-  if (@available(macOS 15.2, *)) { [view showWritingTools:nil]; return true; }
-  return false;
+  TBSelectionProxy *proxy = objc_getAssociatedObject(view, &TBSelectionProxyKey);
+  if (!proxy.words.length || !proxy.snapshot || view.window != NSApp.keyWindow || view.window.firstResponder != view) return false;
+  @try {
+    if ([view respondsToSelector:@selector(showWritingTools:)]) {
+      [view showWritingTools:nil];
+      return true;
+    }
+    NSMenu *menu = [NSMenu new];
+    NSMenuItem *copy = [[NSMenuItem alloc] initWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@""];
+    copy.target = proxy;
+    [menu addItem:copy];
+    NSPoint location = view.window.mouseLocationOutsideOfEventStream;
+    NSPoint inView = [view convertPoint:location fromView:nil];
+    if (!NSPointInRect(inView, view.bounds)) {
+      location = [view convertPoint:NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds)) toView:nil];
+    }
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:location modifierFlags:0
+      timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:view.window.windowNumber context:nil
+      eventNumber:0 clickCount:1 pressure:0];
+    NSMenu *previous = view.menu;
+    view.menu = menu;
+    @try {
+      [NSMenu popUpContextMenu:menu withEvent:event forView:view];
+    } @finally {
+      if (view.menu == menu) view.menu = previous;
+    }
+    return true;
+  } @catch (NSException *error) {
+    // An AppKit exception must never unwind across Rust's C ABI. Neither
+    // the selected words nor a provider's exception text goes in the log.
+    NSLog(@"Threadbear: Writing Tools could not open.");
+    return false;
+  }
 }
 
 bool tb_selection_translate_available(void) { if (@available(macOS 14.4, *)) return true; return false; }

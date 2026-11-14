@@ -86,6 +86,9 @@ jobs:
         run: node verify-pairing.mjs
       - name: Rust tests (with the mock runner)
         run: cargo test --manifest-path desktop/Cargo.toml
+      - name: Native text bridge contract
+        if: runner.os == 'macOS'
+        run: bash desktop/scripts/test-native-text.sh
       - name: File-drop regression tests
         run: cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation --test file_drop
       - name: Behaviour specs
