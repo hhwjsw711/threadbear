@@ -271,6 +271,8 @@ in the focused text box, or the selected words in a reply. Passwords and
 one-time codes stay out of these menus. A Service can replace an unchanged
 selection in a text box, and Undo restores it. Replies, picture selections,
 multiple cursors and an active input-method composition are copy-only.
+Control-Command-D looks up selected words. Writing Tools opens the Mac's
+native commands, including Show Writing Tools, Proofread and Rewrite.
 
 On Windows, file links and their hover cards only read local drives. A UNC
 share, mapped network drive or device path is refused, including through a
