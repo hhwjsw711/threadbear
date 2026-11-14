@@ -1,30 +1,26 @@
 // Encoding the scripted window's pixels, away from the app's thread.
 use image::{codecs::png::{CompressionType, FilterType, PngEncoder}, ImageEncoder, ImageFormat, RgbaImage};
-use std::io::{BufWriter, Write};
+use std::io::Cursor;
 use std::path::Path;
 
 pub(crate) fn save(image: &RgbaImage, path: &Path) -> Result<(), String> {
     let save = || -> Result<(), Box<dyn std::error::Error>> {
         let format = ImageFormat::from_path(path)?;
-        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-        let mut pending = tempfile::NamedTempFile::new_in(parent)?;
-        {
-            let mut writer = BufWriter::new(pending.as_file_mut());
-            if format == ImageFormat::Png {
-                // Adaptive filtering tries every filter for every row. In a
-                // debug app at background priority this took 30 seconds for
-                // one window (14 Nov), longer than the caller's timeout.
-                // Sub keeps all pixels and compresses UI's flat areas well.
-                PngEncoder::new_with_quality(&mut writer, CompressionType::Fast, FilterType::Sub)
-                    .write_image(image.as_raw(), image.width(), image.height(), image::ExtendedColorType::Rgba8)?;
-            } else {
-                image.write_to(&mut writer, format)?;
-            }
-            writer.flush()?;
+        let mut encoded = Cursor::new(Vec::new());
+        if format == ImageFormat::Png {
+            // Adaptive filtering tries every filter for every row. In a
+            // debug app at background priority this took 30 seconds for
+            // one window (14 Nov), longer than the caller's timeout.
+            // Sub keeps all pixels and compresses UI's flat areas well.
+            PngEncoder::new_with_quality(&mut encoded, CompressionType::Fast, FilterType::Sub)
+                .write_image(image.as_raw(), image.width(), image.height(), image::ExtendedColorType::Rgba8)?;
+        } else {
+            image.write_to(&mut encoded, format)?;
         }
-        // Publish only the finished image. An error leaves an older shot
-        // alone and still returns an error to this request's caller.
-        pending.persist(path)?;
+        // Finish encoding before opening the destination. Normal writes
+        // keep its permissions and write through symlinks and hard links;
+        // renaming a tempfile would replace links and reset permissions.
+        std::fs::write(path, encoded.into_inner())?;
         Ok(())
     };
     save().map_err(|e| e.to_string())
@@ -48,13 +44,13 @@ mod tests {
     }
 
     #[test]
-    fn an_old_screenshot_is_replaced_only_by_a_completed_save() {
+    fn a_codec_error_leaves_an_old_screenshot_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("window.png");
         std::fs::write(&path, b"old image").unwrap();
         save(&pixels(), &path).unwrap();
         assert_eq!(image::open(path).unwrap().to_rgba8(), pixels());
-        // JPEG cannot encode RGBA. A late encoder error must return an
+        // JPEG cannot encode RGBA. A codec error must return an
         // error and leave the old file alone, never make it look like a shot.
         let path = dir.path().join("window.jpg");
         std::fs::write(&path, b"old image").unwrap();
@@ -70,12 +66,56 @@ mod tests {
     }
 
     #[test]
-    fn a_publish_error_cleans_up_the_pending_image() {
+    fn a_write_error_does_not_leave_extra_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("window.png");
         std::fs::create_dir(&path).unwrap();
         assert!(save(&pixels(), &path).is_err());
         assert!(path.is_dir());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_shots_follow_the_umask_and_existing_shots_keep_their_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let control = dir.path().join("control");
+        std::fs::write(&control, b"normal file").unwrap();
+        let path = dir.path().join("window.png");
+        save(&pixels(), &path).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), mode(&control));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        save(&pixels(), &path).unwrap();
+        assert_eq!(mode(&path), 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shot_writes_through_a_symlink_even_when_its_target_is_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("served.png");
+        let link = dir.path().join("window.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        for _ in 0..2 {
+            save(&pixels(), &link).unwrap();
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(image::open(&target).unwrap().to_rgba8(), pixels());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shot_keeps_hard_links_pointing_at_the_updated_image() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("served.png");
+        let link = dir.path().join("window.png");
+        std::fs::write(&target, b"old image").unwrap();
+        std::fs::hard_link(&target, &link).unwrap();
+        save(&pixels(), &link).unwrap();
+        assert_eq!(std::fs::metadata(&target).unwrap().ino(), std::fs::metadata(&link).unwrap().ino());
+        assert_eq!(image::open(&target).unwrap().to_rgba8(), pixels());
     }
 }
