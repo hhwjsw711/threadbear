@@ -35,13 +35,10 @@ gpui-base = { path = "vendor/gpui-base" }
 gpui-pre = { path = "vendor/gpui-pre" }
 
 # Scripted screenshots run in debug apps, often at background priority. An
-# unoptimized PNG encode stalled the app for 30 seconds (14 Nov). Keep the
-# codecs fast in those builds too; the app itself stays easy to debug.
-[profile.dev.package.image]
-opt-level = 3
+# unoptimized PNG encode stalled the app for 30 seconds (14 Nov). Optimize
+# its filtering and CRC routines; generic encoding still uses the app's
+# debug settings, so the fixed filter and worker in automation matter too.
 [profile.dev.package.png]
-opt-level = 3
-[profile.dev.package.fdeflate]
 opt-level = 3
 [profile.dev.package.crc32fast]
 opt-level = 3
