@@ -85,16 +85,47 @@ if CGGetActiveDisplayList(32, &ids, &count) == .success {
   return execFileSync(displayer).toString().trim().split('\n').filter(Boolean).map((l) => l.split(' ').map(Number));
 }
 
-/** Process identities without arguments. Any failure to look throws. */
-export function executableProcesses(read = () => {
+// Python's standard-library FFI avoids compiling another Swift helper for
+// every guard. All input is PIDs, never command text or executable code.
+const macExecutablePaths = `import ctypes, os, sys
+lookup = ctypes.CDLL('/usr/lib/libproc.dylib').proc_pidpath
+lookup.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+lookup.restype = ctypes.c_int
+found = []
+for pid in map(int, sys.stdin.read().split()):
+    buf = ctypes.create_string_buffer(4096)
+    if lookup(pid, buf, len(buf)) > 0:
+        found.append(str(pid) + ' ' + os.fsdecode(buf.value))
+if not found:
+    raise RuntimeError('Could not read any executable paths')
+print('\\n'.join(found))
+`;
+
+/** Raw process identities for the guard and its live-reader tests. */
+export function processSnapshot(): string {
   // Linux exe can be hidden for another user's process; keep comm as a
-  // fallback there. macOS comm already gives the executable path.
+  // fallback there. On macOS comm follows argv[0], so also read the kernel
+  // name (ucomm) to catch an encoder launched with a different argv[0].
   const fields = process.platform === 'linux' ? ['exe', 'comm'] : ['comm'];
-  return fields.map(field => execFileSync('/bin/ps', [
+  if (process.platform === 'darwin') fields.push('ucomm');
+  let snapshot = fields.map(field => execFileSync('/bin/ps', [
     '-Aww', '-o', 'pid=', '-o', `${field}=`,
   ], { encoding: 'utf8' })).join('\n');
-}): { pid: number; name: string }[] {
-  // macOS comm and Linux exe give the executable path without arguments.
+  if (process.platform === 'darwin') {
+    // ucomm is truncated at 16 characters. Kernel paths also catch a long
+    // encoder basename when its argv[0] has been replaced. Inaccessible or
+    // exited PIDs keep their ps identities, as Linux's comm fallback does.
+    const pids = [...new Set(snapshot.split('\n').map(line => /^\s*(\d+)\s+/.exec(line)?.[1]).filter(Boolean))];
+    snapshot += '\n' + execFileSync('/usr/bin/python3', ['-I', '-c', macExecutablePaths], {
+      input: pids.join('\n'), encoding: 'utf8',
+    });
+  }
+  return snapshot;
+}
+
+/** Process identities without arguments. Any failure to look throws. */
+export function executableProcesses(read = processSnapshot): { pid: number; name: string }[] {
+  // Read identities without arbitrary command arguments.
   // pgrep -f matches script text carried by shells/caffeinate; without -f,
   // pgrep truncates names and can miss a long encoder name's ffmpeg suffix.
   const found: { pid: number; name: string }[] = [];

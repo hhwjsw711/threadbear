@@ -6,10 +6,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { executableProcesses, recording } from '../../../features/tools/real-screen.ts';
+import { executableProcesses, processSnapshot, recording } from '../../../features/tools/real-screen.ts';
 
 test('the real process reader sees this executable without its arguments', { skip: process.platform === 'win32' }, () => {
   assert.ok(executableProcesses().some(p => p.pid === process.pid && p.name === path.basename(process.execPath)));
+});
+
+test('macOS retains the kernel executable name when argv0 changes', { skip: process.platform !== 'darwin' }, async () => {
+  // Neutral names only: fake encoder names could block another Mac GUI job.
+  const child = spawn('/bin/sleep', ['10'], { argv0: 'tb-guard-alias', stdio: 'ignore' });
+  const exited = once(child, 'exit');
+  try {
+    await once(child, 'spawn');
+    const snapshot = processSnapshot();
+    const names = executableProcesses(() => snapshot).filter(p => p.pid === child.pid).map(p => p.name);
+    assert.ok(names.includes('tb-guard-alias'), 'the launch name is missing');
+    assert.ok(names.includes('sleep'), 'argv0 hid the kernel executable name');
+    assert.match(snapshot, new RegExp(`^\\s*${child.pid} /bin/sleep$`, 'm'), 'the full kernel path is missing');
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await exited;
+  }
 });
 
 test('script text mentioning ffmpeg does not make its wrapper a recording', { skip: process.platform === 'win32' }, async () => {
@@ -73,30 +90,32 @@ test('executable basenames preserve long variants and ignore directory names', (
 `)), '10 ffmpeg\n11 tb-screen-record-ffmpeg\n12 FFmpeg-static\n15 ffmpeg-static-rebuild\n16 ffmpeg');
 });
 
-test('encoder executables and variants still block input', {
-  skip: process.platform !== 'linux' || process.env.THREADBEAR_FAKE_ENCODERS !== '1',
+test('encoder executables and variants still block input with default and renamed argv0', {
+  skip: process.platform !== 'linux',
 }, async () => {
-  // Opt in only in a standalone cloud run: fake names must not compete with
-  // GUI tools on Mike's Macs or other files in a parallel unit suite.
+  // Linux checks run on cloud. Macs use the neutral identity test above
+  // so fake encoder names never compete with their real GUI jobs.
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-recording-'));
   try {
     for (const name of ['ffmpeg', 'ffmpeg-static', 'ffmpeg7', 'FFmpeg', 'custom-ffmpeg', 'tb-screen-record-ffmpeg']) {
       const binary = path.join(folder, name);
       fs.copyFileSync('/bin/sleep', binary);
-      const child = spawn(binary, ['5'], { stdio: 'ignore' });
-      const exited = once(child, 'exit');
-      try {
-        await once(child, 'spawn');
-        let matches: number[] = [];
-        for (let i = 0; i < 50; i++) {
-          matches = recording().split('\n').map(line => Number(line.split(/\s+/)[0]));
-          if (matches.includes(child.pid!)) break;
-          await sleep(10);
+      for (const argv0 of [undefined, 'tb-encoder-alias']) {
+        const child = spawn(binary, ['5'], { argv0, stdio: 'ignore' });
+        const exited = once(child, 'exit');
+        try {
+          await once(child, 'spawn');
+          let matches: number[] = [];
+          for (let i = 0; i < 50; i++) {
+            matches = recording().split('\n').map(line => Number(line.split(/\s+/)[0]));
+            if (matches.includes(child.pid!)) break;
+            await sleep(10);
+          }
+          assert.ok(matches.includes(child.pid!), `${name} (${argv0 ?? 'default argv0'}) was not detected`);
+        } finally {
+          if (child.exitCode === null && child.signalCode === null) child.kill();
+          await exited;
         }
-        assert.ok(matches.includes(child.pid!), `${name} was not detected`);
-      } finally {
-        if (child.exitCode === null && child.signalCode === null) child.kill();
-        await exited;
       }
     }
   } finally { fs.rmSync(folder, { recursive: true, force: true }); }

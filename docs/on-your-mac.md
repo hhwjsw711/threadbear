@@ -308,6 +308,9 @@ File references are where to look.
   (`desktop/scripts/remote.sh`). Remote commands and performance tools keep
   `~/.cache/threadbear-perf.lock` and `~/.cache/threadbear-check/lock` on the
   host while they run, waiting for other builds, checks and measurements.
+  Real-input test tools read process names with `ps` and, on macOS,
+  executable paths through system Python's `ctypes` and `libproc`. They use
+  those names to refuse input while an ffmpeg encoder is running.
   Automatic update builds try both locks without waiting, and leave a host
   with live measurement waiters alone. A busy host makes the app try again
   at a later look, reading the latest main then; a build already running
