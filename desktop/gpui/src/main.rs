@@ -18,7 +18,7 @@ mod app_update;
 mod automation;
 #[cfg(feature = "automation")]
 mod automation_compat;
-#[cfg(feature = "automation")]
+#[cfg(any(test, feature = "automation"))]
 mod automation_screenshot;
 mod chips;
 mod colour_space;
