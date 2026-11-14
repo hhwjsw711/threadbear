@@ -18,6 +18,8 @@ mod app_update;
 mod automation;
 #[cfg(feature = "automation")]
 mod automation_compat;
+#[cfg(feature = "automation")]
+mod automation_screenshot;
 mod chips;
 mod colour_space;
 mod composer_media;

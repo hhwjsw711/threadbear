@@ -257,6 +257,19 @@ async fn run(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &Value,
     } else {
         window
     };
+    if cmd["cmd"] == "screenshot" {
+        let path = std::path::PathBuf::from(text(cmd, "path"));
+        let image = cx.update_window(window, |_, window, cx| {
+            // A covered window gets no system frames. Draw its latest state
+            // before reading the pixels, including pictures just loaded.
+            window.render_frame(cx);
+            window.render_to_image().map_err(|e| e.to_string())
+        }).map_err(|e| e.to_string())??;
+        // Encoding and disk writes must not stall the app's thread. Await
+        // the save so the socket replies only when this shot is complete.
+        cx.background_executor().spawn(async move { crate::automation_screenshot::save(&image, &path) }).await?;
+        return Ok(json!("ok"));
+    }
     // The first-run tour (tour.rs): {"do": "start"|"next"|"back"|"end"|"pools"},
     // or nothing to read where it's at. Says the step, its title and what it
     // lights up, once the card and the spotlight have had their move.
@@ -1050,16 +1063,6 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         }
         // The colour space the window's drawn in (colour_space.rs): "sRGB" once tagged.
         "colour-space" => Ok(json!(crate::colour_space::describe(window))),
-        "screenshot" => {
-            let path = text(cmd, "path");
-            // A fresh frame first, as `dump` draws one: a covered window gets
-            // no frames from the system, so a picture that's finished loading
-            // since the last one (a project's icon) was missing from the shot.
-            window.render_frame(cx);
-            let image = window.render_to_image().map_err(|e| e.to_string())?;
-            image.save(path).map_err(|e| e.to_string())?;
-            Ok(json!("ok"))
-        }
         other => Err(format!("unknown command {other:?}")),
     }
 }
