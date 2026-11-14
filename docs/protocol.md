@@ -5402,7 +5402,12 @@ kept in `schedules.json` in the data dir.
   process that has gone) changes nothing but the claim. A runner key's
   schedule keeps 400 bytes of its 16 KB for that run record. Making, changing and
   deleting go straight to the backend and answer once it has them; with
-  no backend reachable they fail with `-32000` saying so. Nothing fires
+  no backend reachable they fail with `-32000` saying so. A transport
+  failure includes known network error codes from its causes (for example
+  `ECONNRESET`), without copying cause messages, addresses or request data.
+  Saves are not retried automatically: a lost reply may follow a committed
+  write. Pausing, deleting or editing a schedule leaves messages already accepted
+  into a busy thread's queue as they were when sent. Nothing fires
   without the backend. After a failed first heartbeat, the runner retries
   after 1 second, doubling the delay up to a minute until it hears the
   backend, so a brief startup outage doesn't hold schedules for a minute.

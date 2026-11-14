@@ -562,6 +562,61 @@ test('the poster never follows a redirect, so the key never goes to another host
   }
 });
 
+test('the poster keeps safe network cause codes and never retries a failed save', async () => {
+  let attempts = 0;
+  const cause = Object.assign(new Error('connect private.example:443 with secret-value'), { code: 'ECONNRESET', address: '192.0.2.1' });
+  const failure = new TypeError('fetch failed', { cause });
+  const fake = (async () => { attempts++; throw failure; }) as typeof fetch;
+  await assert.rejects(convexPoster('https://x.convex.cloud', fake)('mutation', 'sync:saveSchedule', { key: 'secret-key', schedule: { text: 'private continuation' } }), (e: Error) => {
+    assert.equal(e.message, 'fetch failed (ECONNRESET)');
+    assert.equal(e.cause, failure);
+    assert.equal(String(e), 'Error: fetch failed (ECONNRESET)');
+    return true;
+  });
+  assert.equal(attempts, 1);
+});
+
+test('the poster reports aggregate network codes, with bounded traversal and no arbitrary cause text', async () => {
+  const nested = Object.assign(new Error('private cause'), { code: 'ETIMEDOUT' });
+  const aggregate = new AggregateError([
+    nested,
+    { code: 'ECONNREFUSED', message: 'private host' },
+    { code: 'ETIMEDOUT' },
+    { code: 'SECRET_VALUE' },
+  ], 'private aggregate');
+  const failure = new TypeError('fetch failed', { cause: aggregate });
+  Object.assign(nested, { cause: failure });
+  const fake = (async () => { throw failure; }) as typeof fetch;
+  await assert.rejects(convexPoster('https://x.convex.cloud', fake)('mutation', 'sync:saveSchedule', { key: 'secret-key' }), { message: 'fetch failed (ETIMEDOUT, ECONNREFUSED)' });
+});
+
+test('the poster preserves failures without known network codes and backend refusal data', async () => {
+  for (const failure of [new TypeError('fetch failed'), new Error('fetch failed', { cause: { code: 'SECRET_VALUE', message: 'private' } })]) {
+    const fake = (async () => { throw failure; }) as typeof fetch;
+    await assert.rejects(convexPoster('https://x.convex.cloud', fake)('mutation', 'sync:saveSchedule', {}), (e) => e === failure);
+  }
+  const fake = (async () => new Response(JSON.stringify({ status: 'error', errorMessage: 'Not allowed', errorData: { kind: 'forbidden' } }))) as typeof fetch;
+  await assert.rejects(convexPoster('https://x.convex.cloud', fake)('mutation', 'sync:saveSchedule', {}), (e: Error & { data?: unknown }) => {
+    assert.equal(e.message, 'Not allowed');
+    assert.deepEqual(e.data, { kind: 'forbidden' });
+    return true;
+  });
+});
+
+test('network diagnostics stop at a bounded cause depth and code count', async () => {
+  let cause: unknown = { code: 'ECONNRESET' };
+  for (let i = 0; i < 20; i++) cause = { cause };
+  const deep = new TypeError('fetch failed', { cause });
+  const fake = (async () => { throw deep; }) as typeof fetch;
+  await assert.rejects(convexPoster('https://x.convex.cloud', fake)('query', 'sync:runnersList', {}), (e) => e === deep);
+
+  const many = new TypeError('fetch failed', { cause: new AggregateError([
+    { code: 'ECONNRESET' }, { code: 'ENOTFOUND' }, { code: 'ETIMEDOUT' }, { code: 'EPIPE' },
+  ]) });
+  const several = (async () => { throw many; }) as typeof fetch;
+  await assert.rejects(convexPoster('https://x.convex.cloud', several)('query', 'sync:runnersList', {}), { message: 'fetch failed (ECONNRESET, ENOTFOUND, ETIMEDOUT)' });
+});
+
 test('the poster refuses a URL that would send the key in the clear, before any fetch', async () => {
   let fetched = 0;
   const fake = (async () => {

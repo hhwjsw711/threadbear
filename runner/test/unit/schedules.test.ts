@@ -9,7 +9,7 @@ import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
 import { ErrorCode, RpcError } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
 import { readRunnerJson } from '../../src/config.ts';
-import { toOwnedScheduleDoc, SCHEDULE_POOLS_API_VERSION } from '../../src/sync.ts';
+import { convexPoster, toOwnedScheduleDoc, SCHEDULE_POOLS_API_VERSION } from '../../src/sync.ts';
 import { keptCheckFile } from '../../src/schedule-check.ts';
 import { scheduledSendMethods, sendScheduled } from '../../src/handover.ts';
 import { DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS } from '../../src/runner.ts';
@@ -1290,6 +1290,31 @@ test('with the backend out of reach, changes fail and say so', async () => {
   b.setDown(true);
   await assert.rejects(sched.create({ text: 'x', cron: '@daily' }), /Couldn't save the schedule to the backend: fetch failed/);
   assert.equal(sched.list().length, 0);
+  sched.stop();
+});
+
+test('a failed schedule update reports the network cause and keeps the old definition', async () => {
+  const h = makeHarness();
+  const b = fakeBackend(h.clock, [M5]);
+  const sched = backendScheduler(h);
+  const be = b.for('m5', M5.id);
+  let down = false;
+  let attempts = 0;
+  const fake = (async () => {
+    attempts++;
+    throw new TypeError('fetch failed', { cause: Object.assign(new Error('private connection details'), { code: 'ENOTFOUND' }) });
+  }) as typeof fetch;
+  const post = convexPoster('https://x.convex.cloud', fake);
+  await sched.attach({ ...be, save: async (sc) => {
+    if (down) await post('mutation', 'sync:saveSchedule', { key: 'secret-key', schedule: sc });
+    else await be.save(sc);
+  } });
+  const sc = await sched.create({ text: 'Old continuation', title: 'Old title', cron: '@daily' });
+  down = true;
+  await assert.rejects(sched.update({ scheduleId: sc.id, title: 'New title', text: 'New continuation' }), /Couldn't save the schedule to the backend: fetch failed \(ENOTFOUND\)/);
+  assert.equal(attempts, 1);
+  assert.equal(sched.find(sc.id).title, 'Old title');
+  assert.equal(b.rows.get(sc.id)?.text, 'Old continuation');
   sched.stop();
 });
 

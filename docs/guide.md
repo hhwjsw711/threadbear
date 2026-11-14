@@ -1009,6 +1009,10 @@ runs. If the run ends with nothing for you, the thread goes back into the
 archive, so a watcher you've put away only lands in your inbox when it has
 something you need to act on.
 
+If the thread is busy, a scheduled message waits in its queue. Pausing,
+deleting or editing the schedule stops or changes future runs; messages already queued
+keep the words they had when sent.
+
 If an update leaves a thread on the old runner while a command finishes,
 its scheduled messages can still start turns there. An old runner from before
 this feature was added may have to finish moving the thread before its next
