@@ -617,6 +617,36 @@ test('network diagnostics stop at a bounded cause depth and code count', async (
   await assert.rejects(convexPoster('https://x.convex.cloud', several)('query', 'sync:runnersList', {}), { message: 'fetch failed (ECONNRESET, ENOTFOUND, ETIMEDOUT)' });
 });
 
+test('a lost reply body reports its network cause without retrying or exposing response text', async () => {
+  let attempts = 0;
+  const failure = new TypeError('terminated', { cause: Object.assign(new Error('private host details'), { code: 'UND_ERR_SOCKET' }) });
+  const fake = (async () => {
+    attempts++;
+    return new Response(new ReadableStream({ start(c) {
+      c.enqueue(new TextEncoder().encode('private response text'));
+      c.error(failure);
+    } }));
+  }) as typeof fetch;
+  await assert.rejects(convexPoster('https://x.convex.cloud', fake)('mutation', 'sync:saveSchedule', { key: 'secret-key' }), { message: "Couldn't read the Convex reply (HTTP 200) (UND_ERR_SOCKET)" });
+  assert.equal(attempts, 1, 'a lost reply may follow a committed write');
+  const malformed = (async () => new Response('private invalid JSON response')) as typeof fetch;
+  await assert.rejects(convexPoster('https://x.convex.cloud', malformed)('mutation', 'sync:saveSchedule', {}), { message: "Couldn't read the Convex reply (HTTP 200)" });
+});
+
+test('malformed network causes cannot replace the original failure with private text', async () => {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  for (const cause of [
+    { get code() { throw new Error('private getter text'); } },
+    { errors: proxy },
+    { errors: Object.assign([], { slice() { throw new Error('private slice text'); } }) },
+  ]) {
+    const failure = new TypeError('fetch failed', { cause });
+    const fake = (async () => { throw failure; }) as typeof fetch;
+    await assert.rejects(convexPoster('https://x.convex.cloud', fake)('mutation', 'sync:saveSchedule', {}), (e) => e === failure);
+  }
+});
+
 test('the poster refuses a URL that would send the key in the clear, before any fetch', async () => {
   let fetched = 0;
   const fake = (async () => {

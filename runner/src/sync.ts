@@ -727,7 +727,11 @@ export function convexPoster(url: string, fetchFn: typeof fetch = fetch): Post {
       redirect: 'error',
       signal: AbortSignal.timeout(POST_TIMEOUT_MS),
     }).catch((e: unknown) => { throw withNetworkCause(e); });
-    const body = (await res.json().catch(() => undefined)) as { status?: string; value?: unknown; errorMessage?: string; errorData?: unknown } | undefined;
+    const body = (await res.json().catch((e: unknown) => {
+      // A write may already have committed. Keep the read failure useful
+      // without copying JSON parser snippets from the private response.
+      throw withNetworkCause(new Error(`Couldn't read the Convex reply (HTTP ${res.status})`, { cause: e }));
+    })) as { status?: string; value?: unknown; errorMessage?: string; errorData?: unknown } | undefined;
     if (!res.ok || !body || body.status !== 'success') {
       // A ConvexError's data (`{ kind, message }`), as the Convex client
       // keeps it, so forbiddenText can tell a runner key's refusal.
