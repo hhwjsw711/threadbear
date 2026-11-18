@@ -245,6 +245,7 @@ export class Scheduler {
   // Threads a draining runner still has (docs/protocol/updates.md, "Handovers"):
   // they're real threads, just not loaded here yet.
   private elsewhere: (threadId: string) => boolean;
+  private moving: (threadId: string) => string | undefined;
   private folderElsewhere?: (threadId: string) => string | undefined;
   private sendElsewhere?: (threadId: string, text: string, scheduleId: string, run: string, since: number, preserve?: boolean, ceiling?: PermissionMode) => Promise<{ turnId: string }>;
   private accessElsewhere?: (threadId: string) => PermissionMode | undefined;
@@ -318,6 +319,8 @@ export class Scheduler {
     // way in that would make, change or run one throws this, and nothing
     // here ever arms a timer, runs a check or touches schedules.json.
     refuse?: string;
+    // Where a move of the thread has got to (moves.ts MoveState), while it's moving from here.
+    moving?: (threadId: string) => string | undefined;
   }) {
     this.refuse = deps.refuse;
     this.runner = deps.runner;
@@ -332,6 +335,7 @@ export class Scheduler {
     this.savedModeElsewhere = deps.savedModeElsewhere;
     this.dropElsewhere = deps.dropElsewhere;
     this.ceilingsFile = path.join(deps.home, 'schedule-ceilings.json');
+    this.moving = deps.moving ?? (() => undefined);
     this.file = path.join(deps.home, 'schedules.json');
     this.runsDir = path.join(deps.home, 'schedule-runs');
     this.clock = deps.clock;
@@ -851,6 +855,21 @@ export class Scheduler {
       });
   }
 
+  // Frozen for a move (waiting for its turn, packed or on its way): a run
+  // now would queue a message the bundle may already have been made
+  // without, and a once-only one would finish, so the pack leaves it out.
+  // It waits, and runs where the thread ends up (or here, if the move fails).
+  private frozenForMove(threadId: string | undefined): boolean {
+    const state = threadId ? this.moving(threadId) : undefined;
+    return state === 'ready' || state === 'packing' || state === 'unpacking' || state === 'claimed' || state === 'done';
+  }
+
+  // Packed already: a new one to it couldn't go with it.
+  private refusePacked(threadId: string): void {
+    const state = this.moving(threadId);
+    if (state === 'packing' || state === 'unpacking' || state === 'claimed' || state === 'done') throw new RpcError(ErrorCode.busy, "That thread is moving to another runner and has been packed already, so a schedule made now wouldn't go with it. Make it once the move is done.");
+  }
+
   /** What a move of this thread carries: this runner's schedules to it still to run. With the main key, list shows other runners' too, and one of those can be the copy the runner it went to has just made (18 Nov). */
   forMove(threadId: string): Schedule[] {
     return this.list(threadId).filter((s) => s.threadId === threadId && !s.finishedAt && this.mine(s));
@@ -920,6 +939,7 @@ export class Scheduler {
     if (p.threadId) {
       // Throws thread not found for a bad id.
       rec.threadId = this.elsewhere(p.threadId) ? p.threadId : this.runner.get(p.threadId).id;
+      this.refusePacked(rec.threadId);
     } else if (away) {
       // Its folder and account are that runner's, checked there when it
       // runs; no folder means its default.
@@ -1132,6 +1152,7 @@ export class Scheduler {
 
   private async runNowOnce(scheduleId: string, by: PermissionMode): Promise<{ schedule: Schedule; threadId?: string; turnId?: string; queued?: boolean }> {
     const rec = this.mustGet(scheduleId);
+    if (this.mine(rec) && this.frozenForMove(rec.threadId)) throw new RpcError(ErrorCode.busy, 'That thread is moving to another runner; this runs once the move is done.');
     if (!this.mine(rec)) {
       const at = this.iso();
       const ok = await this.mustHaveBackend()
@@ -1395,7 +1416,7 @@ export class Scheduler {
     this.bindAllOld();
     for (const rec of [...this.items.values()]) {
       if (rec.paused || !rec.nextRunAt || Date.parse(rec.nextRunAt) > now) continue;
-      if (this.checking.has(rec.id)) continue;
+      if (this.checking.has(rec.id) || this.frozenForMove(rec.threadId)) continue;
       // Keep a run in flight through its send too: a handover's RPC is
       // asynchronous, and a new tick mustn't send the same local slot again.
       this.checking.add(rec.id);
@@ -1471,7 +1492,7 @@ export class Scheduler {
           continue;
         }
         if (this.hasUnrecorded(rec.id)) await this.recordRuns(rec.id);
-        if (rec.runRequestedAt) {
+        if (rec.runRequestedAt && !this.frozenForMove(rec.threadId)) {
           if (rec.threadId && this.elsewhere(rec.threadId)) {
             this.dispatching.add(rec.id);
             void this.runRequested(backend, rec).catch((e) => this.log.warn('could not finish a requested schedule run', { scheduleId: rec.id, error: String(e) }))
@@ -1481,6 +1502,7 @@ export class Scheduler {
           await this.runRequested(backend, rec);
         }
         if (rec.paused || !rec.nextRunAt || Date.parse(rec.nextRunAt) > now) continue;
+        if (this.frozenForMove(rec.threadId)) continue;
         if (this.slotRan(rec.id, rec.nextRunAt) || this.ranElsewhere(rec.id, (r) => r.slot === rec.nextRunAt)) continue;
         const due = rec.nextRunAt;
         const claimed = await backend.claim(rec.id, 'due', due).catch((e) => {

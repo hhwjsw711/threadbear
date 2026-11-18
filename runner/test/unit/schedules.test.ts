@@ -2313,3 +2313,32 @@ test("a moved thread's schedules: only this runner's are packed and put away, an
   assert.deepEqual(dropped.map((s) => s.id), [late.id], "one that didn't travel is said, not dropped silently");
   sched.stop();
 });
+
+// Codex's review of that fix: a run due while the thread is frozen for its
+// move queued on the frozen thread after the pack, and a once-only one
+// finished, so neither the message nor the schedule went. And one made
+// after the pack was deleted with the thread.
+for (const backend of [false, true]) test(`a schedule waits while its thread is frozen for a move, and none can be made once it's packed (${backend ? 'backend' : 'local'})`, async () => {
+  const h = makeHarness();
+  const { thread, s } = idleThread(h);
+  let state: string | undefined = 'packing';
+  const sched = new Scheduler({ runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, zone: () => 'UTC', self: LAPTOP, syncOn: backend, moving: (id) => (id === thread.id ? state : undefined) });
+  sched.start();
+  if (backend) { await sched.attach(fakeBackend(h.clock, [LAPTOP]).for('primary', LAPTOP.id)); await tick(6); }
+  state = 'asking';
+  const sc = await sched.create({ text: 'Check the move', at: new Date(h.clock.now() + 5 * MIN).toISOString(), threadId: thread.id });
+  state = 'packing';
+  await assert.rejects(sched.create({ text: 'Too late', at: new Date(h.clock.now() + 5 * MIN).toISOString(), threadId: thread.id }), /packed already/);
+  const sentBefore = s.sent.length;
+  h.clock.advance(6 * MIN);
+  await tick(8);
+  assert.equal(s.sent.length, sentBefore, 'nothing sent to a frozen thread');
+  assert.deepEqual(sched.forMove(thread.id).map((x) => x.id), [sc.id], 'still there to be packed');
+  await assert.rejects(sched.runNow(sc.id), /moving/);
+  // The move failed: it runs here after all.
+  state = 'failed';
+  h.clock.advance(2 * MIN);
+  await tick(8);
+  assert.equal(s.sent.length, sentBefore + 1);
+  sched.stop();
+});

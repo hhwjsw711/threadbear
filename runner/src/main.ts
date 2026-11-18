@@ -694,6 +694,7 @@ async function main(): Promise<void> {
     },
     savedModeElsewhere: (id) => peers.find(id)?.permissionMode,
     dropElsewhere: (id, scheduleId) => dropScheduled(runner, peers, id, scheduleId),
+    moving: (id) => runner.threads.get(id)?.rt.moving?.state,
     self: { id: syncRunnerId, name: cfg.sync.name ?? defaultRunnerName(), icon: runnerIcon, version: RUNNER_VERSION, release: RELEASE.release, startedAt },
     syncOn: Boolean(cfg.sync.enabled && cfg.sync.url && readSyncKey(cfg.home)),
     // A box keeps none (decision 13): every way to make, change or run one is refused.
@@ -1810,7 +1811,12 @@ async function main(): Promise<void> {
         // later pauses them for Mike.
         const here = ceilingMode(runner.authoritySaved(row.threadId).mode);
         for (const { ceiling: there, ...sc } of r.schedules ?? []) {
-          await scheduler.create({ ...sc, threadId: row.threadId, ceiling: there ? lowerMode(there, here) : here }).catch((e) => log.warn("couldn't make a moved thread's schedule again", { threadId: row.threadId, error: String(e) }));
+          await scheduler.create({ ...sc, threadId: row.threadId, ceiling: there ? lowerMode(there, here) : here }).catch((e) => {
+            log.warn("couldn't make a moved thread's schedule again", { threadId: row.threadId, error: String(e) });
+            // Its runner has deleted it by now: said in the thread, not only the log (18 Nov).
+            const when = sc.cron ? `cron ${sc.cron}` : `at ${sc.at}`;
+            runner.note(row.threadId, `A schedule didn't come across with the move: "${sc.title ?? sc.text.slice(0, 80)}" (${when}). ${(e as Error).message ?? e} Make it again here if it's still wanted.`);
+          });
         }
       },
       discard: (row) => runner.discardMove(row),
