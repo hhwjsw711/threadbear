@@ -886,7 +886,8 @@ export class Scheduler {
     const left: Schedule[] = [];
     for (const sc of this.list(threadId).filter((s) => s.threadId === threadId && this.mine(s))) {
       if (carried && !carried.has(sc.id) && !sc.finishedAt) left.push(sc);
-      await this.delete(sc.id).catch((e) => this.log.warn("couldn't delete a moved thread's schedule", { scheduleId: sc.id, error: String(e) }));
+      const rec = this.items.get(sc.id);
+      if (rec) await this.deleteRecord(rec).catch((e) => this.log.warn("couldn't delete a moved thread's schedule", { scheduleId: sc.id, error: String(e) }));
     }
     if (left.length) this.log.warn("a moved thread's schedules made after it was packed stayed behind and were deleted", { threadId, scheduleIds: left.map((s) => s.id) });
     return left;
@@ -970,6 +971,15 @@ export class Scheduler {
     // Before it's saved, so its first run can't come without it.
     if (rec.threadId) this.setCeiling(rec, p.ceiling ?? (p.createdBy === undefined ? 'full' : p.createdBy === rec.threadId ? (this.savedMode(rec.threadId) ?? 'ask') : 'ask'));
     await this.put(rec);
+    // Packed while the save was out: it isn't in the bundle, so it doesn't stay.
+    if (rec.threadId && this.mine(rec)) {
+      try {
+        this.refusePacked(rec.threadId);
+      } catch (e) {
+        await this.deleteRecord(rec).catch(() => undefined);
+        throw e;
+      }
+    }
     // An `at` that's already passed runs now rather than on the next tick.
     this.tick();
     return this.view(this.items.get(rec.id) ?? rec);
@@ -990,6 +1000,8 @@ export class Scheduler {
   private async updateNow(p: UpdateScheduleParams): Promise<Schedule> {
     // A copy, so a write the backend turns down changes nothing here.
     const rec: ScheduleRecord = structuredClone(this.mustGet(p.scheduleId));
+    // The bundle has it as it was: a change now wouldn't go with it.
+    if (rec.threadId && this.mine(rec)) this.refusePacked(rec.threadId);
     if (p.ifCheck !== undefined && rec.check !== p.ifCheck) throw bad("The schedule's check changed while the approval card was up, so nothing changed. Look at it again and ask again.");
     const away = !this.mine(rec);
     let replan = false;
@@ -1095,6 +1107,11 @@ export class Scheduler {
   async delete(scheduleId: string): Promise<Record<string, never>> {
     this.refused();
     const rec = this.mustGet(scheduleId);
+    if (rec.threadId && this.mine(rec)) this.refusePacked(rec.threadId);
+    return this.deleteRecord(rec);
+  }
+
+  private async deleteRecord(rec: ScheduleRecord): Promise<Record<string, never>> {
     if (this.mode === 'backend') {
       try {
         await this.mustHaveBackend().remove(rec.id);
@@ -1426,7 +1443,7 @@ export class Scheduler {
           this.dropKept(rec.id);
           return;
         }
-        if (checked === 'later') return;
+        if (checked === 'later' || this.frozenForMove(rec.threadId)) return;
         const slot = rec.nextRunAt;
         const res = await this.send(rec, false, checked);
         if (res.outcome === 'retry') return;
@@ -1538,6 +1555,11 @@ export class Scheduler {
         // check changed meanwhile, it isn't sent (Codex's review).
         const sending = this.stillDue(backend, rec, due);
         if (!sending) continue;
+        // Frozen for a move while its check ran: it waits (frozenForMove).
+        if (this.frozenForMove(sending.threadId)) {
+          await this.release(backend, rec.id);
+          continue;
+        }
         // Checked in one folder with one command: either changed, its
         // result isn't this run's (Codex's review).
         if (sending.check !== checkedAs.command || (sending.check && this.checkFolder(sending) !== checkedAs.folder)) {

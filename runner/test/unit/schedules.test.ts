@@ -2335,6 +2335,8 @@ for (const backend of [false, true]) test(`a schedule waits while its thread is 
   assert.equal(s.sent.length, sentBefore, 'nothing sent to a frozen thread');
   assert.deepEqual(sched.forMove(thread.id).map((x) => x.id), [sc.id], 'still there to be packed');
   await assert.rejects(sched.runNow(sc.id), /moving/);
+  await assert.rejects(sched.update({ scheduleId: sc.id, paused: true }), /packed already/, "a change wouldn't go with it");
+  await assert.rejects(sched.delete(sc.id), /packed already/);
   // The move failed: it runs here after all.
   state = 'failed';
   h.clock.advance(2 * MIN);
