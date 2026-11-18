@@ -851,6 +851,28 @@ export class Scheduler {
       });
   }
 
+  /** What a move of this thread carries: this runner's schedules to it still to run. With the main key, list shows other runners' too, and one of those can be the copy the runner it went to has just made (18 Nov). */
+  forMove(threadId: string): Schedule[] {
+    return this.list(threadId).filter((s) => s.threadId === threadId && !s.finishedAt && this.mine(s));
+  }
+
+  /**
+   * Once a moved thread is the other runner's: deletes this runner's
+   * schedules to it, never another runner's (its own copies, made again
+   * when it took the thread). Returns those that weren't in `carried`
+   * (made after the pack), which are logged; with no `carried` (a restart
+   * since the pack), nothing is known to be missing.
+   */
+  async dropMoved(threadId: string, carried?: ReadonlySet<string>): Promise<Schedule[]> {
+    const left: Schedule[] = [];
+    for (const sc of this.list(threadId).filter((s) => s.threadId === threadId && this.mine(s))) {
+      if (carried && !carried.has(sc.id) && !sc.finishedAt) left.push(sc);
+      await this.delete(sc.id).catch((e) => this.log.warn("couldn't delete a moved thread's schedule", { scheduleId: sc.id, error: String(e) }));
+    }
+    if (left.length) this.log.warn("a moved thread's schedules made after it was packed stayed behind and were deleted", { threadId, scheduleIds: left.map((s) => s.id) });
+    return left;
+  }
+
   find(idOrPrefix: string): Schedule {
     return this.view(this.mustGet(idOrPrefix));
   }

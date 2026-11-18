@@ -886,14 +886,14 @@ async function main(): Promise<void> {
   // Set once moves are made, further down; sync leaves out what's moved away.
   let movesRef: Moves | undefined;
   // A thread here, as a move's other runner needs to know it (moves.ts).
-  const describeMove = (id: string) => runner.describeForMove(id, scheduler.list(id).filter((sc) => sc.threadId === id && !sc.finishedAt).length);
+  const describeMove = (id: string) => runner.describeForMove(id, scheduler.forMove(id).length);
   // For a preview: that, and what this runner would leave behind, which only
   // it can tell. The target's moveInfoFrom drops the extra field.
   const describeMovePreview = async (id: string) => {
     const info = await describeMove(id);
     if (!info) return info;
     const leftBehind = await runner.leftBehindByMove(id);
-    if (scheduler.list(id).some((sc) => sc.threadId === id && !sc.finishedAt && sc.check)) leftBehind.push("its schedules' shell checks");
+    if (scheduler.forMove(id).some((sc) => sc.check)) leftBehind.push("its schedules' shell checks");
     return { ...info, leftBehind };
   };
   // Shared memory (memory-sync.ts, the sharedMemory experiment): the main
@@ -1755,6 +1755,9 @@ async function main(): Promise<void> {
   // id threads.move takes (moves.ts MovePreviews; docs/protocol/moves.md,
   // "Preview binding").
   const previews = new MovePreviews();
+  // The schedules each pack carried, so putting the thread away can say which
+  // were made after it and didn't go.
+  const packedSchedules = new Map<string, Set<string>>();
   const moves = (movesRef = new Moves({
     self: () => syncRunnerId,
     backend: () => sync.movesBackend(),
@@ -1781,14 +1784,18 @@ async function main(): Promise<void> {
       has: (id) => runner.threads.has(id),
       async pack(id, row) {
         const packed = await runner.packForMove(id, row);
-        const keep = scheduler.list(id).filter((sc) => sc.threadId === id && !sc.finishedAt);
+        const keep = scheduler.forMove(id);
+        packedSchedules.set(id, new Set(keep.map((sc) => sc.id)));
         if (keep.some((sc) => sc.check)) packed.leftBehind.push("Its schedules' shell checks stayed behind: set them again here if they're still wanted.");
         const carried = keep.map((sc) => ({ text: sc.text, title: sc.title, ...(sc.cron ? { cron: sc.cron } : { at: sc.at }), ...(sc.timezone ? { timezone: sc.timezone } : {}), ...(sc.paused ? { paused: true } : {}), ...(sc.createdBy ? { createdBy: sc.createdBy } : {}), ceiling: scheduler.ceilingById(sc.id) }));
         if (carried.length) packed.entries.push({ path: 'schedules.json', data: Buffer.from(JSON.stringify(carried)) });
         return packed;
       },
       async putAway(id) {
-        for (const sc of scheduler.list(id).filter((sc) => sc.threadId === id)) await scheduler.delete(sc.id).catch(() => undefined);
+        // Only this runner's: the main key sees the copies the other runner
+        // has just made, and deleting those lost a check-in (18 Nov).
+        await scheduler.dropMoved(id, packedSchedules.get(id));
+        packedSchedules.delete(id);
         await runner.putAwayMoved(id);
       },
       plan: (row) => runner.planMove(row),

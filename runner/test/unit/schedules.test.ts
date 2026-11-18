@@ -2279,3 +2279,37 @@ test('a schedule deleted on the phone while this runner was off is known as dele
     assert.equal(again.wasDeleted(sc.id), true);
   } finally { again.stop(); }
 });
+
+// 18 Nov 2026: a thread moved from the M5 to Hetzner Cloud with a check-in
+// booked on itself. Pack carried it, Hetzner made it again under its own
+// runnerId, then the M5 put its copy away by deleting every schedule to
+// that thread it could see. The main key sees every runner's, so Hetzner's
+// went too (scheduleGone: the M5's 4a26ee6a at 03:54:09, Hetzner's 198e30c8
+// at 03:54:12), and the check-in never ran anywhere.
+test("a moved thread's schedules: only this runner's are packed and put away, and one made after the pack is said", async () => {
+  const h = makeHarness();
+  const { thread } = idleThread(h);
+  const b = fakeBackend(h.clock, [LAPTOP, MINI]);
+  const sched = backendScheduler(h);
+  await sched.attach(b.for('laptop', LAPTOP.id));
+  await tick();
+  const mine = await sched.create({ text: 'Check the move', at: new Date(h.clock.now() + 5 * MIN).toISOString(), threadId: thread.id, createdBy: thread.id });
+  assert.deepEqual(sched.forMove(thread.id).map((s) => s.id), [mine.id]);
+  const carried = sched.forMove(thread.id).map((s) => s.id);
+
+  // The runner it went to makes it again under its own id.
+  const theirs = { ...structuredClone(b.rows.get(mine.id)!), id: 'their-copy', runnerId: MINI.id };
+  await b.for('mini', MINI.id).save(theirs);
+  await tick();
+  assert.ok(sched.list(thread.id).some((s) => s.id === 'their-copy'), 'the main key sees the other runner\'s copy');
+  assert.deepEqual(sched.forMove(thread.id).map((s) => s.id), [mine.id], "another runner's copy isn't this runner's to pack");
+
+  // Made here between the pack and the put away (another thread, or Mike).
+  const late = await sched.create({ text: 'Late one', at: new Date(h.clock.now() + 9 * MIN).toISOString(), threadId: thread.id });
+
+  const dropped = await sched.dropMoved(thread.id, new Set(carried));
+  assert.ok(b.rows.has('their-copy'), "the other runner's copy is left alone");
+  assert.ok(!b.rows.has(mine.id), 'the carried one is gone from here');
+  assert.deepEqual(dropped.map((s) => s.id), [late.id], "one that didn't travel is said, not dropped silently");
+  sched.stop();
+});
