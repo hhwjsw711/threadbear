@@ -203,6 +203,22 @@ jobs:
           count=$(awk '/^frame_stats::loader_probe_tests::.*: test$/ { n++ } END { print n+0 }' loader-probe-tests.txt)
           test "$count" -ge 1
           cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation,frame-stats --bin threadbear-gpui frame_stats::loader_probe_tests::
+      # The app's unit tests that only build with the automation feature
+      # (`#[cfg(all(test, feature = "automation"))]`, for gpui's test window
+      # and events), which the plain cargo test above leaves out: until 23 Nov
+      # those in reply_buttons, reply_links, rows, style and text_services
+      # never ran here. Every test in the app, so a module gated that way
+      # later runs too, built with the same features as the step above, so
+      # nothing builds again. The list check fails if a module's tests drop
+      # out of the build.
+      - name: App unit tests behind the automation feature
+        if: ${{ !matrix.specsOnly }}
+        run: |
+          cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation,frame-stats --bin threadbear-gpui -- --list > automation-tests.txt
+          for m in reply_buttons::clicks reply_links::probe_tests rows::across_tests style::group_hover_text_tests style::contrast_tests text_services::selection_tests; do
+            grep -q "^$m::.*: test$" automation-tests.txt || { echo "::error::cargo test lists no $m:: tests with --features automation"; exit 1; }
+          done
+          cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation,frame-stats --bin threadbear-gpui
       # The web runtime's pinned archive, for the @web-runtime specs (web
       # panels, diagrams and pages in replies, file previews, installing the
       # runtime): without it all 30 were skipped, and cucumber counts a skip
