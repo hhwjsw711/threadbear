@@ -124,7 +124,8 @@ fn cli_failure_key(cli: &threadbear_core::updates::CliStatus) -> String {
 pub(crate) struct LimitAdvice {
     pub(crate) text: String,
     /// The logins it could carry on with now, best first, each with its
-    /// row in the Continue now on menu: "mike (78% left)".
+    /// title: "mike (78% left)". Continue now opens the picker on the
+    /// first's pool.
     pub(crate) targets: Vec<(String, String)>,
     /// A turn stopped at the limit (or the thread is waiting for room), so
     /// there's something to carry on: the box offers to do it by itself.
@@ -132,7 +133,7 @@ pub(crate) struct LimitAdvice {
     /// through the backend yet.
     pub(crate) stopped: bool,
     /// A turn stopped at the limit, or it's waiting for room, on any
-    /// runner: Continue now on asks it to carry on there at once
+    /// runner: a pick from Continue now asks it to carry on there at once
     /// (`carryOn`), which another runner's thread takes through the backend
     /// too (API 77). Without it, a thread whose Carry on by itself is off
     /// moved to the new login and sat there (Codex's review, 13 Nov).
@@ -1630,20 +1631,13 @@ impl Threadbear {
                 "No"
             }
         });
-        // The button and the login its menu has picked, the first unless
-        // another was chosen; then every login the menu offers.
-        let picked = self
-            .limit_pick
-            .get(&thread.id)
-            .filter(|id| advice.targets.iter().any(|(t, _)| t == *id))
-            .cloned();
-        let button = picked
-            .as_deref()
-            .and_then(|id| advice.targets.iter().find(|(t, _)| t == id))
-            .or(advice.targets.first())
-            .map(|(_, title)| format!("Continue now on {title}"));
+        // Continue now, when there's a login with room, and the one with
+        // most room, whose pool the picker it opens shows first; then
+        // every login with room.
+        let button = advice.targets.first().map(|_| "Continue now");
+        let best = advice.targets.first().map(|(_, title)| title);
         let menu: Vec<&String> = advice.targets.iter().map(|(_, title)| title).collect();
-        json!({ "text": advice.text, "button": button, "logins": menu, "carryOn": carry_on, "reset": advice.reset.as_ref().map(|(id, tip)| json!({ "accountId": id, "tip": tip, "busy": self.resetting.contains(id) })) })
+        json!({ "text": advice.text, "button": button, "best": best, "logins": menu, "carryOn": carry_on, "reset": advice.reset.as_ref().map(|(id, tip)| json!({ "accountId": id, "tip": tip, "busy": self.resetting.contains(id) })) })
     }
 
     pub(crate) fn take_reset_offer(
@@ -1816,36 +1810,6 @@ impl Threadbear {
 
     pub(crate) fn switch_account(&mut self, thread: &str, account: String, cx: &mut Context<Self>) {
         self.update_thread(thread, |_| {}, json!({ "accountId": account }), cx);
-    }
-
-    /// The limit box's Continue now on: pins the thread to that login and,
-    /// when its turn stopped at the limit on this Mac, carries on there at
-    /// once (`threads.update` `carryOn`) rather than waiting for a message.
-    pub(crate) fn continue_now_on(
-        &mut self,
-        thread: &str,
-        account: String,
-        carry_on: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let mut change = json!({ "accountId": account });
-        if carry_on {
-            change["carryOn"] = json!(true);
-        }
-        self.limit_pick.remove(thread);
-        // At once, so the box goes and can't be pressed twice: pinned to
-        // that login, and no longer waiting. A refusal puts it back.
-        let to = account;
-        self.update_thread(
-            thread,
-            move |t| {
-                t.account_id = to;
-                t.pool_id = None;
-                t.waiting_for_room = None;
-            },
-            change,
-            cx,
-        );
     }
 
     /// Whether the open thread's last turn failed with its login refused

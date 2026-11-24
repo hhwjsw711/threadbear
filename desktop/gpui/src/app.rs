@@ -103,9 +103,6 @@ pub struct Threadbear {
     /// (`failedOnAccount`), so the limit line blames that login only while
     /// the thread's still on it, not the one it's just been switched to.
     pub(crate) failed_on_account: HashMap<String, String>,
-    /// The login each thread's limit box has picked in its Continue now on
-    /// menu, when it isn't the first.
-    pub(crate) limit_pick: HashMap<String, String>,
     /// Each Claude login's cloud token card (token_card.rs).
     pub(crate) token_cards: crate::token_card::TokenCards,
     /// Logins a Use a reset is on its way for (`use_reset`).
@@ -579,7 +576,6 @@ impl Threadbear {
             menu_signature: String::new(),
             menus_stale: true,
             failed_on_account: HashMap::new(),
-            limit_pick: HashMap::new(),
             token_cards: Default::default(),
             resetting: Default::default(),
             inbox_count_cache: Default::default(),

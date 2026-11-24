@@ -140,8 +140,9 @@ At the right of the row:
 - **Waiting for room**, with a time: every login it could use has hit its
   limit (see [Accounts, pools and Usage](#accounts)). It carries on by
   itself when one has room again. A box at the top of the message field
-  says so, with a button to switch to the login with the most room, and
-  Carry on by itself (Yes or No) to have it wait for you instead.
+  says so, with Continue now, which opens the model picker on the login
+  with the most room, and Carry on by itself (Yes or No) to have it wait
+  for you instead.
 
 Your messages from the phone app have a small phone beside the words or
 pictures. Hover or click it to see where the message came from.
@@ -1836,8 +1837,10 @@ you picked a specific model, the thread only moves automatically to
 another login on the same provider that offers that model. A pinned
 thread waits for its own login's limit to reset. Either
 way, the box at the top of the message field says what happened and offers
-Switch to another login now; set its Carry on by itself to No and the
-thread waits for your next message instead.
+Continue now: it opens the model picker on the pool with the most room,
+its logins listed, and whatever you pick there carries on at once, from
+where the thread stopped. Set its Carry on by itself to No and the thread
+waits for your next message instead.
 When a Codex login it would carry on with has a usage reset left (Codex
 gives out free ones, listed under Usage limit resets in its settings), the
 box also offers Use a reset: it restores that login's 5-hour and weekly

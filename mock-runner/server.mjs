@@ -1408,7 +1408,11 @@ async function dispatch(client, method, p) {
       // A login named pins the thread; null pins it where it is; a pool id
       // puts it in that pool, moving it onto one of the pool's logins if
       // its own isn't in it.
-      if (p.accountId !== undefined || p.poolId === null) delete s.poolId;
+      // As the runner: pinned, a wait for the pool's room is over.
+      if (p.accountId !== undefined || p.poolId === null) {
+        delete s.poolId;
+        delete s.waitingForRoom;
+      }
       if (typeof p.poolId === 'string') {
         const pool = poolOf(p.poolId);
         if (!pool) throw rpcError(-32602, `no pool ${p.poolId}`);

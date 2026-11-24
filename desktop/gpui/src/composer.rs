@@ -90,6 +90,12 @@ pub struct Composer {
     restore: Option<RestoreDraft>,
     /// The model picker's search and column, kept while it's open.
     pub(crate) model_picker: Option<Entity<ModelPickerView>>,
+    /// The same picker as the limit box's Continue now opens it, whose
+    /// picks carry on at once (`carry_on_pick`).
+    pub(crate) limit_picker: Option<Entity<ModelPickerView>>,
+    /// Set while a pick from `limit_picker` goes out: `change_thread` adds
+    /// `carryOn` to a login or pool move.
+    pub(crate) carry_on_pick: bool,
     /// What's picked on the open card, and how the card's showing.
     pub(crate) card: CardState,
     /// Which card was last seen arriving, for it to settle in (composer_card.rs).
@@ -301,6 +307,8 @@ impl Composer {
             sent_hop: None,
             restore: None,
             model_picker: None,
+            limit_picker: None,
+            carry_on_pick: false,
             card: CardState::default(),
             card_arrival: Default::default(),
             strip_opening: None,
@@ -391,12 +399,17 @@ impl Composer {
     /// `LimitBox`: the thread's login is at its limit (a pool thread's whole
     /// pool, as the runner moves it between the pool's logins by itself),
     /// or its last turn stopped on it. At the top of the box, over a line
-    /// like the card of asks: what happened, Continue now on with a menu of
-    /// the logins with room (12 Nov, in place of a single Switch to / Pin
-    /// to), and whether it carries on by itself once the limit resets. Mike
+    /// like the card of asks: what happened, Continue now, which opens the
+    /// model picker on the logins with room (24 Nov, in place of a login
+    /// menu of its own; 12 Nov, in place of a single Switch to / Pin to),
+    /// and whether it carries on by itself once the limit resets. Mike
     /// asked for it here on 10 Nov, in place of a bar across the top of the
     /// thread that read as an error and offered only the switch.
-    fn render_limit_box(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_limit_box(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         use gpui_kit::base::TestSupportExt as _;
         use gpui_kit::component::button::{Button, ButtonVariants as _};
         use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
@@ -458,21 +471,16 @@ impl Composer {
         if !advice.targets.is_empty() || advice.stopped || advice.reset.is_some() {
             // Wraps in a narrow window rather than running past the box's edge.
             let mut row = h_flex().flex_wrap().gap(px(10.)).items_center();
-            if let Some(first) = advice.targets.first() {
-                // Continue now on, and a menu of the logins with room to pick
-                // which (Mike, 12 Nov). It pins the thread there and carries
-                // on at once; the first is the one with the most room.
-                let picked = app
-                    .read(cx)
-                    .limit_pick
-                    .get(&thread.id)
-                    .and_then(|id| advice.targets.iter().find(|(t, _)| t == id))
-                    .unwrap_or(first)
-                    .clone();
-                let tip =
-                    "Pin this thread to that login and carry on there now, from where it stopped";
-                let (account, title) = picked.clone();
-                let (app_c, id) = (self.app.clone(), thread.id.clone());
+            if let Some((best, _)) = advice.targets.first() {
+                // Continue now: the composer's own model picker, opened by
+                // this button on the logins with room (Mike, 24 Nov: in place
+                // of a smaller login menu of its own beside the button). A
+                // pick there carries on at once, even with Carry on by
+                // itself on No, as this button always has.
+                let target = self.limit_picker_target(best, cx);
+                let picker = self.limit_picker_state(window, cx);
+                let tip = "Pick a login or model to carry on with now, from where it stopped";
+                let on_open = picker.downgrade();
                 let carry_on = advice.carry_on;
                 row = row.child(
                     div()
@@ -481,51 +489,36 @@ impl Composer {
                         .a11y_role(Role::GenericContainer)
                         .aria_label(tip)
                         .child(
-                            Button::new("limit-switch-button")
-                                .label("Continue now on")
-                                .small()
-                                .secondary()
-                                .tooltip(tip)
-                                .on_click(move |_, _, cx| {
-                                    app_c
-                                        .update(cx, |a, cx| {
-                                            a.continue_now_on(&id, account.clone(), carry_on, cx)
+                            gpui_kit::component::popover::Popover::new("limit-picker")
+                                .anchor(Anchor::BottomLeft)
+                                .trigger(
+                                    Button::new("limit-switch-button")
+                                        .label("Continue now")
+                                        .small()
+                                        .secondary()
+                                        .dropdown_caret(true)
+                                        .tooltip(tip),
+                                )
+                                .on_open_change(move |open, _, cx| {
+                                    if !*open {
+                                        return;
+                                    }
+                                    // Each time it opens: on the pool with
+                                    // the login with most room, its logins
+                                    // listed.
+                                    let target = target.clone();
+                                    on_open
+                                        .update(cx, |p, cx| {
+                                            p.open_for_limit(target, carry_on, cx);
                                         })
                                         .ok();
+                                })
+                                // To the popover's edges, as the chip's picker.
+                                .content(move |_, _, _| {
+                                    div().m(gpui_kit::px(-12.)).child(picker.clone())
                                 }),
                         ),
                 );
-                let targets = advice.targets.clone();
-                let (app_m, id) = (self.app.clone(), thread.id.clone());
-                let menu = crate::popup_host::dropdown_button(
-                    "limit-login",
-                    Button::new("limit-login-button")
-                        .label(title)
-                        .small()
-                        .secondary()
-                        .dropdown_caret(true)
-                        .tooltip("Which login to carry on with"),
-                    px(180.),
-                    move |menu: PopupMenu, _, _, _| {
-                        let mut menu = menu;
-                        for (account, title) in &targets {
-                            let (app, id, account) = (app_m.clone(), id.clone(), account.clone());
-                            menu = menu.item(
-                                PopupMenuItem::new(title.clone())
-                                    .checked(account == picked.0)
-                                    .on_click(move |_, _, cx| {
-                                        app.update(cx, |a, cx| {
-                                            a.limit_pick.insert(id.clone(), account.clone());
-                                            cx.notify();
-                                        })
-                                        .ok();
-                                    }),
-                            );
-                        }
-                        menu
-                    },
-                );
-                row = row.child(div().id("limit-login").test_support().child(menu));
             }
             if let Some((account, tip)) = advice.reset.clone() {
                 // A Codex login out of room with a usage reset left (16 Nov).
@@ -2543,7 +2536,7 @@ impl Render for Composer {
         let controls = self.render_controls(send_button, window, cx);
         // The box: the limit box and the open card, each over a line, then
         // the message.
-        let limit = self.render_limit_box(cx);
+        let limit = self.render_limit_box(window, cx);
         // A thread on a virtual runner whose login needs a cloud token
         // (token_card.rs), in the same place.
         let token_card = self.render_token_card(window, cx);

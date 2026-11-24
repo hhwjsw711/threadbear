@@ -3,6 +3,7 @@
 import { Then, When } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
 import type { ThreadbearWorld } from '../support/world.ts';
+import { sleep } from '../support/driver.ts';
 
 Then("the panel bar's title says {string}", async function (this: ThreadbearWorld, title: string) {
   await this.until(`the header saying "${title}"`, (d) => d.header?.title === title);
@@ -170,6 +171,30 @@ Then('the limit box carries on by itself', async function (this: ThreadbearWorld
 
 Then("the limit line's button says {string}", async function (this: ThreadbearWorld, title: string) {
   await this.until(`the limit line's button "${title}"`, (d) => d.limit?.button === title);
+});
+
+// A real click on the button, which opens the picker as a person's does.
+When("I click the limit box's Continue now", async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'click', tipPrefix: 'Pick a login or model to carry on with now' });
+});
+
+Then('its picker lists the {string} logins, {string} among them', async function (this: ThreadbearWorld, pool: string, login: string) {
+  let last = '';
+  for (let tries = 0; tries < 40; tries += 1) {
+    last = await this.app.do({ cmd: 'composer-menu', menu: 'limit' });
+    const menu = JSON.parse(last.slice(last.indexOf('{'))) as { pool?: string; logins?: string[] };
+    if (menu.pool === pool && menu.logins?.includes(login)) return;
+    await sleep(150);
+  }
+  assert.fail(`Continue now's picker isn't on ${pool} with ${login}: ${last}`);
+});
+
+When("I pick {string} from Continue now's picker", async function (this: ThreadbearWorld, login: string) {
+  await this.app.do({ cmd: 'composer-menu', menu: 'limit', click: login });
+});
+
+Then('the limit box has gone', async function (this: ThreadbearWorld) {
+  await this.until('no limit box', (d) => !d.limit);
 });
 
 Then('the model chip is marked {string}', async function (this: ThreadbearWorld, badge: string) {

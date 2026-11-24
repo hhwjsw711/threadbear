@@ -1101,6 +1101,18 @@ fn step(
             if text(cmd, "menu") == "runner" {
                 return crate::new_thread::runner_menu_command(app, cmd, cx);
             }
+            // The limit box's Continue now picker: its pool and logins, or
+            // a pick from them (composer_chips.rs, limit_menu_command).
+            if text(cmd, "menu") == "limit" {
+                let Some(composer) = app.read(cx).composer(cx) else {
+                    return Err("no thread open".into());
+                };
+                return crate::composer_chips::limit_menu_command(
+                    &composer,
+                    cmd["click"].as_str(),
+                    cx,
+                );
+            }
             // The machine chip under an open thread's box: its menu's lines,
             // or a pick from it (sidebar.rs, machine_menu_rows).
             if text(cmd, "menu") == "machine" {

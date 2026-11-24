@@ -159,6 +159,27 @@ impl Composer {
         cx: &mut App,
     ) {
         let thread = self.thread_id.clone();
+        // A move picked from the limit box's Continue now carries on there
+        // at once (`carryOn`), Carry on by itself or not, and the box goes
+        // straight away. Not a model or effort change on the same login,
+        // which has nothing to carry on with.
+        let mut params = params;
+        let moves = params
+            .get("accountId")
+            .is_some_and(serde_json::Value::is_string)
+            || params
+                .get("poolId")
+                .is_some_and(serde_json::Value::is_string);
+        let carry_on = self.carry_on_pick && moves && thread.is_some();
+        if carry_on {
+            params["carryOn"] = json!(true);
+        }
+        let change = move |t: &mut ThreadSummary| {
+            change(t);
+            if carry_on {
+                t.waiting_for_room = None;
+            }
+        };
         if let Some(app) = self.app.upgrade() {
             app.update(cx, |app, cx| match thread {
                 Some(id) => app.update_thread_from_box(&id, change, params, cx),
@@ -1276,9 +1297,72 @@ impl Composer {
         self.model_picker = Some(picker.clone());
         picker
     }
+
+    /// The picker as the limit box's Continue now opens it: its own, so its
+    /// column and open Login list don't stay on the chip's.
+    pub(crate) fn limit_picker_state(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ModelPickerView> {
+        if let Some(picker) = &self.limit_picker {
+            return picker.clone();
+        }
+        let composer = cx.entity().downgrade();
+        let picker = cx.new(|cx| {
+            let mut p = ModelPickerView::new(composer, window, cx);
+            p.from_limit = true;
+            p.login_open = true;
+            p
+        });
+        self.limit_picker = Some(picker.clone());
+        picker
+    }
+
+    /// Where the limit box opens the picker: the pool holding `login` (the
+    /// one with most room), No pool when it's in none, or without pools no
+    /// pool at all; and `login`'s provider down the rail.
+    pub(crate) fn limit_picker_target(&self, login: &str, cx: &App) -> LimitPickerTarget {
+        let data = self.chip_data(cx);
+        let provider = data
+            .logins
+            .account(login)
+            .map(|a| a.provider_id().to_owned());
+        let pool = data.settings().filter(|s| s.uses_pools()).map(|_| {
+            data.logins
+                .pools
+                .iter()
+                .find(|p| p.account_ids.iter().any(|a| a == login))
+                .map_or_else(|| UNPOOLED_COLUMN.to_owned(), |p| p.id.clone())
+        });
+        LimitPickerTarget { pool, provider }
+    }
+}
+
+/// The pool and provider the limit box's Continue now opens the picker on
+/// (`Composer::limit_picker_target`).
+#[derive(Clone, Default)]
+pub(crate) struct LimitPickerTarget {
+    pool: Option<String>,
+    provider: Option<String>,
 }
 
 const PINNED_COLUMN: &str = "@pinned";
+
+/// Runs a pick from the model picker on its composer: one that carries on
+/// at once when the limit box opened the picker (`carry_on`).
+fn pick_on(
+    composer: &Entity<Composer>,
+    carry_on: bool,
+    cx: &mut App,
+    pick: impl FnOnce(&mut Composer, &mut Context<Composer>),
+) {
+    composer.update(cx, |c, cx| {
+        c.carry_on_pick = carry_on;
+        pick(c, cx);
+        c.carry_on_pick = false;
+    });
+}
 
 /// A quiet menu chip: icon, short label and a small chevron in secondary
 /// colours (ComposerChip).
@@ -1724,6 +1808,9 @@ pub(crate) struct ModelPickerView {
     provider: Option<String>,
     /// The Login line's list is open.
     login_open: bool,
+    /// Opened by the limit box's Continue now: a move it makes carries on
+    /// at once (`Composer::carry_on_pick`).
+    from_limit: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -1758,8 +1845,26 @@ impl ModelPickerView {
             pool: None,
             provider: None,
             login_open: false,
+            from_limit: false,
             _subs: vec![sub],
         }
+    }
+
+    /// The limit box's Continue now opening it: on `target`'s pool and
+    /// provider (the login with most room), its Login list open.
+    /// `carry_on`: the thread has a stopped turn to carry on
+    /// (`LimitAdvice::carry_on`).
+    pub(crate) fn open_for_limit(
+        &mut self,
+        target: LimitPickerTarget,
+        carry_on: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.from_limit = carry_on;
+        self.pool = target.pool;
+        self.provider = target.provider;
+        self.login_open = true;
+        cx.notify();
     }
 
     /// Works out the active pool, provider rail and model sections for what's
@@ -1812,7 +1917,7 @@ impl ModelPickerView {
         self.pool = None;
         self.provider = None;
         self.login_open = false;
-        composer.update(cx, |c, cx| {
+        pick_on(&composer, self.from_limit, cx, |c, cx| {
             c.pick_model(&first, &column, &provider, &data, cx)
         });
         window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
@@ -2159,6 +2264,7 @@ impl ModelPickerView {
     ) -> AnyElement {
         let pools = data.settings().is_some_and(|s| s.uses_pools());
         let this = cx.entity().downgrade();
+        let carry_on = self.from_limit;
         let row_view = |row: PickerRow, provider: &str, cx: &App| {
             let composer = self.composer.clone();
             let this = this.clone();
@@ -2178,7 +2284,7 @@ impl ModelPickerView {
                     });
                 }
                 if let Some(c) = composer.upgrade() {
-                    c.update(cx, |c, cx| {
+                    pick_on(&c, carry_on, cx, |c, cx| {
                         c.pick_model(&picked, &column, &section, &data, cx)
                     });
                 }
@@ -2419,38 +2525,13 @@ impl ModelPickerView {
             return header.into_any_element();
         }
         let now = threadbear_core::chrono::Local::now();
-        let (pool_id, rows) = if on_unpooled {
-            let rows = threadbear_core::login_picker::unpooled_login_rows(
-                &data.logins.pools,
-                accounts,
-                active_provider,
-                settings.pool().map(|p| p.id.as_str()),
-                pinned.then_some(settings.account.as_str()),
-                &now,
-            );
-            if rows.is_empty() {
-                return header.into_any_element();
-            }
-            (String::new(), rows)
-        } else {
-            let Some(pool_id) = self.login_list_pool(data, column, cx) else {
-                return header.into_any_element();
-            };
-            let Some(pool) = data.logins.pool(&pool_id) else {
-                return header.into_any_element();
-            };
-            let rows = threadbear_core::login_picker::pool_login_rows(
-                pool,
-                accounts,
-                settings.pool().map(|p| p.id.as_str()),
-                pinned.then_some(settings.account.as_str()),
-                &now,
-            );
-            (pool_id, rows)
+        let Some((pool_id, rows)) = self.login_rows(data, column, active_provider, &now, cx) else {
+            return header.into_any_element();
         };
         let Some(app) = self.composer.upgrade().map(|c| c.read(cx).app.clone()) else {
             return header.into_any_element();
         };
+        let carry_on = self.from_limit;
         let list = v_flex()
             .px(px(6.))
             .pb(px(6.))
@@ -2481,12 +2562,51 @@ impl ModelPickerView {
                         });
                     }
                     if let Some(c) = composer.upgrade() {
-                        c.update(cx, |c, cx| c.pick_login(login.clone(), &pool_id, cx));
+                        pick_on(&c, carry_on, cx, |c, cx| {
+                            c.pick_login(login.clone(), &pool_id, cx)
+                        });
                     }
                     window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
                 })
             }));
         v_flex().child(header).child(list).into_any_element()
+    }
+
+    /// The opened Login list's rows and the pool they're in (empty for No
+    /// pool): the unpooled logins for the active provider on the No pool
+    /// tab, else Auto then the pool's logins.
+    fn login_rows(
+        &self,
+        data: &ChipData,
+        column: &str,
+        active_provider: Option<&str>,
+        now: &threadbear_core::chrono::DateTime<threadbear_core::chrono::Local>,
+        cx: &App,
+    ) -> Option<(String, Vec<threadbear_core::login_picker::PoolLoginRow>)> {
+        let settings = data.settings()?;
+        let accounts = &data.logins.accounts;
+        let pinned = settings.pool().is_none();
+        if column == UNPOOLED_COLUMN {
+            let rows = threadbear_core::login_picker::unpooled_login_rows(
+                &data.logins.pools,
+                accounts,
+                active_provider,
+                settings.pool().map(|p| p.id.as_str()),
+                pinned.then_some(settings.account.as_str()),
+                now,
+            );
+            return (!rows.is_empty()).then_some((String::new(), rows));
+        }
+        let pool_id = self.login_list_pool(data, column, cx)?;
+        let pool = data.logins.pool(&pool_id)?;
+        let rows = threadbear_core::login_picker::pool_login_rows(
+            pool,
+            accounts,
+            settings.pool().map(|p| p.id.as_str()),
+            pinned.then_some(settings.account.as_str()),
+            now,
+        );
+        Some((pool_id, rows))
     }
 
     /// The pool whose logins the opened Login list shows: the rail's column,
@@ -3112,6 +3232,54 @@ pub(crate) fn permission_lines(summary: &ThreadSummary, logins: &RunnerLogins) -
             )
         })
         .collect()
+}
+
+/// The limit box's Continue now picker for `composer-menu` (`limit`): the
+/// pool it's on and its Login list's titles, or a pick from that list as a
+/// click there makes it (carrying on).
+#[cfg(feature = "automation")]
+pub(crate) fn limit_menu_command(
+    composer: &Entity<Composer>,
+    click: Option<&str>,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
+    let picker = composer
+        .read(cx)
+        .limit_picker
+        .clone()
+        .ok_or("Continue now hasn't been opened")?;
+    let data = composer.read(cx).chip_data(cx);
+    let now = threadbear_core::chrono::Local::now();
+    let (pool_id, rows, carry_on) = {
+        let p = picker.read(cx);
+        let listing = p.listed(&data, cx).ok_or("no thread")?;
+        let (pool_id, rows) = p
+            .login_rows(
+                &data,
+                &listing.pool,
+                listing.active_provider.as_deref(),
+                &now,
+                cx,
+            )
+            .ok_or("Continue now's picker has no Login list")?;
+        (pool_id, rows, p.from_limit)
+    };
+    let pool_title = data
+        .logins
+        .pool(&pool_id)
+        .map_or_else(|| "No pool".to_owned(), |p| p.title.clone());
+    let Some(name) = click else {
+        let titles: Vec<String> = rows.into_iter().map(|r| r.title).collect();
+        return Ok(json!({ "pool": pool_title, "logins": titles }));
+    };
+    let row = rows
+        .into_iter()
+        .find(|r| r.title == name || r.id.as_deref() == Some(name))
+        .ok_or_else(|| format!("no login {name}"))?;
+    pick_on(composer, carry_on, cx, |c, cx| {
+        c.pick_login(row.id, &pool_id, cx)
+    });
+    Ok(json!("ok"))
 }
 
 /// Picks a model row or effort level by its title, as a click would
