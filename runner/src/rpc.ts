@@ -29,6 +29,8 @@ type Conn = {
   // hello's version and pid, and when it connected, for the log.
   clientVersion?: string;
   clientPid?: number;
+  drainLink?: boolean;
+  drainMutationGuard?: boolean;
   since: number;
   browserPanel?: boolean;
   authTimer?: AwakeTimer;
@@ -46,6 +48,8 @@ type Conn = {
   // lookup. Until then (and for good, if the lookup couldn't tell) an
   // undefined caller is nobody, never the owner (Daybreak finding 175).
   owner?: boolean;
+  ownerPids?: number[];
+  drainHelloSeen?: boolean;
   // While the process lookup runs, frames wait here so a request can't get
   // ahead of it (a stolen token's first request, say).
   identifying?: Promise<void>;
@@ -199,6 +203,7 @@ export type RpcServerOptions = {
   // calling"). Rejects when it can't say (UnresolvedPeer, AmbiguousPeer):
   // the connection closes.
   callerOf?: (sock: PeerSocket) => Promise<PeerCaller>;
+  isDrainingPid?: (pid: number) => boolean;
   // Tests shorten these.
   authTimeoutMs?: number;
   maxPendingAuth?: number;
@@ -440,7 +445,7 @@ export class RpcServer {
             return this.dropConn(conn);
           }
           if (t) conn.caller = t;
-          else if (keyThread === undefined) conn.owner = true;
+          else if (keyThread === undefined) { conn.owner = true; conn.ownerPids = found.kind === 'owner' ? found.pids : undefined; }
         })
         .catch((e) => {
           // Under another runner's thread (Daybreak finding 177): no use
@@ -707,7 +712,15 @@ export class RpcServer {
   // a primary with the token talks to) refuses a thread outright.
   private gated(conn: Conn, method: string, p: Record<string, unknown>): Record<string, unknown> {
     if (conn.caller === undefined) {
-      if (conn.owner) return p;
+      if (conn.owner) {
+        const mutation = method === 'threads.update' || method === 'threads.interrupt' || (method === 'drain.projects' && p.op === 'changeMembership');
+        if (mutation) {
+          const drain = conn.drainLink || conn.ownerPids?.some((pid) => this.opts.isDrainingPid?.(pid));
+          if (drain) conn.drainLink = true;
+          if (drain && !conn.drainMutationGuard) throw new RpcError(ErrorCode.notAllowed, 'This older runner cannot change or stop other threads safely. Wait for its turn to finish and move to the new runner.');
+        }
+        return p;
+      }
       // Not a thread and not known to be the owner: the lookup never said
       // (unlock closes such a connection; this is the backstop).
       throw new RpcError(ErrorCode.notAllowed, "The runner couldn't tell which process this connection is from.");
@@ -788,6 +801,14 @@ export class RpcServer {
         conn.client = conn.caller === undefined ? optString(p, 'client') : 'thread';
         conn.clientVersion = typeof p.version === 'string' ? p.version : undefined;
         conn.clientPid = typeof p.pid === 'number' ? p.pid : undefined;
+        // Only the authenticated owner link may advertise this, never a
+        // thread key or a target's mirrored metadata. Old MCP handlers
+        // lack the internal cards, so their mutations stay closed here.
+        if (!conn.drainHelloSeen) {
+          conn.drainHelloSeen = true;
+          conn.drainLink = conn.owner === true && (conn.client === 'threadbear-drain' || Boolean(conn.ownerPids?.some((pid) => this.opts.isDrainingPid?.(pid))));
+          conn.drainMutationGuard = conn.owner === true && conn.client === 'threadbear-drain' && p.threadMutationGuard === 1;
+        }
         conn.browserPanel = conn.caller === undefined && p.browserPanel === true;
         // Only the Mac apps' own builds, the Swift app's and the GPUI app's,
         // each followed on its own: a dev build has none.
@@ -910,9 +931,10 @@ export class RpcServer {
         return r.editMessage(reqString(p, 'threadId'), reqNumber(p, 'seq'), optString(p, 'text') ?? '', optImages(p) ?? [], { stopBackground: p.stopBackground === true });
       case 'threads.interrupt':
         // Sent on for an agent's interrupt_thread (handover.ts), it isn't his Stop.
-        return r.interrupt(reqString(p, 'threadId'), { byMike: p.byAgent !== true });
+        return r.interrupt(reqString(p, 'threadId'), { byMike: p.byAgent !== true, ...(p.controlCeiling !== undefined ? { controlCeiling: isPermissionMode(p.controlCeiling) ? p.controlCeiling : 'ask' } : {}) });
       case 'threads.update': {
         const upd: Parameters<Runner['update']>[0] = { threadId: reqString(p, 'threadId') };
+        if (p.controlCeiling !== undefined) upd.controlCeiling = isPermissionMode(p.controlCeiling) ? p.controlCeiling : 'ask';
         if (p.title !== undefined) upd.title = reqString(p, 'title');
         if (p.titleBy !== undefined) {
           if (p.titleBy !== 'mike' && p.titleBy !== 'agent') throw bad('titleBy must be "mike" or "agent"');

@@ -50,7 +50,7 @@ Answer with only a JSON object: {"verdict": "allow" or "ask", "why": "one plain 
 // logins or folder. One fooled answer would hold for the rest of the
 // thread, so these always go to Mike. A message, a pin, a project's brief
 // are one action each, judged as they come.
-export const NEVER_REVIEWED = new Set([...['create_thread', 'update_thread', 'schedule_message', 'update_schedule', 'move_thread'].map((t) => `mcp__threadbear__${t}`), 'permissions']);
+export const NEVER_REVIEWED = new Set([...['create_thread', 'update_thread', 'interrupt_thread', 'leave_project', 'schedule_message', 'update_schedule', 'move_thread'].map((t) => `mcp__threadbear__${t}`), 'permissions']);
 
 // Whether this thread's cards go past the reviewer first.
 export function reviewsCards(runner: Runner, st: ThreadState): boolean {

@@ -419,11 +419,12 @@ test('sends, stops and changes go to the thread runner; settings that only work 
   h.subs.get('relay:commandState')![0]!.onUpdate({ state: 'taken' });
   assert.deepEqual(await send, { turnId: '' });
   assert.deepEqual(h.calls.at(-1)!.args.args, { text: 'hi', answers: [{ action: 'a', answer: 'b' }] });
-  const stop = h.relay.call(T, 'threads.interrupt', { threadId: T });
+  const stop = h.relay.call(T, 'threads.interrupt', { threadId: T, byAgent: true });
   await new Promise((r) => setImmediate(r));
   h.subs.get('relay:commandState')![1]!.onUpdate({ state: 'done' });
   await stop;
   assert.equal(h.calls.at(-1)!.args.kind, 'interrupt');
+  assert.deepEqual(h.calls.at(-1)!.args.args, { by: 'agent' });
   await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, cwd: '/elsewhere' }), /isn't possible through Convex yet/);
 });
 

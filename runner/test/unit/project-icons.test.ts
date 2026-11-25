@@ -292,13 +292,13 @@ test("Windows' converter is only ever handed a picture, with what to do passed i
   const write = (name: string, body: string | Buffer) => (fs.writeFileSync(path.join(dir, name), body), path.join(dir, name));
   assert.equal(winCommand(write('icon.png', MSL), out, { format: 'png' }, 'SCRIPT', 'ps.exe'), undefined);
   const real = write('real.png', png(8, 8));
-  const cmd = winCommand(real, out, { format: 'jpeg', quality: 80, maxPx: 2048 }, 'SCRIPT', 'ps.exe');
+  const cmd = winCommand(real, out, { format: 'jpeg', quality: 80, maxPx: 2048, decodeLimit: { side: 4096, pixels: 16 * 1024 * 1024 } }, 'SCRIPT', 'ps.exe');
   assert.equal(cmd?.[0], 'ps.exe');
   const at = cmd![1].indexOf('-EncodedCommand');
   const text = Buffer.from(cmd![1][at + 1]!, 'base64').toString('utf16le');
   const m = /^\$p = '([A-Za-z0-9+/=]+)'\nSCRIPT$/.exec(text);
   assert.ok(m, text);
-  assert.deepEqual(Buffer.from(m[1]!, 'base64').toString('utf8').split('\0'), [real, out, 'jpeg', '80', '2048']);
+  assert.deepEqual(Buffer.from(m[1]!, 'base64').toString('utf8').split('\0'), [real, out, 'jpeg', '80', '2048', '4096', '16777216']);
 });
 
 // Daybreak, 24 Nov ("Automatically selected project icons are decoded without

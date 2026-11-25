@@ -316,6 +316,13 @@ async function prompt(id, p) {
   if (GROK) return grokPrompt(id, p, s, word, rest);
   if (AGY) return agyPrompt(id, p, s, word, rest);
   if (word === 'write') await runTool(p.sessionId, s.cwd, 'edit', { filePath: rest[0], content: rest.slice(1).join(' ') }, [{ path: rest[0] }], () => fs.writeFileSync(rest[0], rest.slice(1).join(' ')));
+  else if (word === 'images') {
+    for (let i = 0; i < Math.min(65, Number(rest[0])); i++) {
+      const toolCallId = `image-${Math.random()}`;
+      update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'Picture', kind: 'read', status: 'in_progress' });
+      update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', content: [{ type: 'content', content: { type: 'image', data: rest[1], mimeType: 'image/png' } }] });
+    }
+  }
   else if (word === 'exec') await runTool(p.sessionId, s.cwd, 'execute', { command: rest.join(' ') }, [], () => log({ ran: rest.join(' ') }));
   else if (word === 'bg_shell') {
     const spec = JSON.parse(rest.join(' '));

@@ -726,7 +726,7 @@ export type CommandHost = {
   markSeen(threadId: string): unknown;
   create(p: { text: string; images?: ImageRef[]; cwd?: string; accountId?: string; poolId?: string; provider?: Provider; model?: string; effort?: EffortLevel; permissionMode?: PermissionMode; origin?: 'phone' }): { thread: ThreadSummary } | Promise<{ thread: ThreadSummary }>;
   // Stops the thread's turn (a command from the main Mac, API 44).
-  interrupt?(threadId: string): unknown;
+  interrupt?(threadId: string, opts?: { byMike?: boolean }): unknown;
   share(threadId: string, p: { access: 'off' | 'link'; newLink?: boolean }): unknown;
   quickAsk(p: { question: string; answer: string; sources?: { title: string; url: string }[]; askedAt?: number }): { thread: ThreadSummary };
   // The website's Pause, Resume and Run now (API 45). Absent in small tests.
@@ -5306,8 +5306,8 @@ export class ConvexSync {
           if (typeof s.said === 'string') {
             if (!host.hibernateWhen) throw new Error("This runner can't hibernate a thread in words from another Mac.");
             await host.hibernateWhen({ threadId: id, said: s.said });
-          } else await host.update({ threadId: id, snoozedUntil: s.untilRestart ? 'restart' : s.until ?? null });
-        } else if (a.wake) await host.update({ threadId: id, snoozedUntil: null });
+          } else await host.update({ threadId: id, snoozedUntil: s.untilRestart ? 'restart' : s.until ?? null, ...(a.by === 'agent' ? { byAgent: true } : {}) });
+        } else if (a.wake) await host.update({ threadId: id, snoozedUntil: null, ...(a.by === 'agent' ? { byAgent: true } : {}) });
         else if (a.archive) {
           // A verdict still rides along if sent (backend API 42), though no app sends one now.
           const verdict = ARCHIVE_VERDICTS.includes(a.verdict as ArchiveVerdict) ? { verdict: a.verdict as ArchiveVerdict } : {};
@@ -5393,7 +5393,7 @@ export class ConvexSync {
       }
       case 'interrupt': {
         if (!host.interrupt) throw new Error("This runner can't stop a turn from another Mac.");
-        await host.interrupt(needThread());
+        await host.interrupt(needThread(), { byMike: a.by !== 'agent' });
         return undefined;
       }
       case 'call': {

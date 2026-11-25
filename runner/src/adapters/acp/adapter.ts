@@ -1654,6 +1654,7 @@ export class AcpSession implements AgentSession {
   }
 
   private async runTurn(input: UserInput): Promise<void> {
+    this.ctx.beginTurn?.();
     const turn: Turn = { id: input.id, startedAt: this.now(), interrupted: false, dropped: [] };
     this.turn = turn;
     this.chunkBuffer = '';

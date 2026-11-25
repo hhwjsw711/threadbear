@@ -817,6 +817,10 @@ function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary
       buttons: (id) => h.runner.listButtons(id).buttons,
     },
     commands: {
+      interrupt: (id, opts) => {
+        applied.push(`interrupt ${id} ${opts?.byMike}`);
+        return h.runner.interrupt(id, opts);
+      },
       yearToken: async (accountId, p) => {
         applied.push(`yearToken ${accountId} ${JSON.stringify(p)}`);
         return { state: 'waiting', url: 'https://claude.com/cai/oauth/authorize?state=x' };
@@ -1573,6 +1577,20 @@ test('API 107: account descriptions/planEnded and thread poolId/effort/modelInUs
   assert.equal(stripped.modelInUse, undefined);
   assert.equal(stripped.effort, undefined);
   assert.equal(stripped.effortInUse, undefined);
+});
+
+test('commands: agent Stop keeps its attribution and an old unmarked Stop still means Mike', async () => {
+  const { h, sync, push, applied } = setupFull();
+  sync.start();
+  await sync.flushNow();
+  const t = h.runner.create({ text: 'hello', accountId: 'claude-3' }).thread;
+  session(h, t.id).init();
+  push([{ commandId: 'agent-stop', kind: 'interrupt', threadId: t.id, args: { by: 'agent' }, createdAt: 1 }]);
+  await tick(10);
+  assert.ok(applied.includes(`interrupt ${t.id} false`));
+  push([{ commandId: 'mike-stop', kind: 'interrupt', threadId: t.id, args: {}, createdAt: 2 }]);
+  await tick(10);
+  assert.ok(applied.includes(`interrupt ${t.id} true`));
 });
 
 test('commands: each pending one is taken once, applied through the runner as from the phone, and finished', async () => {

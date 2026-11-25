@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { ImageRef } from './protocol.ts';
-import { convertImage, convertImageSync } from './images.ts';
+import { conversionSide, convertImage, convertImageSync } from './images.ts';
+import { base64Bytes, writeBase64 } from './base64-stream.ts';
 
 export type ImageInfo = { mediaType: string; width?: number; height?: number };
 
@@ -269,18 +271,31 @@ export function imageRefFor(file: string, fallbackType?: string): ImageRef {
 }
 
 // Saves base64 image data (from a tool result) into a media folder.
-export function saveBase64Image(dir: string, data: string, mediaType: string, hint: string): ImageRef {
-  fs.mkdirSync(dir, { recursive: true });
-  const buf = Buffer.from(data, 'base64');
-  const info = sniffImage(buf);
-  const type = info?.mediaType ?? mediaType;
-  const name = `${safeName(hint)}-${crypto.createHash('sha1').update(buf).digest('hex').slice(0, 10)}.${extForMediaType(type)}`;
-  const file = path.join(dir, name);
-  if (!fs.existsSync(file)) fs.writeFileSync(file, buf);
-  const ref: ImageRef = { path: file, mediaType: type };
-  if (info?.width) ref.width = info.width;
-  if (info?.height) ref.height = info.height;
-  return ref;
+export type ToolImageOptions = { maxBytes?: number; reserve?: (bytes: number) => ((actualBytes: number) => void) | void };
+export function saveBase64Image(dir: string, data: string, mediaType: string, hint: string, opts: ToolImageOptions = {}): ImageRef {
+  if (typeof mediaType !== 'string' || mediaType.length > 128 || !/^[a-z0-9.+_-]+\/[a-z0-9.+_-]+$/i.test(mediaType)) throw new Error('Invalid image media type');
+  const bytes = base64Bytes(data, Math.min(opts.maxBytes ?? MAX_IMAGE_BYTES, MAX_IMAGE_BYTES));
+  opts.reserve?.(bytes);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tmp = path.join(dir, `.${crypto.randomUUID()}.tmp`);
+  const fd = fs.openSync(tmp, 'wx', 0o600);
+  try {
+    const { sha, head } = writeBase64(fd, data, bytes);
+    const info = sniffImage(head);
+    const type = info?.mediaType ?? mediaType;
+    const file = path.join(dir, `${safeName(hint)}-${sha}.${extForMediaType(type)}`);
+    fs.closeSync(fd);
+    // A replay must not write the same content-addressed image again.
+    // A link or a different-sized file is replaced rather than followed.
+    const old = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (!old?.isFile() || old.size !== bytes) fs.renameSync(tmp, file);
+    return { path: file, mediaType: type, ...(info?.width ? { width: info.width } : {}), ...(info?.height ? { height: info.height } : {}) };
+  } catch (e) {
+    try { fs.closeSync(fd); } catch { /* already closed for rename */ }
+    throw e;
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
 }
 
 // Copies an image into a folder under a fresh name and returns its ref.
@@ -493,29 +508,42 @@ export function prepareImageForModel(ref: ImageRef, tmpDir: string): { data: Buf
 // duplicates it. HEIC, TIFF and BMP become PNG (images.ts), since the app
 // and the models only take the common web formats. Null when it isn't a
 // readable image.
-export function copyImageFileInto(dir: string, src: string, hint: string): ImageRef | null {
+export function copyImageFileInto(dir: string, src: string, hint: string, opts: ToolImageOptions = {}): ImageRef | null {
+  let staged: ReturnType<typeof stageToolImage> | undefined;
   try {
     const file = localPath(src);
     if (!file) return null;
-    const st = fs.statSync(file);
-    if (!st.isFile() || st.size > MAX_IMAGE_BYTES) return null;
-    const buf = fs.readFileSync(file);
-    const sha = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 10);
-    const info = sniffImage(buf);
-    fs.mkdirSync(dir, { recursive: true });
+    staged = stageToolImage(file, opts);
+    const { sha, head, bytes } = staged;
+    const info = sniffImage(head);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (info) {
       const out = path.join(dir, `${safeName(hint)}-${sha}.${extForMediaType(info.mediaType)}`);
-      if (!fs.existsSync(out)) fs.copyFileSync(file, out);
+      const old = fs.lstatSync(out, { throwIfNoEntry: false });
+      if (!old?.isFile() || old.size !== bytes) {
+        const tmp = path.join(dir, `.${crypto.randomUUID()}.tmp`);
+        try { fs.copyFileSync(staged.input, tmp, fs.constants.COPYFILE_EXCL); fs.renameSync(tmp, out); }
+        finally { fs.rmSync(tmp, { force: true }); }
+      }
       return refFrom(out, info);
     }
-    if (!convertibleKind(buf)) return null;
+    if (!convertibleKind(head)) return null;
     const out = path.join(dir, `${safeName(hint)}-${sha}.png`);
-    if (!fs.existsSync(out)) {
-      // Converted next to the target first, so a failed conversion never
-      // leaves a half-written file under the final name.
-      const tmp = `${out}.${process.pid}.tmp.png`;
+    if (!fs.lstatSync(out, { throwIfNoEntry: false })?.isFile()) {
+      const converted = path.join(staged.work, 'converted.png');
+      fs.closeSync(fs.openSync(converted, 'wx', 0o600));
+      const maxBytes = Math.min(opts.maxBytes ?? MAX_IMAGE_BYTES, MAX_IMAGE_BYTES);
+      // A PNG's pixels are bounded even before its exact output size is
+      // known. Conversion runs against the captured input, never a reopened
+      // path controlled by the tool, and in an owner-private random folder.
+      const maxPx = conversionSide(staged.input, Math.max(1, Math.min(4096, Math.floor(Math.sqrt(maxBytes / 8)))));
+      convertImageSync(staged.input, converted, { format: 'png', maxPx, decodeLimit: { side: 8192, pixels: 64 * 1024 * 1024 } });
+      const size = fs.statSync(converted).size;
+      if (size > maxBytes) throw new Error('Tool image is too big once converted');
+      staged.adjust?.(size);
+      const tmp = path.join(dir, `.${crypto.randomUUID()}.tmp`);
       try {
-        convertImageSync(file, tmp, { format: 'png' });
+        fs.copyFileSync(converted, tmp, fs.constants.COPYFILE_EXCL);
         fs.renameSync(tmp, out);
       } finally {
         fs.rmSync(tmp, { force: true });
@@ -525,18 +553,52 @@ export function copyImageFileInto(dir: string, src: string, hint: string): Image
     return converted ? refFrom(out, converted) : null;
   } catch {
     return null;
+  } finally {
+    if (staged) fs.rmSync(staged.work, { recursive: true, force: true });
   }
+}
+
+function stageToolImage(file: string, opts: ToolImageOptions): { input: string; work: string; bytes: number; sha: string; head: Buffer; adjust?: (actualBytes: number) => void } {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  let work: string | undefined;
+  let out: number | undefined;
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > Math.min(opts.maxBytes ?? MAX_IMAGE_BYTES, MAX_IMAGE_BYTES)) throw new Error('Tool image is too big');
+    const adjust = opts.reserve?.(st.size) || undefined;
+    work = fs.mkdtempSync(path.join(os.tmpdir(), 'threadbear-tool-image-'));
+    const input = path.join(work, 'input');
+    out = fs.openSync(input, 'wx', 0o600);
+    const buf = Buffer.alloc(64 * 1024);
+    const hash = crypto.createHash('sha1');
+    let head = Buffer.alloc(0);
+    let at = 0;
+    while (at < st.size) {
+      const n = fs.readSync(fd, buf, 0, Math.min(st.size - at, buf.length), at);
+      if (!n) throw new Error('Tool image changed while being read');
+      if (!head.length) head = Buffer.from(buf.subarray(0, n));
+      hash.update(buf.subarray(0, n));
+      let wrote = 0;
+      while (wrote < n) wrote += fs.writeSync(out, buf, wrote, n - wrote);
+      at += n;
+    }
+    return { input, work, bytes: at, sha: hash.digest('hex').slice(0, 10), head, ...(adjust ? { adjust } : {}) };
+  } catch (e) {
+    if (out !== undefined) { fs.closeSync(out); out = undefined; }
+    if (work) fs.rmSync(work, { recursive: true, force: true });
+    throw e;
+  } finally { fs.closeSync(fd); if (out !== undefined) fs.closeSync(out); }
 }
 
 // Saves a `data:<type>;base64,<data>` image into a media folder. Null when
 // it isn't a base64 data URL of an image.
-export function saveDataUrl(dir: string, url: string, hint: string): ImageRef | null {
+export function saveDataUrl(dir: string, url: string, hint: string, opts: ToolImageOptions = {}): ImageRef | null {
   const m = /^data:([\w.+-]+\/[\w.+-]+)?((?:;[\w-]+=[^;,]*)*);base64,/i.exec(url);
   if (!m) return null;
   const data = url.slice(m[0].length);
   if (!sniffImage(Buffer.from(data.slice(0, 64 * 1024), 'base64'))) return null;
   try {
-    return saveBase64Image(dir, data, m[1] ?? 'image/png', hint);
+    return saveBase64Image(dir, data, m[1] ?? 'image/png', hint, opts);
   } catch {
     return null;
   }

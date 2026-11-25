@@ -12,6 +12,15 @@ import { remoteCreateMode, remoteCreateModeOf } from '../../src/protocol.ts';
 
 const { commandArgs } = load('relay') as { commandArgs: (kind: string, a: unknown) => Record<string, unknown> };
 
+test('the backend preserves agent attribution for Stop, snooze and wake while old unmarked commands stay valid', () => {
+  assert.deepEqual(commandArgs('interrupt', { by: 'agent' }), { by: 'agent' });
+  assert.deepEqual(commandArgs('interrupt', {}), {});
+  for (const change of [{ snooze: { until: '2026-11-30T00:00:00Z' } }, { wake: true }]) {
+    assert.equal(commandArgs('update', { ...change, by: 'agent' }).by, 'agent');
+    assert.equal('by' in commandArgs('update', change), false);
+  }
+});
+
 test('the backend keeps every mode of a create, Plan first included, and refuses an unknown one', () => {
   for (const mode of ['full', 'ask', 'auto', 'plan'] as const) assert.equal(commandArgs('create', { text: 'go', permissionMode: mode }).permissionMode, mode);
   assert.deepEqual(commandArgs('create', { text: 'go', ...remoteCreateMode('plan') }), { text: 'go', permissionMode: 'ask', plan: true });

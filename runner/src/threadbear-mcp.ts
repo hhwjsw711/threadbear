@@ -664,6 +664,11 @@ export function buildThreadbearTools(
     const m = (await control.get(selfId)).permissionMode ?? 'ask';
     return m === 'full' ? undefined : { mode: m };
   };
+  const sameCaller = async (before: Authority | undefined): Promise<Authority | undefined> => {
+    const current = await restricted();
+    if (current && raises(before?.mode ?? 'full', current.mode)) throw new Error('This thread has less access now. Ask again before making this change.');
+    return current;
+  };
   // A thread's saved mode, for a change to it. A thread this runner can't
   // read (gone, or on a runner it can't reach) counts as full.
   const modeOf = async (id: string): Promise<{ mode: PermissionMode; title: string }> => {
@@ -1732,7 +1737,9 @@ export function buildThreadbearTools(
         // the project). And it's that brief it gets: one changed while the
         // card was up (an update_project before this thread is in it asks
         // nothing) is refused.
-        const reasons = await sendReason(id, await restricted(), `Put the project "${p.title}" and its brief into`);
+        const caller = await restricted();
+        const shownAccess = await accessOf(id);
+        const reasons = caller && id !== selfId && above(shownAccess, caller) ? [`Put the project "${p.title}" and its brief into "${shownAccess.title}", which has ${accessName(shownAccess)}`] : [];
         const current = (await mustProjects().get(p.id)).project;
         // A folder that's a link keeps leading wherever it's pointed after
         // the card (the project holds the name, and its patches load from
@@ -1740,11 +1747,13 @@ export function buildThreadbearTools(
         const linked = reasons.length ? current.folders.find((f) => realOr(f) !== f) : undefined;
         if (linked) throw new Error(`${linked} in the project "${p.title}" is a link (to ${realOr(linked)}), so "${p.title}" can't be put into a thread with more access from here. Ask the user to do it.`);
         const shown = await fullBriefShown(current);
+        await sameCaller(caller);
         await confirm('join_project', reasons, { project: p.id, threadId: id, ...shown }, extra?.signal);
         if (reasons.length && JSON.stringify(await fullBriefShown((await mustProjects().get(p.id)).project)) !== JSON.stringify(shown)) {
           throw new Error(`The project "${p.title}" changed while the user was being asked, so the thread wasn't put in it. Ask again.`);
         }
-        await mustProjects().changeMembership(id, { add: [p.id], by: 'agent' });
+        await sameCaller(caller);
+        await mustProjects().changeMembership(id, { add: [p.id], by: 'agent', ...(caller && id !== selfId ? { controlCeiling: reasons.length ? higherOf(caller.mode, shownAccess.mode) : caller.mode } : {}) });
         return `${id === selfId ? 'This thread is' : `"${(await control.get(id)).title}" is`} in "${p.title}" now.`;
       }),
     ),
@@ -1752,10 +1761,16 @@ export function buildThreadbearTools(
       'leave_project',
       'Takes a thread (this one by default) out of a project. The librarian will not put it back.',
       { project: z.string().describe('Project id, id prefix or title.'), ...thisOrOther },
-      handle(async ({ project: q, threadId, id: alias }) => {
+      handle(async ({ project: q, threadId, id: alias }, extra) => {
         const id = await resolve(threadId ?? alias);
         const p = await project(q);
-        await mustProjects().changeMembership(id, { remove: [p.id], by: 'agent' });
+        const caller = await restricted();
+        const shown = await accessOf(id);
+        const reasons = caller && id !== selfId && above(shown, caller) ? [`Take "${shown.title}", which has ${accessName(shown)}, out of the project "${p.title}"`] : [];
+        await sameCaller(caller);
+        await confirm('leave_project', reasons, { project: p.id, threadId: id }, extra?.signal);
+        await sameCaller(caller);
+        await mustProjects().changeMembership(id, { remove: [p.id], by: 'agent', ...(caller && id !== selfId ? { controlCeiling: reasons.length ? higherOf(caller.mode, shown.mode) : caller.mode } : {}) });
         return `${id === selfId ? 'This thread is' : `"${(await control.get(id)).title}" is`} no longer in "${p.title}".`;
       }),
     ),
@@ -2623,7 +2638,7 @@ export function buildThreadbearTools(
           const { t, runner } = hit.other;
           if ([title, model, effort, p, permissionMode].some((x) => x !== undefined)) throw new Error(`"${t.title}" runs on ${runner}: only snooze and archive change it from here. Do the rest in a thread on ${runner}.`);
           if (snooze === undefined && archived === undefined) throw new Error('Nothing to change: pass snooze or archived.');
-          const change: Record<string, unknown> = {};
+          const change: Record<string, unknown> = { byAgent: true };
           if (archived !== undefined) {
             change.archived = archived;
             if (archived) change.archivedBy = 'agent';
@@ -2633,6 +2648,9 @@ export function buildThreadbearTools(
             if (word === 'release') throw new Error(`${runner} can't be asked to wake it on its next release from here; use a time, or "restart".`);
             change.snoozedUntil = word === 'off' ? null : word === 'restart' ? 'restart' : parseWhen(snooze, now());
           }
+          // A remote summary can't attest to the live turn's access, so a
+          // limited caller always asks. Show every field being sent.
+          if (await restricted()) await confirm('update_thread', [`Change "${t.title}" on ${runner}, whose live access is unknown`], { threadId: hit.id, ...change }, extra?.signal);
           await remote.call(hit.id, 'threads.update', { threadId: hit.id, ...change });
           const did = [archived === true ? 'archived' : archived === false ? 'back in the inbox' : '', snooze !== undefined ? (change.snoozedUntil === null ? 'awake' : `snoozed until ${change.snoozedUntil === 'restart' ? 'its runner restarts' : change.snoozedUntil}`) : ''].filter(Boolean).join(' and ');
           return `"${t.title}" on ${runner} is ${did}.`;
@@ -2658,15 +2676,17 @@ export function buildThreadbearTools(
         // Raising access (above): a mode above the thread's own asks, from a
         // thread not in full mode; lowering doesn't.
         const by = await restricted();
-        // A title is the renaming agent's own words, and a thread's title
-        // reaches its agent and others' (list_threads), so renaming a thread with more access is a
-        // message to it (Codex's review of Daybreak finding 111, 13 Nov 2026).
-        if (title !== undefined) await confirm('update_thread', await sendReason(id, by, 'Rename'), { threadId: id, title }, extra?.signal);
+        let shownTarget = await accessOf(id);
+        const reasons: string[] = [];
+        if (by && id !== selfId && above(shownTarget, by)) {
+          const onlyTitle = Object.keys(upd).every((k) => ['threadId', 'byAgent', 'title', 'titleBy'].includes(k));
+          reasons.push(`${onlyTitle ? 'Rename' : 'Change'} "${shownTarget.title}", which has ${accessName(shownTarget)}`);
+        }
         if (permissionMode !== undefined && by) {
           const t = await modeOf(id);
           // The card shows a title set in the same call: allowed, it lands
           // under the raised mode (Codex's second review, finding 111).
-          if (raises(permissionMode, t.mode)) await confirm('update_thread', [`Switch ${threadName(id, t.title)} to ${MODE_NAMES[permissionMode]}`], { threadId: id, permissionMode, ...(title !== undefined ? { title } : {}) }, extra?.signal);
+          if (raises(permissionMode, t.mode)) reasons.push(`Switch ${threadName(id, t.title)} to ${MODE_NAMES[permissionMode]}`);
           // The mode it has already is left out, so this write landing after
           // someone else lowers it (a handover's round trip) can't raise it back.
           else if (permissionMode === t.mode) delete upd.permissionMode;
@@ -2674,8 +2694,23 @@ export function buildThreadbearTools(
           // what the user set up, and would let delete_schedule through on
           // that thread's schedules (OpenCode's review of the Daybreak
           // finding 138 fix).
-          else if (id !== selfId && above(await accessOf(id), by)) await confirm('update_thread', [`Switch ${threadName(id, t.title)} to ${MODE_NAMES[permissionMode]}`], { threadId: id, permissionMode, ...(title !== undefined ? { title } : {}) }, extra?.signal);
+          else if (id !== selfId && above(await accessOf(id), by)) {
+            const onlyMode = Object.keys(upd).every((k) => ['threadId', 'byAgent', 'permissionMode'].includes(k));
+            if (onlyMode) reasons.length = 0;
+            reasons.push(`Switch ${threadName(id, t.title)} to ${MODE_NAMES[permissionMode]}`);
+          }
         }
+        // One card approves the combined mutation. A title or permission
+        // prompt must never carry an unseen model/archive/snooze change.
+        // Re-read immediately before dispatch if no card was needed earlier.
+        if (!reasons.length) shownTarget = await accessOf(id);
+        const current = await sameCaller(by);
+        if (!reasons.length && current && id !== selfId && above(shownTarget, current)) reasons.push(`Change "${shownTarget.title}", which has ${accessName(shownTarget)}`);
+        await confirm('update_thread', reasons, { ...upd }, extra?.signal);
+        await sameCaller(current);
+        // Approval vouches only for the access shown (or explicitly raised
+        // to), not any higher turn that starts while its card is waiting.
+        if (current && id !== selfId) upd.controlCeiling = reasons.length ? higherOf(current.mode, higherOf(shownTarget.mode, upd.permissionMode ?? current.mode)) : current.mode;
         return describe((await control.update(upd)).thread);
       }),
     ),
@@ -2707,7 +2742,10 @@ export function buildThreadbearTools(
           if (caller) {
             const t = id === selfId ? undefined : await accessOf(id);
             const name = threadName(id, t?.title ?? '');
-            await confirm('move_thread', [`Move ${name} to the runner ${dest.name} (${dest.id}): it carries on there, on that machine`], { threadId: id, runner: dest.id, runnerName: dest.name, ...(f ? { folder: f } : {}), ...(acc ? { account: acc } : {}) }, extra?.signal);
+            // A source on another runner cannot attest to its live access.
+            // Ask about the highest access it can carry, even if its current
+            // summary says Ask; approval then covers a concurrent mode raise.
+            await confirm('move_thread', [`Move ${name} to the runner ${dest.name} (${dest.id}), where it may continue with Full access`], { threadId: id, runner: dest.id, runnerName: dest.name, ...(f ? { folder: f } : {}), ...(acc ? { account: acc } : {}) }, extra?.signal);
           }
           return mover({ threadId: id, runnerId: dest.id, runnerName: dest.name, ...(f?.trim() ? { cwd: f.trim() } : {}), ...(acc?.trim() ? { accountId: acc.trim() } : {}) });
         }
@@ -2721,8 +2759,11 @@ export function buildThreadbearTools(
         const accountId = await account(acc);
         // `then`'s ceiling, as send_message's (runner/ceiling.ts).
         const thenBefore = (await accessOf(id)).mode;
+        let approved = false;
+        let shownAccess: PermissionMode | undefined;
         if (caller) {
           const t = id === selfId ? undefined : await accessOf(id);
+          shownAccess = t?.mode;
           const checks = schedules ? (await schedules.list(id)).filter((sc) => sc.threadId === id && sc.check?.trim()) : [];
           const name = threadName(id, t?.title ?? '');
           const reasons = [
@@ -2730,10 +2771,12 @@ export function buildThreadbearTools(
             ...(checks.length ? [`Move ${name} to ${cwd}, where ${checks.length === 1 ? `the schedule "${checks[0].title}" runs its shell check` : `${checks.length} schedules run their shell checks`} as you`] : []),
           ];
           await confirm('move_thread', reasons, { threadId: id, folder: cwd, ...(acc ? { account: accountId } : {}), ...(then ? { then } : {}) }, extra?.signal);
+          approved = reasons.length > 0;
           if (reasons.length) await sameFolder(f, cwd);
         }
         const thenCeiling: PermissionMode = caller ? asCeiling(higherOf(caller.mode, lowerOf(thenBefore, (await accessOf(id)).mode))) : 'full';
-        const t = (await control.update({ threadId: id, cwd, accountId, byAgent: true })).thread;
+        const current = await sameCaller(caller);
+        const t = (await control.update({ threadId: id, cwd, accountId, byAgent: true, ...(current && id !== selfId ? { controlCeiling: approved ? higherOf(current.mode, shownAccess ?? current.mode) : current.mode } : {}) })).thread;
         const self = id === selfId;
         if (then?.trim()) {
           await control.send(id, `${MOVE_MESSAGE_PREFIX}${t.cwd}]\n\n${then.trim()}`, [], { ceiling: thenCeiling });
@@ -2747,19 +2790,26 @@ export function buildThreadbearTools(
       'interrupt_thread',
       'Stops the turn another thread is running, like pressing Stop in the app.',
       other,
-      handle(async ({ threadId, id: alias }) => {
+      handle(async ({ threadId, id: alias }, extra) => {
         const asked = threadId ?? alias;
         if (!asked) throw new Error('threadId is required. list_threads shows the ids.');
         const hit = await find(asked);
         const remote = opts.remote?.();
         if (hit.other && remote) {
           // A Stop for that runner, as the Mac app's (relay.ts).
-          await remote.call(hit.id, 'threads.interrupt', { threadId: hit.id });
+          if (await restricted()) await confirm('interrupt_thread', [`Interrupt "${hit.other.t.title}" on ${hit.other.runner}, whose live access is unknown`], { threadId: hit.id, byAgent: true }, extra?.signal);
+          await remote.call(hit.id, 'threads.interrupt', { threadId: hit.id, byAgent: true });
           return `Asked ${hit.other.runner} to stop "${hit.other.t.title}".`;
         }
         const id = await resolveOther(asked);
         if (id === selfId) throw new Error("That's this thread. Just end the turn.");
-        await control.interrupt(id);
+        const caller = await restricted();
+        const shown = await accessOf(id);
+        await sameCaller(caller);
+        const reasons = caller && above(shown, caller) ? [`Interrupt "${shown.title}", which has ${accessName(shown)}`] : [];
+        await confirm('interrupt_thread', reasons, { threadId: id }, extra?.signal);
+        await sameCaller(caller);
+        await control.interrupt(id, caller ? { controlCeiling: reasons.length ? higherOf(caller.mode, shown.mode) : caller.mode } : {});
         return `Interrupted ${id.slice(0, 8)} "${(await control.get(id)).title}".`;
       }),
     ),

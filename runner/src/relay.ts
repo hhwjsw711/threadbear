@@ -1666,7 +1666,7 @@ export class Relay {
         return { turnId: '', ...(r.state === 'pending' ? { queued: true } : {}) };
       }
       case 'threads.interrupt':
-        await this.command(w.runnerId, threadId, 'interrupt', {});
+        await this.command(w.runnerId, threadId, 'interrupt', p.byAgent === true ? { by: 'agent' } : {});
         return {};
       case 'approvals.respond': {
         const approvalId = String(p.approvalId ?? '');
@@ -1760,7 +1760,7 @@ export class Relay {
         // Kept as each is done, so one failing after another went through
         // doesn't lose the one that did.
         for (const [change, patch] of changes) {
-          await this.command(w.runnerId, threadId, 'update', change, { done: true });
+          await this.command(w.runnerId, threadId, 'update', { ...change, ...(p.byAgent === true ? { by: 'agent' } : {}) }, { done: true });
           this.remember(threadId, patch);
         }
         // The app takes `{ thread }` back, as from any runner, and decodes

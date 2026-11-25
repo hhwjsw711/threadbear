@@ -109,13 +109,11 @@ export class CallerGate {
   // What another thread's agent has, for anything that reaches it. One this
   // runner can't read counts as full, as threadbear-mcp.ts's accessOf does.
   private targetAccess(threadId: string): Authority {
-    const { runner, remote } = this.deps;
+    const { runner } = this.deps;
     if (runner.has(threadId)) return { mode: runner.accessOf(threadId) };
-    const t = remote?.owns(threadId) ? remote.summaries([...ALL]).find((x) => x.id === threadId) : undefined;
-    // A busy thread on a draining runner may be running a turn that started
-    // with more than its saved mode; a summary doesn't say, so assume it did.
-    const busy = t?.status === 'running' || t?.status === 'starting' || t?.status === 'waiting';
-    return { mode: busy ? 'full' : (t?.permissionMode ?? 'full') };
+    // A draining runner's summary cannot attest to its live turn or what
+    // may start before a forwarded call lands. Its tools can ask on a card.
+    return { mode: 'full' };
   }
 
   private title(threadId: string): string {
@@ -218,8 +216,6 @@ export class CallerGate {
       // Only to a thread on this runner: to one another runner has (a
       // handover, another Mac), the copy's path would cross to a runner that
       // can't check it, after this tick (Codex's and Gemini's third reviews).
-      const to = method === 'threads.send' ? str(p, 'threadId') : undefined;
-      if (method === 'threads.send' && (!to || !this.deps.runner.has(to))) throw needs("sending pictures to a thread that isn't on this runner");
       return { ...out, images: this.deps.images.take(threadId, p.images) };
     };
     switch (method) {
@@ -236,6 +232,7 @@ export class CallerGate {
       }
       case 'threads.send': {
         const id = str(p, 'threadId');
+        if (Array.isArray(p.images) && p.images.length && (!id || !this.deps.runner.has(id))) throw needs("sending pictures to a thread that isn't on this runner");
         if (id && id !== threadId) {
           const t = this.targetAccess(id);
           if (above(t, caller)) throw needs(`sending a message to ${this.title(id)}, which has ${MODE_NAMES[t.mode]}`, 'send_message');
@@ -255,14 +252,15 @@ export class CallerGate {
       case 'threads.interrupt': {
         const id = str(p, 'threadId');
         if (id === threadId) throw new RpcError(ErrorCode.notAllowed, "That's the thread this runs in. Just end the turn.");
-        return { ...p, byAgent: true };
+        if (!id || above(this.targetAccess(id), caller)) throw needs(`interrupting ${id ? this.title(id) : 'a thread'}`, 'interrupt_thread');
+        return { ...p, byAgent: true, controlCeiling: caller.mode };
       }
       case 'threads.update':
         return this.update(threadId, caller, p, needs);
       case 'threads.setProjects': {
         const id = str(p, 'threadId');
         if (id && id !== threadId && above(this.targetAccess(id), caller)) throw needs(`changing the projects of ${this.title(id)}`, 'join_project');
-        return { ...p, by: 'agent' };
+        return { ...p, by: 'agent', controlCeiling: id && id !== threadId ? caller.mode : undefined };
       }
       case 'threads.showPanel': {
         if (str(p, 'threadId') !== threadId) throw needs("opening another thread's panel", 'show_panel');
@@ -286,7 +284,7 @@ export class CallerGate {
   }
 
   private update(threadId: string, caller: Authority, p: Params, needs: (what: string, tool?: string) => RpcError): Params {
-    const out: Params = { ...p };
+    const out: Params = { ...p, byAgent: true };
     const id = str(p, 'threadId');
     if (!id) return out;
     const self = id === threadId;
@@ -295,6 +293,11 @@ export class CallerGate {
         throw needs(`setting ${k} on a thread`);
       }
     }
+    // Authorize the whole mutation, not selected fields: a model change,
+    // Stop, wake or Archive steers the target just as a message does.
+    // Unknown and busy draining targets count as Full (targetAccess).
+    if (!self && above(this.targetAccess(id), caller)) throw needs(`changing ${this.title(id)}`, p.cwd !== undefined || p.accountId !== undefined ? 'move_thread' : 'update_thread');
+    if (!self) out.controlCeiling = caller.mode;
     if (self && (p.archived === true || (p.snoozedUntil !== undefined && p.snoozedUntil !== null))) {
       throw new RpcError(ErrorCode.notAllowed, "Can't snooze or archive the thread this runs in from inside its own turn. Call end_turn with archive: true or a snooze instead.");
     }

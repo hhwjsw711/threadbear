@@ -49,6 +49,7 @@ import type {
 import { agentsStillWorking, ErrorCode, LIMITS, PROTOCOL_VERSION, RpcError, sentByAgent } from './protocol.ts';
 import { cliName, providerName, providersForHello } from './providers.ts';
 import { unsupportedResetMessage } from './reset-hint.ts';
+import { raises } from './access.ts';
 import type { ArchivedBy, ArchiveVerdict, UnarchiveVerdict, LibrarianStatus, LooseEnd, Project, Schedule } from './protocol.ts';
 import { Projects } from './projects.ts';
 import type { Settings } from './settings.ts';
@@ -87,7 +88,7 @@ import { ImportQuota } from './media-quota.ts';
 import { isDirectory } from './fsutil.ts';
 import { commandFolders } from './tools.ts';
 import { copySessionTranscript, subagentTranscriptPath } from './transcripts.ts';
-import { readSubagentTranscript } from './adapters/claude/subagents.ts';
+import { readSubagentTranscript, SubagentTranscripts } from './adapters/claude/subagents.ts';
 import { fileContext } from './adapters/claude/normalize.ts';
 import type { Models } from './models/index.ts';
 import { LATE_CHECK_LOST, LATE_CHECK_QUEUED, LATE_NEWS_KEPT_MS, localWhen } from './wake-when.ts';
@@ -2007,6 +2008,8 @@ export class Runner {
     return this.summary(this.mustGet(threadId));
   }
 
+  private subagentReads = new SubagentTranscripts();
+
   // What a sub-agent has done so far, from the CLI's transcript of it or from
   // a hidden runner-managed coordinator helper's persisted event log.
   subagent(threadId: string, subagentId: string): { subagent?: Subagent; events: PersistedEvent[] } {
@@ -2027,7 +2030,7 @@ export class Runner {
     const ctx = fileContext(cwd, this.store.mediaDir(rec.id), path.join(this.store.blobsDir(rec.id), 'subagents'));
     let read: ReturnType<typeof readSubagentTranscript>;
     try {
-      read = readSubagentTranscript(file, ctx);
+      read = this.subagentReads.read(file, ctx);
     } catch (e) {
       throw new RpcError(ErrorCode.subagentNotFound, `Couldn't read sub-agent ${subagentId}'s transcript: ${String(e)}`);
     }
@@ -4165,8 +4168,9 @@ export class Runner {
   // byMike: his Stop, in the app or on the phone. Everything else that stops
   // a turn (an agent's interrupt_thread, an archive, a move) mustn't reach
   // the agent as his decision (docs/protocol/needs-you.md, "Who stopped it").
-  interrupt(threadId: string, opts: { byMike?: boolean } = {}): Record<string, never> {
+  interrupt(threadId: string, opts: { byMike?: boolean; controlCeiling?: PermissionMode } = {}): Record<string, never> {
     const st = this.mustGet(threadId);
+    this.checkControlCeiling(threadId, opts.controlCeiling);
     const { rt } = st;
     const turn = rt.turn;
     const closing = { stopped: opts.byMike === true };
@@ -4201,6 +4205,7 @@ export class Runner {
 
   update(params: {
     threadId: string;
+    controlCeiling?: PermissionMode;
     title?: string;
     // Who the title is from. Mike's (the default: the app, tb) sticks: an
     // agent can't rename it after, unless it says Mike asked it to and
@@ -4252,6 +4257,7 @@ export class Runner {
     why?: string;
   }): { thread: ThreadSummary } {
     const st = this.mustGet(params.threadId);
+    this.checkControlCeiling(params.threadId, params.controlCeiling);
     const { rec, rt } = st;
     if (params.permissionMode !== undefined) this.checkHelperPermissionChange(st, params.permissionMode);
     if (this.activeCoordinator(rec.id) && (params.archived || params.snoozedUntil)) {
@@ -5474,6 +5480,12 @@ export class Runner {
   accessOf(threadId: string): PermissionMode {
     const { rec, rt } = this.mustGet(threadId);
     return moreAccess(rt.turn?.access, rec.permissionMode);
+  }
+
+  // A mutation carries the caller's authority, or the access approved on
+  // its card, to the final sink across a handover. Never from mirror data.
+  private checkControlCeiling(threadId: string, ceiling?: PermissionMode): void {
+    if (ceiling !== undefined && raises(this.accessOf(threadId), ceiling)) throw new RpcError(ErrorCode.notAllowed, 'This thread has more access now. Use update_thread or interrupt_thread to ask for this exact change.');
   }
 
   // Why a thread can't start, from the sandboxed-threads experiment taken

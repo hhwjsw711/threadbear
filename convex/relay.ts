@@ -321,7 +321,7 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
       if (out.archive === true && ['worked', 'didntWork', 'notNeeded'].includes(String(a.verdict))) out.verdict = a.verdict;
       // An agent on the main Mac archived it (its threadbear tools), so that
       // runner says "archived by an agent", not by Mike.
-      if (out.archive === true && a.by === 'agent') out.by = 'agent';
+      if (a.by === 'agent') out.by = 'agent';
       break;
     case 'create':
       // Pictures alone will do (API 63), as a new thread from this Mac's own composer.
@@ -342,7 +342,7 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
       }
       break;
     case 'interrupt':
-      out = {};
+      out = a.by === 'agent' ? { by: 'agent' } : {};
       break;
     case 'call':
       if (!CALLS.has(String(a.method))) throw bad(`only ${[...CALLS].join(', ')} can be asked of another runner`);

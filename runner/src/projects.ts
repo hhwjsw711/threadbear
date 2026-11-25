@@ -16,8 +16,9 @@ import crypto from 'node:crypto';
 import type { Clock } from './clock.ts';
 import type { Logger } from './log.ts';
 import type { Notification } from './runner.ts';
-import type { Project, ProjectIcon, ProjectLink, ProjectMaker, ThreadProject, ThreadSummary } from './protocol.ts';
-import { ErrorCode, RpcError } from './protocol.ts';
+import type { PermissionMode, Project, ProjectIcon, ProjectLink, ProjectMaker, ThreadProject, ThreadSummary } from './protocol.ts';
+import { ErrorCode, RpcError, isPermissionMode } from './protocol.ts';
+import { raises } from './access.ts';
 import type { ThreadRecord } from './store.ts';
 import type { PatchThread } from './patches.ts';
 import type { ProjectFolder } from './patches.ts';
@@ -41,6 +42,7 @@ export type IconChoice = { path?: string; symbol?: string };
 // one (which saves it, sends its summary and says what changed), and the
 // clients.
 export type ProjectHost = {
+  accessOf?(threadId: string): PermissionMode;
   beforeProjectRemoval?(projectId: string): void;
   threadRecords(): ThreadRecord[];
   // Changes a thread's record, then saves it and sends its summary. `note`
@@ -93,6 +95,7 @@ export type UpdateProjectParams = {
 };
 
 export type MembershipChange = {
+  controlCeiling?: PermissionMode;
   add?: string[];
   remove?: string[];
   by: ProjectMaker;
@@ -572,6 +575,7 @@ export class Projects {
   changeMembership(threadId: string, change: MembershipChange): { joined: string[]; left: string[]; thread: ThreadSummary } {
     const host = this.mustHost();
     const id = host.resolveThread(threadId);
+    if (change.controlCeiling !== undefined && raises(host.accessOf?.(id) ?? 'full', change.controlCeiling)) throw new RpcError(ErrorCode.notAllowed, 'This thread has more access now. Ask again before changing its projects.');
     const add = (change.add ?? []).map((p) => this.must(p).id);
     const remove = (change.remove ?? []).map((p) => this.must(p).id);
     const rec = host.threadRecords().find((t) => t.id === id)!;
@@ -970,7 +974,7 @@ export function projectMethods(projects: Projects): Record<string, (p: Record<st
     'projects.merge': (p) => ({ project: projects.merge(reqStr(p, 'projectId'), reqStr(p, 'intoId')) }),
     'projects.delete': (p) => projects.delete(reqStr(p, 'projectId')),
     'threads.setProjects': (p) => ({
-      thread: projects.changeMembership(reqStr(p, 'threadId'), { add: strList(p, 'add'), remove: strList(p, 'remove'), by: p.by === 'agent' ? 'agent' : 'mike' }).thread,
+      thread: projects.changeMembership(reqStr(p, 'threadId'), { add: strList(p, 'add'), remove: strList(p, 'remove'), by: p.by === 'agent' ? 'agent' : 'mike', ...(p.controlCeiling !== undefined ? { controlCeiling: isPermissionMode(p.controlCeiling) ? p.controlCeiling : 'ask' } : {}) }).thread,
     }),
   };
 }

@@ -631,7 +631,7 @@ test('a card closed unanswered is a plain denial saying so; only Stop interrupts
     const sink: SessionSink = { output: () => {}, requestApproval: async () => answer, requestQuestion: async () => ({ answers: null }), exited: () => {} };
     const adapter = new ClaudeAdapter({ claudePath: '/nonexistent', registry: new ProcessRegistry(tmpDir(), nullLogger), log: nullLogger, queryFn: fn });
     const dir = tmpDir();
-    adapter.start({ threadId: 't', sessionId: 's', resume: false, cwd: dir, account: { id: 'a', provider: 'claude', configDir: dir } as never, permissionMode: 'ask', tmpDir: dir } as never, sink);
+    adapter.start({ threadId: 't', sessionId: 's', resume: false, cwd: dir, account: { id: 'a', provider: 'claude', configDir: dir } as never, permissionMode: 'ask', tmpDir: dir, mediaDir: dir, blobsDir: dir } as never, sink);
     const res = await state.options.canUseTool('Write', { file_path: '/tmp/x.txt', content: 'hi' }, { signal: new AbortController().signal, toolUseID: 'toolu_sub', agentID: 'agent-1' });
     assert.equal(res.behavior, 'deny');
     assert.equal(res.interrupt, interrupt);

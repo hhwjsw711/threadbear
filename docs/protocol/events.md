@@ -496,6 +496,7 @@ Persisted event types (stored in `events.ndjson`, returned by `threads.events`):
 | `reasoning` | `itemId`, `text` (summary) |
 | `tool.call` | `itemId`, `name` (raw tool name), `kind` (`command` \| `read` \| `edit` \| `write` \| `search` \| `web` \| `mcp` \| `task` \| `todo` \| `image` \| `other`; `image` is image generation), `title` (one line, e.g. "npm test" or "Edit src/a.ts"), `input` (object, large strings truncated to 16 KB) |
 | `tool.result` | `itemId` (matches the call), `ok`, `text` (truncated to 64 KB), `truncated`, `blobPath?`, `images: ImageRef[]` |
+
 | `edit.diff` | `itemId`, `path`, `hunks: {oldStart, oldLines, newStart, newLines, lines: string[]}[]` (lines start with " ", "-" or "+"); sent after `tool.call` for Edit/MultiEdit/Write when the runner can compute it. One event per file: a tool that changes several files (a Codex patch) has one per path. A later `edit.diff` with the same `itemId` and `path` replaces that file's diff; a new path adds one |
 | `approval.requested` | `approvalId`, `itemId?` (absent for a subagent's tools, which have no `tool.call`), `name`, `title`, `input` (a command, and every argument of an MCP tool or a file edit, whole: a call with one longer than 16 KB is refused with no card; other strings cut as in `tool.call`), `options: ("allow" \| "allowAlways" \| "deny")[]`, `reason?` (why it's asking, when Claude's CLI says: Auto's safety check couldn't clear the call, a rule or a hook asks; never the permission mode itself. Clients show it under the title. A call the CLI refuses without a card, such as one Auto's check stops, is a `system.note` saying why, when it gives a reason). A subagent's card (no `itemId`) needs no turn: it can come with no `turnId`, and it outlives the turn it came in ("A subagent's card") |
 | `question.requested` | `approvalId`, `itemId?` (absent for a subagent's), `questions: {question, header?, multiSelect, options: {label, description?}[]}[]` |
@@ -512,6 +513,16 @@ Persisted event types (stored in `events.ndjson`, returned by `threads.events`):
 | `error` | `message` |
 | `action.run` | `actionId`, `patch`, `title`, `command`, `ok`, `exitCode?`, `text` (what it printed, truncated to 64 KB), `truncated`, `durationMs`, `trigger?` (`"turn.end"` when a hook ran it, `"worktree.setup"` for a new worktree's `setup`, `"worktree.teardown"` for an archived thread's worktree `teardown` (see Worktrees); absent for a chip or `tb run`). A command that `actions.run` or a hook ran; outside any turn unless one was running, in which case it carries that `turnId` |
 | `thread.rewound` | `fromSeq`, `toSeq`, `files: { undone: string[], failed: { path, reason }[], how: "checkpoint" \| "diffs" \| "none" }`. Mike edited the message at `fromSeq` (see Editing a message): every event from `fromSeq` to `toSeq` (inclusive, always this event's `seq` - 1) is gone from the conversation, and clients hide them. Outside any turn. The edited message comes next, as a `user.message` with `editOf: fromSeq` |
+
+Tool-result images (including base64, data URLs, generated-image fallbacks and
+file-backed results) are capped at 100 MiB before copying or decoding and written
+in bounded chunks through private temporary files. Each CLI turn accepts at most 64 such images or
+256 MiB, including repeated results. A thread's media folder may hold at most
+1,024 flat image files or 1 GiB when accepting these images; this storage check survives
+restarts without following links. Review subfolders have their own allowance. File conversions
+use a private captured input, bounded output dimensions and the same byte quota,
+counting a conversion once. An image refused by these limits is omitted with the normal save-error
+text; other tool output is kept.
 
 Transient events are only sent to subscribers, never persisted, and carry
 `seq` of the last persisted event (they don't consume a number):

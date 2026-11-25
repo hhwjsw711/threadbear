@@ -50,6 +50,9 @@ export type PeerDeps = {
   // started for a thread (a patch's action) has the thread's id and the key's
   // variable, empty.
   self?: number;
+  // The primary also identifies legacy draining owner links by the socket's
+  // real holders, even when they skip hello. Never a request's claimed pid.
+  includeOwnerPids?: boolean;
 };
 
 // Every process's environment it could read, by pid; one it couldn't find
@@ -69,7 +72,7 @@ const LOOKUP_MS = 6000;
 // jobs). A lookup that can't say either throws UnresolvedPeer (or
 // AmbiguousPeer), and the server closes the connection: never "the owner"
 // for want of an answer (Daybreak finding 175).
-export type PeerCaller = { kind: 'thread'; threadId: string } | { kind: 'owner' };
+export type PeerCaller = { kind: 'thread'; threadId: string } | { kind: 'owner'; pids?: number[] };
 export const OWNER_PEER: PeerCaller = Object.freeze({ kind: 'owner' });
 export const threadPeer = (threadId: string): PeerCaller => ({ kind: 'thread', threadId });
 
@@ -450,7 +453,7 @@ export async function threadOfSocket(sock: PeerSocket, deps: PeerDeps): Promise<
     if (holders.length === 0) throw new Error('nobody holds this connection');
     pids = holders.filter((p) => p !== process.pid);
     // Only the runner itself: its own connection, the owner's.
-    if (pids.length === 0) return OWNER_PEER;
+    if (pids.length === 0) return deps.includeOwnerPids ? { kind: 'owner', pids: [process.pid] } : OWNER_PEER;
     if (!(windows && !deps.lsof)) table = await deadline((deps.table ?? (platform === 'linux' ? () => procTable(deps.procRoot) : psTable))(), ms);
     // One that isn't in the process table has gone, or the table missed
     // it: either way its parents can't be walked.
@@ -521,7 +524,7 @@ export async function threadOfSocket(sock: PeerSocket, deps: PeerDeps): Promise<
     }
     if (threads.size > 1) throw new AmbiguousPeer(`one connection is held by processes under ${threads.size} threads`);
   }
-  return threads.size === 1 ? threadPeer([...threads][0]) : OWNER_PEER;
+  return threads.size === 1 ? threadPeer([...threads][0]) : deps.includeOwnerPids ? { kind: 'owner', pids } : OWNER_PEER;
 }
 
 // Asks made while one is going wait for it and then go as one, for every

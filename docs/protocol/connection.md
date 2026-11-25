@@ -86,10 +86,26 @@ isn't limited. Any other gets the reads, and the writes that
 don't reach past it: a thread or schedule at most as high as its own
 (`permissionMode` is filled in with the caller's when left out), a message to
 a thread no higher, lowering its own mode or that of a thread no higher,
-renaming, snoozing or archiving another thread, moving a thread no higher (`unconfine` is forced false, which an
+renaming, interrupting, retuning, starring, waking, snoozing, archiving or moving
+a thread no higher (`unconfine` is forced false, which an
 older runner across a handover reads as an agent's move). Anything else
 is refused with `-32060`, whose message says which tool to use instead. Unknown
-methods are refused too. In particular it can't answer a card
+methods and update fields are refused too. A draining target or an unknown remote target
+counts as Full. The tools ask on one internal card for the complete mutation
+when it reaches higher access; saved whole-tool rules never replace that card.
+The internal interrupt and leave-project cards also bypass Auto's model reviewer.
+Local changes carry `controlCeiling` through handovers and check live access
+again in the final update, interrupt or membership operation. Approval covers the
+access shown on the card or explicitly requested there, so a target raised further
+while it waits needs another approval. A draining link's first authenticated
+`hello` advertises `threadMutationGuard: 1`; older links cannot forward updates
+or interrupts or membership changes to the primary until their remaining turns finish.
+The primary identifies draining links from verified socket-holder process IDs,
+including connections that omit or mislabel `hello`. That capability cannot be changed
+by later requests on the connection.
+Cross-runner move cards from limited threads explicitly cover Full access,
+because a remote source's live authority cannot be established from its summary.
+In particular it can't answer a card
 (`approvals.respond`, `plans.approve`, `secrets.answer`), press a button, run
 an action, trust a patch, set instructions, delete a thread, restart the runner
 or change settings; these all need the Mac app or a thread with Full access.
@@ -339,7 +355,7 @@ is done, so a client that waits for it can send big frames straight after.
 | `threads.heldBody` | `{ threadId, seq }` | `{ state }`. Another runner's thread only: one tool's output from the backend (see "Other runners' threads through the backend") |
 | `threads.subscribe` | `{ threadId, afterSeq?: number, relaySeen?: [number, number][] }` | `{ events: Event[], inProgress: { itemId, type, text }[] }` (everything after `afterSeq`, and the text streamed so far for items still streaming), then pushes `thread.event` notifications. Deltas pushed after the reply carry on from `inProgress` |
 | `threads.unsubscribe` | `{ threadId }` | `{}` |
-| `threads.subagent` | `{ threadId, subagentId }` | `{ subagent?: Subagent, events: Event[] }`: what the sub-agent has done so far, read from the CLI's own record of it, as events (`user.message` for its brief, then `assistant.text`, `reasoning`, `tool.call`, `tool.result`, `edit.diff`) numbered from 1, with no `turnId`. Read again for more while it runs: thread.updated says when it has done something. `subagent` is absent once the thread's list has dropped it. `-32006` when there's no record of it (an older thread, or the CLI cleaned it up) |
+| `threads.subagent` | `{ threadId, subagentId }` | `{ subagent?: Subagent, events: Event[] }`: what the sub-agent has done so far, read from the CLI's own record of it, as events (`user.message` for its brief, then `assistant.text`, `reasoning`, `tool.call`, `tool.result`, `edit.diff`) numbered from 1, with no `turnId`. Read again for more while it runs: thread.updated says when it has done something. Unchanged transcripts and previously imported images are reused; a fresh read takes at most 64 MiB of transcript and returns at most 8 MiB of parsed events (32 entries and 32 MiB cached per runner). `subagent` is absent once the thread's list has dropped it. `-32006` when there's no record of it, the CLI cleaned it up, or it exceeds these limits |
 | `threads.markSeen` | `{ threadId, seq }` | `{ thread: ThreadSummary }` |
 | `threads.tickAsk` | `{ threadId, asksSeq, index, ticked: boolean }` | `{ thread: ThreadSummary }`. Ticks or unticks one of the open card's asks (Needs you), with an `asks.ticked` event. Sends nothing to the agent. `-32602` when `asksSeq` isn't the open card's or `index` is out of range |
 | `threads.share` | `{ threadId, access: "off" \| "link", newLink?: boolean }` | `{ thread: ThreadSummary }`. Whether anyone with the link can read the thread on the website (see Sharing). `newLink` makes a fresh slug, which stops the old link. Another access is `-32602` |

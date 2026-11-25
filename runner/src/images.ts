@@ -26,7 +26,7 @@ export interface ConvertOptions {
   quality?: number;
   // Shrinks the picture to fit this many pixels on its longer side.
   maxPx?: number;
-  // ImageMagick only: refuse to decode a picture over this many pixels a side
+  // ImageMagick and Windows: refuse to decode a picture over this many pixels a side
   // or in all (project icons, icon-budget.ts); sips has no such setting, and
   // the icon's own headers are checked before either sees it.
   decodeLimit?: { side: number; pixels: number };
@@ -127,7 +127,7 @@ export function convertCommand(src: string, out: string, o: ConvertOptions): [st
 export function winCommand(src: string, out: string, o: ConvertOptions, script: string, powershell = powershellPath()): [string, string[]] | undefined {
   const kind = pictureKindOf(src);
   if (!kind || kind === 'icns') return undefined;
-  const p = Buffer.from([src, out, o.format, String(o.quality ?? 0), String(o.maxPx ?? 0)].join('\0'), 'utf8').toString('base64');
+  const p = Buffer.from([src, out, o.format, String(o.quality ?? 0), String(o.maxPx ?? 0), String(o.decodeLimit?.side ?? 0), String(o.decodeLimit?.pixels ?? 0)].join('\0'), 'utf8').toString('base64');
   return [powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(`$p = '${p}'\n${script}`, 'utf16le').toString('base64')]];
 }
 
@@ -161,6 +161,17 @@ export function convertImageSync(src: string, out: string, o: ConvertOptions, ti
   const cmd = convertCommand(src, out, o);
   if (!cmd) throw new Error('No image converter on this machine (sips, or ImageMagick on Linux)');
   execFileSync(cmd[0], cmd[1], { stdio: 'ignore', timeout: timeoutMs, windowsHide: true });
+}
+
+export function conversionSide(input: string, cap: number): number {
+  // sips -Z enlarges small pictures too. Query metadata from the captured
+  // file and never request an enlargement. Other converters only shrink.
+  if (!MAC) return cap;
+  const text = execFileSync('/usr/bin/sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', input], { encoding: 'utf8', timeout: 10_000, maxBuffer: 4096 });
+  const width = Number(/pixelWidth:\s*(\d+)/.exec(text)?.[1]);
+  const height = Number(/pixelHeight:\s*(\d+)/.exec(text)?.[1]);
+  if (!(width > 0 && height > 0) || width > 8192 || height > 8192 || width * height > 64 * 1024 * 1024) throw new Error('Tool image has too many pixels to convert');
+  return Math.min(cap, Math.max(width, height));
 }
 
 // convertImageSync without blocking: true when `out` was made.

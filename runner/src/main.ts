@@ -23,7 +23,7 @@ import { win32Helper } from './win32-helper.ts';
 import { RELEASE, markConfigStop, markGoodLater, onStopRequest, onSupervisorGone, ownCheckout, readRelease, readState, requestHandover, supervised, takeRollbackNotice, tellLaunchListening } from './release.ts';
 import { PatchTrust } from './patch-trust.ts';
 import type { RunnerUpdates } from './runner.ts';
-import { dropScheduled, scheduledSendMethods, sendScheduled, Peers, PrimaryLink, ThreadRouter, drainChildrenName, peersElsewhere, phoneCommands, primaryElsewhere, primaryRemote, projectRouter, removeDrainInfo, scheduleRouter, writeDrainInfo, type CrossRunnerHooks, type Elsewhere } from './handover.ts';
+import { dropScheduled, scheduledSendMethods, sendScheduled, Peers, PrimaryLink, ThreadRouter, drainChildrenName, listDrainInfos, peersElsewhere, phoneCommands, primaryElsewhere, primaryRemote, projectRouter, removeDrainInfo, scheduleRouter, writeDrainInfo, type CrossRunnerHooks, type Elsewhere } from './handover.ts';
 import { RunnerUpdater, releaseTreeAt } from './update.ts';
 import { RELEASE_NOTES_SYSTEM, SETTLE_MS, Upstream } from './upstream.ts';
 import { BringIn } from './bring-in.ts';
@@ -1967,7 +1967,8 @@ async function main(): Promise<void> {
     relay,
     virtualStart: (p) => virtualRunners.start(p),
     gate: new CallerGate({ runner, remote: peers, schedules: scheduler, images: runner.importQuota }),
-    callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id) || peers.owns(id), log, own, keyOf: (id) => makeThreadKey(token, id) }),
+    callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id) || peers.owns(id), log, own, keyOf: (id) => makeThreadKey(token, id), includeOwnerPids: true }),
+    isDrainingPid: (pid) => peers.status().some((p) => p.pid === pid) || listDrainInfos(cfg.home).some((p) => p.pid === pid),
     updates: () => (draining ? undefined : runnerUpdates()),
     appHello: (build, app) => appRestarts.appHello(build, app),
     appSeen: () => appSeen.mark(),

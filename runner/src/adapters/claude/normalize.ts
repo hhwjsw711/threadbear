@@ -86,6 +86,7 @@ export class ClaudeNormalizer {
         this.lifecycle = true;
         if (typeof msg.command_uuid === 'string' && ['queued', 'started', 'cancelled'].includes(msg.state)) out.push({ kind: 'messageState', id: msg.command_uuid, state: msg.state });
         if (msg.state === 'started') {
+          if (this.turn === 'none') this.ctx.beginTurn?.();
           this.turn = 'user';
           if (typeof msg.command_uuid === 'string') this.command = msg.command_uuid;
           this.flushNote(out);
@@ -130,6 +131,7 @@ export class ClaudeNormalizer {
   // answering a message the runner sent is a turn the CLI started itself.
   private turnStarting(out: AdapterOutput[]): void {
     if (this.turn !== 'none') return;
+    this.ctx.beginTurn?.();
     const own = this.lifecycle || this.unanswered === 0;
     this.turn = own ? 'own' : 'user';
     if (own) {

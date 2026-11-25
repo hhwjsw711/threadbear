@@ -669,10 +669,11 @@ export class PrimaryLink {
       // primary closed one as "not reading" and couldn't say whose it was).
       // Waited for: the primary answers once it knows which process this is,
       // and only then takes frames over 64 KiB (Daybreak finding 158), so a
-      // big first call can't be cut off. A hello refused still leaves the
-      // connection usable.
+      // big first call can't be cut off. Refuse the link if hello fails:
+      // its mutation capability must be acknowledged before forwarding.
       const c = RunnerClient.connect(this.url, this.token).then(async (cl) => {
-        await cl.call('hello', { client: 'threadbear-drain', version: RUNNER_VERSION, pid: process.pid }).catch(() => {});
+        try { await cl.call('hello', { client: 'threadbear-drain', version: RUNNER_VERSION, pid: process.pid, threadMutationGuard: 1 }); }
+        catch (e) { cl.close(); throw e; }
         return cl;
       });
       this.client = c;
@@ -937,10 +938,10 @@ export class ThreadRouter implements ThreadControl {
     return e ? e.call('threads.update', { ...upd, unconfine: upd.byAgent !== true }) : this.runner.update(upd);
   }
 
-  async interrupt(threadId: string): Promise<Record<string, never>> {
+  async interrupt(threadId: string, opts: Parameters<Runner['interrupt']>[1] = {}): Promise<Record<string, never>> {
     const e = this.away(threadId);
     // The router is what agents' tools go through, so this isn't Mike's Stop.
-    return e ? e.call('threads.interrupt', { threadId, byAgent: true }) : this.runner.interrupt(threadId);
+    return e ? e.call('threads.interrupt', { threadId, byAgent: true, ...(opts.controlCeiling !== undefined ? { controlCeiling: opts.controlCeiling } : {}) }) : this.runner.interrupt(threadId, opts);
   }
 
   async delete(threadId: string): Promise<Record<string, never>> {
@@ -978,7 +979,7 @@ export function phoneCommands(runner: Runner, remote?: Pick<Peers, 'owns' | 'cal
     markSeen: (id) => at(id, 'threads.markSeen', { seq: Number.MAX_SAFE_INTEGER }, () => runner.markSeen(id, runner.get(id).lastSeq)),
     create: (p) => runner.createAfterModelProbe(p),
     share: (id, p) => at(id, 'threads.share', { ...p }, () => runner.share(id, p)),
-    interrupt: (id) => at(id, 'threads.interrupt', {}, () => runner.interrupt(id, { byMike: true })),
+    interrupt: (id, opts) => at(id, 'threads.interrupt', opts?.byMike === false ? { byAgent: true } : {}, () => runner.interrupt(id, { byMike: opts?.byMike !== false })),
     quickAsk: (p) => runner.quickAsk(p),
     pressButton: (id, buttonId) => at(id, 'buttons.press', { buttonId }, () => runner.pressButton(id, buttonId)),
     listReviews: (id) => at(id, 'reviews.list', {}, () => runner.listReviews(id)),

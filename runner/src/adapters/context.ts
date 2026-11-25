@@ -8,9 +8,14 @@ import type { ImageRef } from '../protocol.ts';
 import { LIMITS } from '../protocol.ts';
 import { copyImageFileInto, saveBase64Image, saveDataUrl } from '../media.ts';
 import { safeEnd } from '../safe-cut.ts';
+import { ToolImageQuota, type ToolImageLimits } from '../tool-image-quota.ts';
 
 export type NormalizerContext = {
   cwd: string;
+  // Upper bound for serialized local image/blob paths, for side-effect-free
+  // transcript preflight. File names here are ASCII and filesystem bounded.
+  savedPathBudget?: number;
+  imageScope?: string;
   readFile(p: string): string | null;
   saveImage(data: string, mediaType: string, hint: string): ImageRef;
   saveBlob(itemId: string, text: string): string;
@@ -23,14 +28,20 @@ export type NormalizerContext = {
   copyImage?(src: string, hint: string): ImageRef | null;
   // Saves a data: URL image into the media folder. Null when it isn't one.
   saveDataUrl?(url: string, hint: string): ImageRef | null;
+  beginTurn?(): void;
 };
 
 // Biggest CLI output file copied into blobs/.
 const MAX_BLOB_COPY = 64 * 1024 * 1024;
 
-export function fileContext(cwd: string, mediaDir: string, blobsDir: string): NormalizerContext {
+export function fileContext(cwd: string, mediaDir: string, blobsDir: string, imageLimits?: ToolImageLimits): NormalizerContext {
+  const quota = new ToolImageQuota(mediaDir, imageLimits);
+  const imageOptions = { maxBytes: quota.limits.imageBytes, reserve: (bytes: number) => quota.reserve(bytes) };
   return {
     cwd,
+    imageScope: mediaDir,
+    savedPathBudget: Math.max(Buffer.byteLength(JSON.stringify(mediaDir)), Buffer.byteLength(JSON.stringify(blobsDir))) + 1024,
+    beginTurn: () => quota.beginTurn(),
     readFile(p) {
       try {
         const abs = path.isAbsolute(p) ? p : path.join(cwd, p);
@@ -41,9 +52,9 @@ export function fileContext(cwd: string, mediaDir: string, blobsDir: string): No
         return null;
       }
     },
-    saveImage: (data, mediaType, hint) => saveBase64Image(mediaDir, data, mediaType, hint),
-    copyImage: (src, hint) => copyImageFileInto(mediaDir, src, hint),
-    saveDataUrl: (url, hint) => saveDataUrl(mediaDir, url, hint),
+    saveImage: (data, mediaType, hint) => saveBase64Image(mediaDir, data, mediaType, hint, imageOptions),
+    copyImage: (src, hint) => copyImageFileInto(mediaDir, src, hint, imageOptions),
+    saveDataUrl: (url, hint) => saveDataUrl(mediaDir, url, hint, imageOptions),
     saveBlob(itemId, text) {
       fs.mkdirSync(blobsDir, { recursive: true });
       const file = path.join(blobsDir, `${itemId.replace(/[^a-zA-Z0-9_-]/g, '_')}.txt`);

@@ -2269,9 +2269,9 @@ test("another runner's thread can be archived, snoozed and stopped, and says it 
 
   const snoozed = await call('update_thread', { threadId: 'ba5bb5ec', snooze: '2h' });
   assert.equal(snoozed.error, false, snoozed.text);
-  assert.deepEqual(updates().at(-1), { kind: 'update', args: { snooze: { until: '2026-10-26T14:00:00.000Z' } } });
+  assert.deepEqual(updates().at(-1), { kind: 'update', args: { snooze: { until: '2026-10-26T14:00:00.000Z' }, by: 'agent' } });
   await call('update_thread', { threadId: 'ba5bb5ec', snooze: 'off' });
-  assert.deepEqual(updates().at(-1), { kind: 'update', args: { wake: true } });
+  assert.deepEqual(updates().at(-1), { kind: 'update', args: { wake: true, by: 'agent' } });
 
   const stopped = await call('interrupt_thread', { threadId: 'ba5bb5ec' });
   assert.equal(stopped.error, false, stopped.text);

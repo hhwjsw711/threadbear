@@ -45,6 +45,16 @@ Removing the web copy deletes the row and its stored file.
 
 ## What setup and install add
 
+Tool-result image copies use owner-private `threadbear-tool-image-*` folders
+under the system temporary folder, removed after success or failure. Base64
+images use private temporary files beside their final media files. Pictures
+converted to PNG use `sips` on macOS (including a dimension-only query),
+ImageMagick on Linux or Windows imaging, with bounded dimensions and bytes.
+Subagent reads cache parsed output in memory, at most 32 MiB in all. Separate
+per-thread import history keeps at most 1,024 image attempts and charges at most
+1 GiB of decoded import work until the runner restarts, so evicting parsed
+output cannot renew image work. Rejected oversized output imports no images.
+
 - **Git remotes** (`scripts/setup.mjs`, "Your copy"): Mike's repo becomes
   `upstream`. If `gh` is logged in and you cloned rather than forked, setup
   forks the repo to your GitHub account (`gh repo fork --remote`).
@@ -191,8 +201,10 @@ Removing the web copy deletes the row and its stored file.
   Updates panel after one failed), the runner
   writes `<data folder>/runner/reinstall/<label>.reinstall.plist` and
   loads it with `launchctl bootstrap` (it isn't in `~/Library/LaunchAgents`,
-  so it never starts at login). It runs `runner/scripts/install-runner.sh
-  --stage` from your clone once, which builds a new Threadbear Runner.app
+  so it never starts at login). The trusted installed-release helper verifies
+  committed main into the private `<data folder>/runner/reinstall/source`
+  snapshot, then runs only that snapshot's `runner/scripts/install-runner.sh
+  --stage`, never the original dirty checkout. It builds a new Threadbear Runner.app
   beside the old one (`~/Applications/.Threadbear Runner.app.staged`) and
   rewrites the runner's own plist and launch.mjs without stopping
   anything (they take over at your next login, when launch.mjs moves the

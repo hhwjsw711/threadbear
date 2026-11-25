@@ -359,6 +359,7 @@ export class CodexNormalizer {
   private turnStarted(p: AnyMsg, out: AdapterOutput[]): void {
     const id = typeof p.turn?.id === 'string' ? p.turn.id : undefined;
     if (!id) return;
+    if (this.turnId !== id) this.ctx.beginTurn?.();
     if (!this.ours.has(id)) {
       if (this.pending) {
         this.ours.set(id, this.pending.runnerId);
