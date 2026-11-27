@@ -58,7 +58,7 @@ test('the browser permits only the two trusted viewer scripts', async () => {
 });
 
 type HistoryEntry = { artifactEntry: string };
-type FragmentMessage = { artifactFragment: string; entry: string; offset?: number[] };
+type FragmentMessage = { artifactFragment: string; entry: string; offset?: number[]; restart: boolean };
 
 async function viewer(navigation = 'navigate', name = '', hash = '#cost') {
   const html = await artifactPage({ title: 'Artifact', html: '<h2 id="cost">Cost</h2>' }).text();
@@ -66,7 +66,7 @@ async function viewer(navigation = 'navigate', name = '', hash = '#cost') {
   assert.ok(viewerScript);
 
   const events = new EventTarget();
-  const location = { pathname: '/a/demo', hash };
+  const location = { pathname: '/a/demo', hash, get href() { return this.pathname + this.hash; } };
   const history = {
     state: null as HistoryEntry | null,
     replaceState(state: HistoryEntry) { history.state = state; },
@@ -99,15 +99,15 @@ async function viewer(navigation = 'navigate', name = '', hash = '#cost') {
     fire('popstate');
     fire('hashchange');
   };
-  const report = (offset: number[], entry = history.state?.artifactEntry) => {
-    const event = Object.assign(new Event('message'), {
-      source: frame, origin: 'null', data: { entry, artifactPosition: offset },
-    });
+  const receive = (data: object) => {
+    const event = Object.assign(new Event('message'), { source: frame, origin: 'null', data });
     events.dispatchEvent(event);
   };
+  const report = (offset: (number | number[])[], entry = history.state?.artifactEntry) =>
+    receive({ entry, artifactPosition: offset });
 
   fire('load');
-  return { history, window, messages, replacement, change, report };
+  return { history, window, messages, replacement, change, report, receive };
 }
 
 test('the wrapper forwards same-fragment history entries and only sends each entry once', async () => {
@@ -148,6 +148,43 @@ test('history changes during a cold frame reload are sent to the new frame only'
   assert.deepEqual(messages, []);
   replacement.dispatchEvent(new Event('load'));
   assert.deepEqual(messages.map(({ artifactFragment }) => artifactFragment), ['#details']);
+});
+
+test('the viewer honors in-page links clicked before the replacement frame finishes loading', async () => {
+  const loading = await viewer('back_forward');
+  loading.receive({ artifactFragmentLink: '#details' });
+  assert.equal(loading.window.location.hash, '#details');
+  assert.deepEqual(loading.messages, []);
+  loading.replacement.dispatchEvent(new Event('load'));
+  assert.deepEqual(loading.messages.map(({ artifactFragment }) => artifactFragment), ['#details']);
+
+  const sameFragment = await viewer('back_forward');
+  sameFragment.receive({ artifactFragmentLink: '#cost' });
+  sameFragment.replacement.dispatchEvent(new Event('load'));
+  assert.equal(sameFragment.messages[0]?.restart, true);
+});
+
+test('the viewer drops older bookmarks before exceeding the reload storage budget', async () => {
+  const prefix = 'threadbear-artifact-scroll:';
+  const maxChars = 64 * 1024;
+  const seed = await viewer();
+  const [, key] = JSON.parse(seed.window.name.slice(prefix.length));
+  const number = -0.0000012345678901234567;
+  const offset = [number, number, ...Array.from({ length: 32 }, () => [1.2345678901234567e+300, number, number])];
+  const id = (index: number) => String(index).padEnd(48, '\0');
+  const old = Array.from({ length: 22 }, (_, index) => [id(index), key, offset]);
+  const current = id(22);
+  const encode = (entries: unknown[]) => prefix + JSON.stringify([current, key, entries]);
+  const initial = encode(old);
+  assert.ok(initial.length <= maxChars);
+  assert.ok(encode([...old, [current, key, offset]]).length > maxChars);
+
+  const reloaded = await viewer('reload', initial);
+  reloaded.report(offset);
+  assert.ok(reloaded.window.name.length <= maxChars);
+  const [, , remaining] = JSON.parse(reloaded.window.name.slice(prefix.length));
+  assert.equal(remaining[0][0], id(1));
+  assert.equal(remaining.at(-1)[0], current);
 });
 
 test('a second history change cannot save the anchor position before restoration', async () => {

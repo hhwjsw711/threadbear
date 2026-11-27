@@ -134,10 +134,13 @@ const artifactViewer = `(() => {
   const validOffset = ${positionShape};
   const bookmarkPrefix = 'threadbear-artifact-scroll:';
   const bookmarkLimit = 24;
+  const bookmarkMaxChars = 64 * 1024;
+  const validEntry = (entry) => typeof entry === 'string' && entry.length > 0 && entry.length <= 48;
   const bookmarks = new Map();
   let activeEntry;
   let activeLocation;
   let ready = false;
+  let restartBeforeLoad;
 
   const locationKey = () => {
     let key = 2166136261;
@@ -146,7 +149,7 @@ const artifactViewer = `(() => {
   };
   const readBookmarks = () => {
     const name = window.name;
-    if (!name.startsWith(bookmarkPrefix) || name.length > 65536) return;
+    if (!name.startsWith(bookmarkPrefix) || name.length > bookmarkMaxChars) return;
     try {
       const [entry, key, entries] = JSON.parse(name.slice(bookmarkPrefix.length));
       // A tab that was open during an update may still have one old-style bookmark.
@@ -155,23 +158,28 @@ const artifactViewer = `(() => {
       for (const item of entries) {
         if (!Array.isArray(item) || item.length !== 3) continue;
         const [id, location, offset] = item;
-        if (typeof id === 'string' && id.length <= 48 && Number.isInteger(location) && validOffset(offset)) {
+        if (validEntry(id) && Number.isInteger(location) && validOffset(offset)) {
           bookmarks.set(id, [location, offset]);
         }
       }
-      if (typeof entry === 'string' && entry.length <= 48 && Number.isInteger(key)) return { entry, key };
+      if (validEntry(entry) && Number.isInteger(key)) return { entry, key };
     } catch {}
   };
   const saveBookmarks = () => {
-    const entries = Array.from(bookmarks, ([id, [key, offset]]) => [id, key, offset]);
-    const next = bookmarkPrefix + JSON.stringify([activeEntry, activeLocation, entries]);
+    const serialize = () => bookmarkPrefix + JSON.stringify([activeEntry, activeLocation,
+      Array.from(bookmarks, ([id, [key, offset]]) => [id, key, offset])]);
+    let next = serialize();
+    while (next.length > bookmarkMaxChars && bookmarks.size) {
+      bookmarks.delete(bookmarks.keys().next().value);
+      next = serialize();
+    }
     if (window.name !== next) window.name = next;
   };
   const sendFragment = (initial, restart = false) => {
     if (!ready) return;
     const key = locationKey();
     let entry = history.state?.artifactEntry;
-    if (!entry) {
+    if (!validEntry(entry)) {
       entry = (initial?.key === key && initial.entry) || Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');
       history.replaceState({ artifactEntry: entry }, '');
     }
@@ -190,7 +198,7 @@ const artifactViewer = `(() => {
     const initial = loadType === 'reload' || loadType === 'back_forward' ? readBookmarks() : undefined;
     const initialize = () => {
       ready = true;
-      sendFragment(initial);
+      sendFragment(initial, restartBeforeLoad === window.location.href);
     };
     if (loadType === 'back_forward') {
       // A cold history restore can retain the old about:srcdoc fragment
@@ -203,15 +211,19 @@ const artifactViewer = `(() => {
     } else {
       initialize();
     }
-    window.addEventListener('popstate', () => sendFragment());
-    window.addEventListener('hashchange', () => sendFragment());
+    const changedLocation = () => {
+      if (restartBeforeLoad !== window.location.href) restartBeforeLoad = undefined;
+      sendFragment();
+    };
+    window.addEventListener('popstate', changedLocation);
+    window.addEventListener('hashchange', changedLocation);
   }, { once: true });
   window.addEventListener('message', (event) => {
-    if (!ready || event.source !== frame || event.origin !== 'null') return;
+    if (event.source !== frame || event.origin !== 'null') return;
     const { artifactPosition: offset, entry } = event.data ?? {};
     // The frame can send a final snapshot for the entry it just left.
     const key = entry === activeEntry ? activeLocation : bookmarks.get(entry)?.[0];
-    if (key !== undefined && validOffset(offset)) {
+    if (ready && key !== undefined && validOffset(offset)) {
       bookmarks.delete(entry);
       bookmarks.set(entry, [key, offset]);
       if (bookmarks.size > bookmarkLimit) bookmarks.delete(bookmarks.keys().next().value);
@@ -222,7 +234,9 @@ const artifactViewer = `(() => {
     if (typeof fragment === 'string' && fragment.startsWith('#')) {
       const before = window.location.href;
       window.location.hash = fragment;
-      if (window.location.href === before) sendFragment(undefined, true);
+      if (window.location.href !== before) restartBeforeLoad = undefined;
+      else if (ready) sendFragment(undefined, true);
+      else restartBeforeLoad = before;
       return;
     }
     const href = externalUrl(event.data?.artifactLink);
