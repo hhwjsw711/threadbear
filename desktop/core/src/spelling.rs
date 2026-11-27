@@ -453,10 +453,11 @@ pub fn byte_of_utf16(text: &str, utf16: usize) -> usize {
 
 /// UTF-16 offset of a byte offset in `text`.
 pub fn utf16_of_byte(text: &str, byte: usize) -> usize {
-    text[..byte.min(text.len())]
-        .chars()
-        .map(char::len_utf16)
-        .sum()
+    let mut at = byte.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    text[..at].chars().map(char::len_utf16).sum()
 }
 
 /// Edit > Transformations.
@@ -500,7 +501,10 @@ impl Transform {
 /// none, the word the caret is in (NSTextView's own rule for
 /// Transformations).
 pub fn word_at(text: &str, at: usize) -> Range<usize> {
-    let at = at.min(text.len());
+    let mut at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
     let in_word = |c: char| c.is_alphanumeric() || c == '\'' || c == '’' || c == '_';
     let start = text[..at]
         .char_indices()
@@ -918,5 +922,33 @@ mod tests {
         let text = "See [Rex names](thread:90ebc199-0d6b) and [x](y\nz) then ](done)";
         let got: Vec<&str> = link_targets(text).into_iter().map(|r| &text[r]).collect();
         assert_eq!(got, ["thread:90ebc199-0d6b", "done"]);
+    }
+
+    #[test]
+    fn mid_char_offsets_do_not_panic() {
+        for byte in 0..=2 {
+            assert_eq!(utf16_of_byte("", byte), 0);
+            assert_eq!(word_at("", byte), 0..0);
+        }
+
+        // a(0..1) sp(1..2) ע(2..4) ב(4..6) sp(6..7) 😀(7..11, 2 UTF-16) sp(11..12) ok(12..14)
+        let text = "a עב 😀 ok";
+        assert_eq!(utf16_of_byte(text, 3), 2);
+        assert_eq!(word_at(text, 3), 2..6);
+        assert_eq!(utf16_of_byte(text, 5), 3);
+        assert_eq!(word_at(text, 5), 2..6);
+        for mid_emoji in 8..=10 {
+            assert_eq!(utf16_of_byte(text, mid_emoji), 5);
+            assert_eq!(word_at(text, mid_emoji), 7..7);
+        }
+        assert_eq!(utf16_of_byte(text, 11), 7);
+        assert_eq!(utf16_of_byte(text, text.len() + 2), 10);
+        assert_eq!(word_at(text, text.len() + 2), 12..14);
+
+        for byte in 0..=text.len() + 2 {
+            let _ = utf16_of_byte(text, byte);
+            let r = word_at(text, byte);
+            assert!(text.is_char_boundary(r.start) && text.is_char_boundary(r.end));
+        }
     }
 }

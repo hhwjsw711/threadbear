@@ -2245,10 +2245,11 @@ impl<M: InputModeKind> TextElement<M> {
                         let local = span.range().start - line_start..span.range().end - line_start;
                         if offset < local.start {
                             let part = offset..local.start;
+                            let part_runs = aligned_runs_for_range(&text, runs, run_offset, &part);
                             let shaped = window.text_system().shape_line(
                                 text[part.clone()].to_owned().into(),
                                 font_size,
-                                &runs_for_range(runs, run_offset, &part),
+                                &part_runs,
                                 None,
                             );
                             let width = shaped.width;
@@ -2272,10 +2273,11 @@ impl<M: InputModeKind> TextElement<M> {
                     }
                     if offset < range.end {
                         let part = offset..range.end;
+                        let part_runs = aligned_runs_for_range(&text, runs, run_offset, &part);
                         let shaped = window.text_system().shape_line(
                             text[part.clone()].to_owned().into(),
                             font_size,
-                            &runs_for_range(runs, run_offset, &part),
+                            &part_runs,
                             None,
                         );
                         let width = shaped.width;
@@ -2488,6 +2490,8 @@ impl<M: InputModeKind> TextElement<M> {
             let mut line_has_background = false;
 
             for (line, line_runs) in placeholder_line_runs(&placeholder_text, runs) {
+                let line_runs =
+                    align_runs_to_char_boundaries(line, &line_runs).unwrap_or(line_runs);
                 let shaped_line = window.text_system().shape_line(
                     line.to_string().into(),
                     font_size,
@@ -3995,6 +3999,18 @@ fn clip_styles_to_ranges(
     result
 }
 
+/// Slice `runs` for `range` within `text` and snap any split multi-byte char
+/// boundaries before shaping a token-line fragment.
+pub(super) fn aligned_runs_for_range(
+    text: &str,
+    runs: &[TextRun],
+    line_offset: usize,
+    range: &Range<usize>,
+) -> Vec<TextRun> {
+    let part_runs = runs_for_range(runs, line_offset, range);
+    align_runs_to_char_boundaries(&text[range.clone()], &part_runs).unwrap_or(part_runs)
+}
+
 /// Snap run boundaries to char boundaries of `text` and cap them at its
 /// length. Style ranges are byte offsets that can drift off char boundaries
 /// (a stale syntax tree, a range in the wrong coordinate space) and the
@@ -4002,9 +4018,9 @@ fn clip_styles_to_ranges(
 ///
 /// Returns `None` when the runs are already aligned (the common case).
 pub(super) fn align_runs_to_char_boundaries(text: &str, runs: &[TextRun]) -> Option<Vec<TextRun>> {
-    let mut end = 0;
+    let mut end = 0usize;
     let aligned = runs.iter().all(|run| {
-        end += run.len;
+        end = end.saturating_add(run.len);
         end <= text.len() && text.is_char_boundary(end)
     });
     if aligned {
@@ -4013,9 +4029,9 @@ pub(super) fn align_runs_to_char_boundaries(text: &str, runs: &[TextRun]) -> Opt
 
     let mut result = Vec::with_capacity(runs.len());
     let mut cursor = 0;
-    let mut raw_end = 0;
+    let mut raw_end = 0usize;
     for run in runs {
-        raw_end = (raw_end + run.len).min(text.len());
+        raw_end = raw_end.saturating_add(run.len).min(text.len());
         let mut end = raw_end;
         while !text.is_char_boundary(end) {
             end += 1;
@@ -5984,6 +6000,149 @@ mod tests {
         // Undershooting runs keep the shortfall (the tail is left unshaped,
         // matching `runs_for_range` clipping).
         assert_eq!(align_runs_to_char_boundaries(text, &runs(&[3, 3])), None);
+    }
+
+    #[test]
+    fn test_aligned_runs_for_range_snaps_mid_char_boundary_for_token_parts() {
+        let spell_underline = UnderlineStyle {
+            thickness: px(1.),
+            color: Some(gpui::red()),
+            wavy: true,
+        };
+        let plain = TextRun {
+            len: 0,
+            font: gpui::font(".SystemUIFont"),
+            color: gpui::blue(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = vec![
+            TextRun { len: 79, ..plain.clone() },
+            TextRun {
+                len: 12,
+                underline: Some(spell_underline),
+                ..plain.clone()
+            },
+            TextRun { len: 12, ..plain },
+        ];
+        // Exact crash layout from monkey seed 15009: 90 ASCII/token bytes
+        // followed by 2-byte Hebrew 'ת' and "ok go ahead" (103 bytes total),
+        // with a wavy-underlined run ending at byte 91 (inside 'ת').
+        let line = format!("{}תok go ahead", "a".repeat(90));
+        assert_eq!(line.len(), 103);
+
+        let part = 90..103;
+        let raw = runs_for_range(&runs, 0, &part);
+        assert_eq!(raw.iter().map(|r| r.len).collect::<Vec<_>>(), vec![1, 12]);
+
+        let aligned = aligned_runs_for_range(&line, &runs, 0, &part);
+        assert_eq!(
+            aligned.iter().map(|r| r.len).collect::<Vec<_>>(),
+            vec![2, 11]
+        );
+        assert_eq!(
+            aligned.iter().map(|r| r.underline).collect::<Vec<_>>(),
+            vec![Some(spell_underline), None]
+        );
+        let part_text = &line[part];
+        let mut cursor = 0;
+        for r in &aligned {
+            cursor += r.len;
+            assert!(part_text.is_char_boundary(cursor));
+        }
+    }
+
+    #[gpui::test]
+    fn textarea_marks_adjust_for_edits_and_ime_with_multibyte_text(cx: &mut TestAppContext) {
+        use gpui::EntityInputHandler as _;
+
+        cx.update(crate::init);
+        let mut textarea = None;
+        let window = cx.open_window(size(px(320.), px(160.)), |window, cx| {
+            let state = cx.new(|cx| {
+                let mut s = crate::input::TextareaState::new(window, cx);
+                s.set_value("a עברית teh ", window, cx);
+                s
+            });
+            textarea = Some(state.clone());
+            TextareaHarness(state)
+        });
+        let textarea = textarea.unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let style = HighlightStyle::default();
+        // "a " (2) + "עברית" (10, bytes 2..12) + " " (1) + "teh" (3, bytes 13..16) + " " (1)
+        textarea.update(&mut cx, |state, cx| {
+            state.set_text_marks(
+                vec![
+                    crate::input::TextDecoration::new(2..12, style),
+                    crate::input::TextDecoration::new(13..16, style),
+                ],
+                cx,
+            );
+        });
+
+        let assert_marks_aligned = |state: &crate::input::TextareaState, expected: &[Range<usize>]| {
+            let text = state.value().to_string();
+            let got: Vec<Range<usize>> = state
+                .text_marks()
+                .iter()
+                .map(|m| m.range.clone())
+                .collect();
+            assert_eq!(got, expected);
+            for r in &got {
+                assert!(r.start < r.end && r.end <= text.len());
+                assert!(text.is_char_boundary(r.start), "start {} not boundary in {:?}", r.start, text);
+                assert!(text.is_char_boundary(r.end), "end {} not boundary in {:?}", r.end, text);
+            }
+        };
+
+        // Typing a 3-byte Japanese char at the start must immediately slide
+        // marks before any Change subscriber runs, and undo/redo must slide
+        // them back and forth cleanly.
+        cx.update(|window, cx| {
+            textarea.update(cx, |state, cx| {
+                state.set_selected_range(0..0, cx);
+                state.replace_text_in_range(None, "日", window, cx);
+                assert_marks_aligned(state, &[5..15, 16..19]);
+                state.undo(&Undo, window, cx);
+                assert_marks_aligned(state, &[2..12, 13..16]);
+                state.redo(&Redo, window, cx);
+                assert_marks_aligned(state, &[5..15, 16..19]);
+            });
+        });
+
+        // Repeated IME preedit replacements, cancellation, and commit emit no
+        // Change event during composition, yet marks stay char-aligned.
+        cx.update(|window, cx| {
+            textarea.update(cx, |state, cx| {
+                state.replace_and_mark_text_in_range(None, "本", None, window, cx);
+                assert_marks_aligned(state, &[8..18, 19..22]);
+                state.replace_and_mark_text_in_range(None, "本当", None, window, cx);
+                assert_marks_aligned(state, &[11..21, 22..25]);
+                state.replace_and_mark_text_in_range(None, "", None, window, cx);
+                state.unmark_text(window, cx);
+                assert_marks_aligned(state, &[5..15, 16..19]);
+                state.replace_and_mark_text_in_range(None, "本", None, window, cx);
+                assert_marks_aligned(state, &[8..18, 19..22]);
+                state.replace_text_in_range(None, "本", window, cx);
+                assert_marks_aligned(state, &[8..18, 19..22]);
+            });
+        });
+
+        // Silent replacement deleting the first marked word drops its mark and
+        // shifts the second mark cleanly; whole-value reset clears all marks.
+        cx.update(|window, cx| {
+            textarea.update(cx, |state, cx| {
+                state.set_selected_range(8..18, cx);
+                state.replace("", window, cx);
+                assert_marks_aligned(state, &[9..12]);
+                assert_eq!(&state.value().as_str()[9..12], "teh");
+                state.set_value("fresh", window, cx);
+                assert_marks_aligned(state, &[]);
+            });
+        });
     }
 
     #[test]

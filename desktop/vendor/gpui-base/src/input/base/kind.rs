@@ -372,18 +372,49 @@ impl InputModeKind for TextareaMode {
 
     /// Ordinary multi-line text, with this app's marks under it (spelling).
     type Extras = TextareaExtras;
+
+    fn reset_annotations(state: &mut InputBaseState<Self>) {
+        state.extras.marks.clear();
+    }
+
+    fn adjust_annotations(
+        state: &mut InputBaseState<Self>,
+        range: &std::ops::Range<usize>,
+        new_len: usize,
+    ) {
+        state.extras.adjust_marks_for_edit(range, new_len);
+    }
 }
 
 /// This app's: what a textarea draws under ranges of its text, as an
 /// NSTextView marks misspelled words (Threadbear's message box). Set whole
-/// with [`crate::input::TextareaState::set_text_marks`]; the caller sets it
-/// again after each edit, so nothing here moves the ranges along.
+/// with [`crate::input::TextareaState::set_text_marks`], and slid along on
+/// each edit (`adjust_annotations`) so ranges stay on character boundaries
+/// across IME composition, silent replacements, and frames drawn before a
+/// `Change` subscriber refreshes them.
 #[derive(Default)]
 pub struct TextareaExtras {
     pub(crate) marks: Vec<TextDecoration>,
     /// How many times the value's been set whole, which emits no change
     /// event: the app's autocorrect starts afresh on a new value.
     pub(crate) values_set: u64,
+}
+
+impl TextareaExtras {
+    pub(crate) fn adjust_marks_for_edit(
+        &mut self,
+        edited_range: &std::ops::Range<usize>,
+        inserted_len: usize,
+    ) {
+        self.marks.retain_mut(|mark| {
+            mark.range = super::decorations::adjust_range_for_edit(
+                &mark.range,
+                edited_range,
+                inserted_len,
+            );
+            !mark.range.is_empty()
+        });
+    }
 }
 
 impl InputExtras for TextareaExtras {

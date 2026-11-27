@@ -88,3 +88,16 @@ Feature: Spelling in the message box
   Scenario: The right-click menu has NSTextView's submenus
     When I type "hello" in the composer
     Then the composer's right-click menu on "hello" has "Cut | Copy | Paste | Spelling and Grammar › Check Document Now | Spelling and Grammar › Check Spelling While Typing | Substitutions › Smart Quotes | Substitutions › Text Replacement | Transformations › Capitalize | Speech › Start Speaking"
+
+  # Seed 15009 (26 Nov): a thread chip, a spelling mark and multi-byte text
+  # in the composer crashed layout_token_lines when typing shifted the mark's
+  # byte offset into the middle of a multi-byte character.
+  @composer.spelling @composer.threadpicker @swift-pending @windows-pending @linux-pending
+  Scenario: Typing multi-byte text before a spelling mark beside a chip stays responsive
+    When I type "#keep" in the composer
+    And I press Return
+    And I type "日本語 teh " in the composer
+    Then the composer marks only "teh" as misspelled
+    When I press "left" with "cmd"
+    And I type "a 日本語のテキスト" in the composer
+    Then the composer says "a 日本語のテキスト[Stop Keep Awake asking for my password](thread:demo_keep_awake) 日本語 teh "
