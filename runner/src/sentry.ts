@@ -161,8 +161,8 @@ export const ERROR_CLASSES: ReadonlySet<string> = new Set([
   'AbortError', 'TimeoutError', 'SystemError', 'DOMException',
   'AcpExitedError', 'AcpRpcError', 'AmbiguousPeer', 'BoxBootRefused', 'BoxFolderBroken', 'CheckRefused', 'CodexExitedError', 'CodexRpcError',
   'ConvexAdminError', 'CronError', 'ForeignPeer', 'GaveUp', 'HeldLocal', 'KeysBusy', 'ModelListsPending', 'NoSwitches', 'Refused', 'RewindRefusedError',
-  'RpcClientError', 'RpcError', 'RunnerJsonError', 'RunnerNotProvedError', 'SessionNotFoundError', 'SpawnRefused',
-  'SpecialFile', 'StaleProcess', 'TooBig', 'Unknown', 'UnresolvedPeer', 'Waiting',
+  'RpcClientError', 'RpcError', 'RunnerJsonError', 'RunnerNotProvedError', 'SessionNotFoundError', 'SessionUsageLimitError',
+  'SpawnRefused', 'SpecialFile', 'StaleProcess', 'TooBig', 'Unknown', 'UnresolvedPeer', 'Waiting',
 ]);
 const LEADING_CLASS = /^\s*(?:Uncaught\s+)?([A-Za-z][A-Za-z0-9]{0,40})\b/;
 // Codes only from the system's own errno list, so a capitals word from the
