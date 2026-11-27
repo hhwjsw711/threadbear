@@ -78,6 +78,7 @@ import { type AccountRegistry, type LearnedAccountInfo } from './accounts.ts';
 import { ACCESS_OFF_HOLD_MS, ACCESS_OFF_TEXT, type SignInState } from './sign-in-state.ts';
 import { decidingWindows, MIN_ROOM_PERCENT, pickAccount as pickByRoom, type UsageReading } from './usage.ts';
 import { FUNDED_DETAIL } from './adapters/acp/grok-billing.ts';
+import { outOfUsage } from './adapters/acp/connection.ts';
 import { RUNNER_VERSION, expandHome, paths, peekRunnerJson, type Config } from './config.ts';
 import { limitWhy, loginOk, nextLogin, pickInPool, poolAccounts } from './pools.ts';
 import { copyImageInto, imageRefFor, importImageInto } from './media.ts';
@@ -3291,7 +3292,7 @@ export class Runner {
         const named = r.answered ?? (r.answers !== undefined ? [r.answers] : r.own ? [] : turn.messages.slice(0, 1));
         const last = Math.max(-1, ...named.map((id) => turn.messages.indexOf(id)));
         if (last >= 0) turn.messages.splice(0, last + 1);
-        if (turn.messages.length && r.queuedTurns === 0) {
+        if (turn.messages.length && (r.queuedTurns === 0 || r.errorKind === 'usageLimit')) {
           // The CLI has nothing left to run, so a message sent during the
           // turn went nowhere (an error ended its queue). Say so rather than
           // wait for an answer that won't come.
@@ -3304,7 +3305,7 @@ export class Runner {
         // during the turn that the CLI runs next. The thread's turn goes on
         // until the CLI has answered everything, unless Stop cancelled the
         // rest. A failure in between is shown where it happened.
-        if (turn.messages.length && !turn.interruptRequested) {
+        if (turn.messages.length && !turn.interruptRequested && r.errorKind !== 'usageLimit') {
           this.flushDeltas(st);
           rt.inProgress.clear();
           if (r.outcome === 'failed' && r.error) this.emit(st, { type: 'error', message: r.error }, turn.turnId);
@@ -3893,15 +3894,19 @@ export class Runner {
     if (rec.unarchivedBySchedule) this.park(st, { kind: 'scheduleRunEnded' });
     const interrupted = turn.interruptRequested;
     if (!interrupted) this.emit(st, { type: 'error', message }, turn.turnId);
+    const limit = !interrupted && outOfUsage({ message });
     const body: EventBody = {
       type: 'turn.completed',
       turnId: turn.turnId,
       outcome: interrupted ? 'interrupted' : 'failed',
       durationMs: Math.max(0, this.clock.now() - turn.startedAt),
     };
-    if (!interrupted) body.error = message;
+    if (!interrupted) {
+      body.error = message;
+      if (limit) body.errorKind = 'usageLimit';
+    }
     const ev = this.emit(st, body, turn.turnId);
-    this.endTurn(st, ev.seq, interrupted ? 'idle' : 'error');
+    this.endTurn(st, ev.seq, interrupted ? 'idle' : 'error', interrupted ? 'interrupted' : 'failed', limit ? turn.turnId : undefined);
     // A coordinator's helper whose CLI died, wouldn't start or was stopped:
     // its coordinator hears, as it does when a helper's turn ends
     // (completeTurn). Before, the run stayed "running" for good: the

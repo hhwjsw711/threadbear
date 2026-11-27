@@ -2012,3 +2012,24 @@ test('card reviewer inputs: Antigravity shell and MCP cards pass full context an
   await until(() => a17.length === 1);
   assert.equal(r.cards[16].noReview, true, 'whitespace-only MCP tool component must skip reviewer');
 });
+
+test('Antigravity: a harness crash (WS close code 1006) terminates the session with error without hanging', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  s.send({ id: 'turn-crash', text: 'crash_harness', images: [] });
+  await r.exited();
+  const err = r.exitError();
+  assert.ok(err, 'session must exit with error');
+  assert.match(err.message, /Harness process exited unexpectedly/i);
+});
+
+test('Antigravity: individual quota reached (Error 429 RESOURCE_EXHAUSTED) terminates the session with usageLimit', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  s.send({ id: 'turn-quota', text: 'quota_fail', images: [] });
+  await r.exited();
+  const err = r.exitError();
+  assert.ok(err, 'session must exit with error');
+  assert.match(err.message, /is out of Gemini usage.*Individual quota reached/i);
+});
+

@@ -144,6 +144,19 @@ test('out of usage is a 402 or the words Grok uses for it, never a rate limit', 
   assert.equal(outOfUsage({ message: 'Internal error' }), false);
 });
 
+test('out of usage recognises Gemini and Google quota exhaustion', () => {
+  const gemini429 = 'Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")';
+  assert.equal(outOfUsage({ message: gemini429 }), true);
+  for (const m of [
+    'Individual quota reached. Please upgrade your subscription to increase your limits.',
+    'Status: RESOURCE_EXHAUSTED',
+    'reason:QUOTA_EXHAUSTED',
+    'Quota reached for model gemini-4-neon',
+  ]) {
+    assert.equal(outOfUsage({ message: m }), true, m);
+  }
+});
+
 // ---- A turn on a login out of balance
 
 test("Grok's 402 turn fails as a usage limit, saying why, with the login's reading before the result", async () => {
@@ -503,3 +516,26 @@ test('a balance topped up before any recheck counts as back, whatever the login 
   await tick();
   assert.equal(h.runner.get(thread.id).waitingForRoom, undefined);
 });
+
+test('in the runner: a CLI exit with Gemini quota exhaustion fails the turn with usageLimit and moves pool', async () => {
+  const geminiAccount: Account = { id: 'gemini-main', provider: 'antigravity', title: 'Gemini', configDir: '/tmp' };
+  const claude = new FakeAdapter();
+  const agyAdapter = new FakeAdapter('antigravity');
+  const fake = new FakeAccounts([...ACCOUNTS, geminiAccount]);
+  const h = makeHarness(tmpDir(), { pools: [{ id: 'pool-1', title: 'Pool', accountIds: ['gemini-main', 'claude-main'] }] }, { accounts: fake, adapters: { claude, antigravity: agyAdapter } });
+  const { thread } = h.runner.create({ text: 'Hello', poolId: 'pool-1' });
+  assert.equal(thread.accountId, 'gemini-main');
+  const s = agyAdapter.last;
+  s.init(s.opts.sessionId, 'gemini-4-neon');
+  // CLI exits with Gemini 429 quota message
+  s.sink.exited(new Error('Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")'));
+  await tick();
+  const failed = h.events(thread.id).find((e) => e.type === 'turn.completed') as { outcome?: string; errorKind?: string } | undefined;
+  assert.ok(failed);
+  assert.equal(failed.outcome, 'failed');
+  assert.equal(failed.errorKind, 'usageLimit');
+  // Moved off the limit-hit Gemini login to claude-main
+  const t = h.runner.get(thread.id);
+  assert.equal(t.accountId, 'claude-main');
+});
+

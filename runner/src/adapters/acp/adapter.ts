@@ -27,7 +27,7 @@ import { acpCoordinatorTool, archiveReadTool, isHelperQuestionTool } from '../..
 import type { AdapterOutput, AgentAdapter, AgentSession, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
 import { SessionNotFoundError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
-import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, failureNote, genericRpcMessage, laterFailure, outOfUsage, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
+import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, failureNote, genericRpcMessage, isFatalExecutionError, laterFailure, outOfUsage, textFromUpdate, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
 import { AcpMcpServer } from './mcp-http.ts';
 import { AcpNormalizer, absolutePath, diffsAgreeWithInput, hasEditContent, hasOddPatchHeader, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpToolCall } from './normalize.ts';
 
@@ -732,6 +732,37 @@ export class AcpSession implements AgentSession {
       if (update.sessionUpdate === 'available_commands_update' && Array.isArray(update.availableCommands)) this.noteCommands(update.availableCommands);
     }
     this.emit(this.normalizer.handle(update));
+    if (isPlainObject(params.update)) {
+      const text = textFromUpdate(params.update);
+      if (text && (isFatalExecutionError(text) || outOfUsage({ message: text }))) {
+        const statusMatch = /(?:status|error)[:\s]+(\d{3})\b/i.exec(text);
+        const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
+        if (this.turn) {
+          this.turn.failure = laterFailure(this.turn.failure, { message: text, ...(httpStatus !== undefined ? { httpStatus } : {}) });
+        }
+        this.failFatal(text);
+        return;
+      }
+    }
+    const fail = this.turn?.failure;
+    if (fail && (isFatalExecutionError(fail.message) || outOfUsage(fail))) {
+      this.failFatal(fail.message);
+    }
+  }
+
+  // A fatal harness crash or agent execution termination leaves the agent's
+  // background process unresponsive to session/prompt. Terminate the session
+  // at once so the turn ends in error rather than hanging forever.
+  private failFatal(detail: string): void {
+    if (this.state === 'closed' || this.state === 'closing') return;
+    this.state = 'closing';
+    this.held = [];
+    const fail = this.turn ? this.failureFor(this.turn) : { error: detail };
+    const errorText = fail.error ?? detail;
+    const err = new Error(errorText);
+    this.deps.log.error('acp fatal execution error; terminating session', { threadId: this.opts.threadId, error: errorText, errorKind: fail.errorKind });
+    this.proc.kill(new AcpExitedError(errorText));
+    this.exited(err);
   }
 
   // Grok says why a turn failed in its own notes, not only in the prompt's
@@ -1393,6 +1424,7 @@ export class AcpSession implements AgentSession {
       const text = this.normalizer.takeLastAssistantText();
       if (text) this.sink.output({ kind: 'planProposed', itemId: `${turn.id ?? 'plan'}-plan`, text });
     }
+    if (result.errorKind === 'usageLimit') this.held = [];
     this.sendResult(turn, result);
     // After the result, not before it: the runner records a reading under
     // the login this CLI runs on (sessionAccountId), wherever the result
@@ -1445,6 +1477,9 @@ export class AcpSession implements AgentSession {
 
   private resultFor(turn: Turn, stop: string | undefined): TurnResult {
     const durationMs = Math.max(0, this.now() - turn.startedAt);
+    if (turn.failure && !turn.interrupted) {
+      return { outcome: 'failed', durationMs, ...this.failureFor(turn) };
+    }
     switch (stop) {
       case 'cancelled':
         return { outcome: 'interrupted', durationMs };
@@ -1551,6 +1586,7 @@ export class AcpSession implements AgentSession {
     if (this.exitedCalled) return;
     this.exitedCalled = true;
     this.state = 'closed';
+    this.held = [];
     this.cancelPending(false);
     this.proc.onRequest = null;
     this.mcp?.close();

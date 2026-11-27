@@ -415,6 +415,24 @@ async function agyPrompt(id, p, s, word, rest) {
     const [server, name] = rest[0].split('__');
     await tool('other', `${server}_${name}`, { arguments: {}, }, { _meta: { mcp: { tool: name, server }, is_mcp_tool_call: true } }, () => log({ mcp: rest[0] }));
   }
+  else if (word === 'crash_harness') {
+    update(p.sessionId, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Agent execution error: Harness process exited unexpectedly (WS close code 1006).\nHarness stderr:\ncontext canceled' },
+    });
+    return; // leaves session/prompt hanging, as agy_acp_server does
+  }
+  else if (word === 'quota_fail') {
+    const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
+    update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'run', kind: 'execute', status: 'in_progress', rawInput: {} });
+    update(p.sessionId, {
+      sessionUpdate: 'tool_call_update',
+      toolCallId,
+      status: 'failed',
+      content: [{ type: 'text', text: 'Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")' }],
+    });
+    return; // leaves session/prompt hanging, as agy_acp_server does
+  }
   update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'done' } });
   send({ id, result: { stopReason: 'end_turn' } });
 }

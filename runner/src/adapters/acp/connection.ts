@@ -64,9 +64,48 @@ export class AcpRpcError extends Error {
 
 // An agent's words for a login that has run out of what it pays with: a
 // balance, credits, a spending cap or a usage limit (Grok 1.0.92's own
-// strings for these, and its 402). Not a rate limit, which passes by itself
-// in seconds and the agent retries.
-const OUT_OF_USAGE = /usage balance exhausted|out of credits|run out of credits|spending[- ]limit|usage limit reached|credit limit|insufficient (credits|balance)|payment required|free usage limit/i;
+// strings for these, and its 402; Gemini/Google 429 quota exhaustion and
+// RESOURCE_EXHAUSTED). Not a rate limit, which passes by itself in seconds
+// and the agent retries.
+const OUT_OF_USAGE = /usage balance exhausted|out of credits|run out of credits|spending[- ]limit|usage limit reached|credit limit|insufficient (?:credits|balance)|payment required|free usage limit|individual quota reached|quota(?:[_\s]+limit)?[_\s]+reached|quota[_\s]+(?:exhausted|exceeded)|resource[_\s]+exhausted|upgrade your subscription/i;
+
+// Fatal errors that abort the backend agent executor or harness process
+// unexpectedly, leaving the ACP bridge hanging without answering session/prompt.
+const FATAL_EXECUTION_ERROR = /harness (?:process )?exited unexpectedly|agent execution terminated due to error|agent executor error/i;
+
+export function isFatalExecutionError(text: string): boolean {
+  return FATAL_EXECUTION_ERROR.test(text);
+}
+
+// Extracts readable text from an ACP update object (message/thought chunk,
+// tool call update, or error object).
+export function textFromUpdate(u: Record<string, unknown>): string {
+  const texts: string[] = [];
+  if (typeof u.text === 'string') texts.push(u.text);
+  if (typeof u.message === 'string') texts.push(u.message);
+  const pushBlock = (b: unknown) => {
+    if (!b || typeof b !== 'object') return;
+    const r = b as Record<string, unknown>;
+    if (typeof r.text === 'string') texts.push(r.text);
+    if (r.content && typeof r.content === 'object') pushBlock(r.content);
+  };
+  if (Array.isArray(u.content)) {
+    for (const c of u.content) pushBlock(c);
+  } else if (u.content && typeof u.content === 'object') {
+    pushBlock(u.content);
+  }
+  if (typeof u.rawOutput === 'string') texts.push(u.rawOutput);
+  else if (u.rawOutput && typeof u.rawOutput === 'object') {
+    const msg = rpcDataMessage(u.rawOutput);
+    if (msg) texts.push(msg);
+  }
+  if (typeof u.error === 'string') texts.push(u.error);
+  else if (u.error && typeof u.error === 'object') {
+    const msg = rpcDataMessage(u.error);
+    if (msg) texts.push(msg);
+  }
+  return texts.join('\n').trim();
+}
 
 // What an agent's own note says went wrong in a turn, outside the prompt's
 // answer: Grok's retry_state that failed ("API error (status 402 Payment
@@ -390,8 +429,15 @@ export class AcpProcess {
   }
 
   // Stops the process group straight away (SIGTERM, then SIGKILL).
-  kill(): void {
+  kill(error?: Error): void {
     this.closing = true;
+    if (error) {
+      for (const p of this.pending.values()) {
+        if (p.timer) clearTimeout(p.timer);
+        p.reject(error);
+      }
+      this.pending.clear();
+    }
     if (this.exited) return;
     if (!this.pid) return this.abort?.abort();
     const pid = this.pid;
