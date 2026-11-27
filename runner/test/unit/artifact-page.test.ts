@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { artifactPage, artifactSlug, MAX_ARTIFACT_BYTES } from '../../../convex/artifactPage.ts';
 
@@ -18,8 +19,8 @@ test('the artifact content and title are isolated from the wrapper markup', asyn
   });
   const page = await response.text();
   assert.match(page, /<title>&lt;\/title&gt;&lt;h1&gt;Outside\?&lt;\/h1&gt;<\/title>/);
-  assert.match(page, /<iframe sandbox title="/);
-  assert.match(page, /srcdoc="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;p title=&quot;A &amp;amp; B&quot;&gt;C&lt;\/p&gt;"/);
+  assert.match(page, /<iframe sandbox="allow-scripts" title="/);
+  assert.match(page, /srcdoc="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;script&gt;[^]*&lt;\/script&gt;&lt;p title=&quot;A &amp;amp; B&quot;&gt;C&lt;\/p&gt;"/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.match(response.headers.get('content-security-policy') ?? '', /default-src 'none'/);
   assert.match(response.headers.get('content-security-policy') ?? '', /base-uri about:/);
@@ -34,8 +35,23 @@ test('the fragment base follows the opening tags of a full document', async () =
   }).text();
   assert.ok(page.includes(
     'srcdoc="&lt;?xml version=&quot;1.0&quot;?&gt;&lt;!doctype html&gt;&lt;!-- &lt;head&gt; --&gt;&lt;html lang=&quot;fr&quot;&gt;' +
-    '&lt;head data-label=&quot;a &gt; b&quot;&gt;&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;title&gt;Page',
+    '&lt;head data-label=&quot;a &gt; b&quot;&gt;&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;script&gt;',
   ));
+  assert.ok(page.includes('&lt;/script&gt;&lt;title&gt;Page'));
+});
+
+test('the browser permits only the two trusted link scripts', async () => {
+  const response = artifactPage({ title: 'Artifact', html: '<script>console.log("Not trusted");</script>' });
+  const html = await response.text();
+  const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"' };
+  const srcdoc = html.match(/srcdoc="([^"]*)"/)?.[1].replace(/&(amp|lt|gt|quot);/g, (_, name: string) => entities[name]);
+  const policy = response.headers.get('content-security-policy') ?? '';
+  const scripts = [...(srcdoc ?? '').matchAll(/<script>([^]*?)<\/script>/g), ...html.matchAll(/<script>([^]*?)<\/script>/g)];
+  const hashes = scripts.map(([, source]) => `'sha256-${createHash('sha256').update(source).digest('base64')}'`);
+  assert.equal(hashes.length, 3);
+  assert.match(policy, /(?:^|; )sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox(?:;|$)/);
+  assert.equal(policy.match(/(?:^|; )script-src ([^;]*)/)?.[1], `${hashes[0]} ${hashes[2]}`);
+  assert.match(policy, /(?:^|; )script-src-attr 'none'(?:;|$)/);
 });
 
 test('missing and unpublished links return an uncached 404', async () => {

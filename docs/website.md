@@ -80,8 +80,9 @@ local file leaves the published version alone. Update keeps the link, and
 unpublish takes it down. The slug is the last part of the published URL.
 
 The prototype takes one UTF-8 HTML file up to 64 KiB. Inline styles and
-embedded images work. The browser runs the page in a sandbox with scripts,
-forms and external resources blocked. The public route is
+embedded images work. The browser runs the page in a sandbox that blocks
+its scripts, forms and external resources. Readers can follow absolute
+HTTP and HTTPS links. The public route is
 `GET /a/<slug>`; it returns 404 for an unknown or unpublished link and
 its responses are never cached. There is no Threadbear sign-in on that
 page. Only the owner runner and deployment admins can publish, update or

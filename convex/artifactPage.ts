@@ -6,14 +6,57 @@ export const ARTIFACT_SLUG = /^[a-f0-9]{32}$/;
 
 const documentOpening = /^(?:[\t\n\f\r ]|<!--.*?-->|<\?[^>]*>|<(?:!doctype|html|head)(?=[\t\n\f\r />])(?:[^"'<>]|"[^"]*"|'[^']*')*>)*/is;
 
+const externalUrl = `(href) => {
+  if (typeof href !== 'string') return;
+  try {
+    const url = new URL(href);
+    if ((url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password) return url.href;
+  } catch {}
+}`;
+
+// The frame reports a reader's click. It still cannot open a popup, navigate
+// the top window or load external resources itself.
+const reportLink = `(() => {
+  const externalUrl = ${externalUrl};
+  document.addEventListener('click', (event) => {
+    if (!event.isTrusted || event.defaultPrevented || event.button !== 0) return;
+    const anchor = event.composedPath().find((element) => element instanceof HTMLAnchorElement);
+    const href = externalUrl(anchor?.getAttribute('href'));
+    if (!href || anchor.hasAttribute('download')) return;
+    event.preventDefault();
+    window.parent.postMessage({ artifactLink: href }, '*');
+  });
+})();`;
+
+const followLink = `(() => {
+  const externalUrl = ${externalUrl};
+  const frame = document.querySelector('iframe').contentWindow;
+  window.addEventListener('message', (event) => {
+    if (event.source !== frame || event.origin !== 'null') return;
+    const href = externalUrl(event.data?.artifactLink);
+    if (!href) return;
+    if (navigator.userActivation?.isActive === false) {
+      window.location.assign(href);
+    } else {
+      window.open(href, '_blank', 'noopener,noreferrer');
+    }
+  });
+})();`;
+
+// CSP allows these exact scripts. artifact-page.test.ts checks the hashes
+// against the rendered bytes, so editing either script also needs a new hash.
+const trustedScripts = "'sha256-Wa4QGtl5Tq939B0CxiRnDKvkX6DKmr7roDMzjwqDiIo=' 'sha256-rh6DVz79FMvCvaA3jNC09IBJFY6Vqb5YmSdEt0A3JmY='";
+
 export function artifactSlug(path: string): string | null {
   const slug = path.slice(ARTIFACT_PATH.length);
   return path.startsWith(ARTIFACT_PATH) && ARTIFACT_SLUG.test(slug) ? slug : null;
 }
 
+const contentPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri about:; form-action 'none'; frame-ancestors 'none'";
+
 const headers = {
   'Cache-Control': 'no-store',
-  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri about:; form-action 'none'; frame-ancestors 'none'; sandbox",
+  'Content-Security-Policy': `${contentPolicy}; sandbox`,
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-DNS-Prefetch-Control': 'off',
@@ -34,7 +77,15 @@ export function artifactPage(artifact: { title: string; html: string } | null): 
   // first base to its own URL so anchors scroll without loading the wrapper.
   // Keep the document's opening tags first so their attributes still apply.
   const html = artifact.html.replace(/^\uFEFF/, '');
-  const srcdoc = escapeHtml(html.replace(documentOpening, (opening) => `${opening}<base href="about:srcdoc">`));
+  const srcdoc = escapeHtml(html.replace(documentOpening, (opening) => `${opening}<base href="about:srcdoc"><script>${reportLink}</script>`));
+  // Only the trusted wrapper may open a tab. The frame's stricter sandbox
+  // still forbids the artifact from opening one itself.
+  const policy = [
+    contentPolicy,
+    'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox',
+    `script-src ${trustedScripts}`,
+    "script-src-attr 'none'",
+  ].join('; ');
   return new Response(`<!doctype html>
 <html lang="en">
 <head>
@@ -43,6 +94,6 @@ export function artifactPage(artifact: { title: string; html: string } | null): 
 <title>${title}</title>
 <style>html,body { margin: 0; height: 100%; } iframe { display: block; width: 100%; height: 100%; border: 0; }</style>
 </head>
-<body><iframe sandbox title="${title}" srcdoc="${srcdoc}"></iframe></body>
-</html>`, { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
+<body><iframe sandbox="allow-scripts" title="${title}" srcdoc="${srcdoc}"></iframe><script>${followLink}</script></body>
+</html>`, { headers: { ...headers, 'Content-Security-Policy': policy, 'Content-Type': 'text/html; charset=utf-8' } });
 }
