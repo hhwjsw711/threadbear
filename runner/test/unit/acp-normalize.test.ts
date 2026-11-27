@@ -116,6 +116,62 @@ test('a rejected call fails with what was said', () => {
   assert.match((out[0] as { event: { text: string } }).event.text, /rejected/);
 });
 
+for (const status of [undefined, 'failed']) {
+  test(`an earlier edit approval matches paths split across running frames when the last status is ${status}`, () => {
+    const n = new AcpNormalizer(ctx, { movesAskedCalls: true });
+    const locations = [{ path: '/w/a.txt' }, { path: '/w/b.txt' }];
+    n.noteCall({ toolCallId: 'before', kind: 'edit', locations });
+    n.answered('before', true);
+    const earlier = new Set(['before']);
+    n.handle({ sessionUpdate: 'tool_call', toolCallId: 'old-work', kind: 'edit', status: 'in_progress', locations: locations.slice(0, 1) });
+    n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'old-work', status, locations: locations.slice(1) });
+    assert.equal(n.isNewToolWork('old-work', earlier), false);
+    n.handle({ sessionUpdate: 'tool_call', toolCallId: 'new-work', kind: 'edit', status: 'in_progress', locations });
+    assert.equal(n.isNewToolWork('new-work', earlier), true);
+  });
+}
+
+test('an edit on two files does not consume an earlier approval for one file', () => {
+  const n = new AcpNormalizer(ctx, { movesAskedCalls: true });
+  n.noteCall({ toolCallId: 'before', kind: 'edit', locations: [{ path: '/w/a.txt' }] });
+  n.answered('before', true);
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'new-work', kind: 'edit', status: 'in_progress', locations: [{ path: '/w/b.txt' }] });
+  n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'new-work', status: 'completed', locations: [{ path: '/w/a.txt' }] });
+  assert.equal(n.isNewToolWork('new-work', new Set(['before'])), true);
+});
+
+test('an edit that reports only part of an earlier approval can still be old work', () => {
+  const n = new AcpNormalizer(ctx, { movesAskedCalls: true });
+  n.noteCall({ toolCallId: 'before', kind: 'edit', locations: [{ path: '/w/a.txt' }, { path: '/w/b.txt' }] });
+  n.answered('before', true);
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'old-work', kind: 'edit', status: 'in_progress', locations: [{ path: '/w/a.txt' }] });
+  n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'old-work', status: 'failed' });
+  assert.equal(n.isNewToolWork('old-work', new Set(['before'])), false);
+});
+
+test('an absolute location can identify an approval after a relative input path', () => {
+  const n = new AcpNormalizer(ctx, { movesAskedCalls: true });
+  const locations = [{ path: '/w/a.txt' }];
+  n.noteCall({ toolCallId: 'before', kind: 'edit', locations });
+  n.answered('before', true);
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'old-work', kind: 'edit', rawInput: { file_path: 'a.txt' } });
+  n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'old-work', status: 'completed', locations });
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'new-work', kind: 'edit', status: 'in_progress', locations });
+  assert.equal(n.isNewToolWork('old-work', new Set(['before'])), false);
+  assert.equal(n.isNewToolWork('new-work', new Set(['before'])), true);
+});
+
+test('a tool linked to a new approval can show recovery despite an unrelated old approval', () => {
+  const n = new AcpNormalizer(ctx, { movesAskedCalls: true });
+  n.noteCall({ toolCallId: 'before', kind: 'edit', locations: [{ path: '/w/a.txt' }] });
+  n.answered('before', true);
+  const locations = [{ path: '/w/b.txt' }];
+  n.noteCall({ toolCallId: 'after', kind: 'edit', locations });
+  n.answered('after', true);
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'new-work', kind: 'edit', status: 'in_progress', locations });
+  assert.equal(n.isNewToolWork('new-work', new Set(['before'])), true);
+});
+
 test('output only in rawOutput still shows', () => {
   const n = new AcpNormalizer(ctx);
   n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c2', title: 'bash', kind: 'execute', status: 'in_progress', rawInput: { command: 'ls' } });

@@ -126,6 +126,12 @@ function namedFiles(call: AcpToolCall): string[] {
   return out.size ? [...out] : requestPaths(call);
 }
 
+function sameFiles(a: string[], b: string[]): boolean {
+  const left = new Set(a.map((p) => path.resolve(p)));
+  const right = new Set(b.map((p) => path.resolve(p)));
+  return left.size === right.size && [...left].every((p) => right.has(p));
+}
+
 export function requestPaths(call: AcpToolCall): string[] {
   const out = new Set<string>();
   for (const l of Array.isArray(call.locations) ? call.locations : []) if (typeof l?.path === 'string' && l.path) out.add(l.path);
@@ -470,22 +476,21 @@ export class AcpNormalizer {
   // with no link between the two. The new call then shows on the request's
   // row, so a card's row is the one that runs; what each call has said stays
   // its own, as the permission checks read it (Codex's review, 20 Nov 2026).
-  private askedFor(u: AcpToolCall, kind = u.kind, knownPaths: string[] = []): Tool | undefined {
+  private askedFor(u: AcpToolCall, previous?: Tool): Tool | undefined {
     // Only for an agent known to do it, and only once the new call says it
     // runs: a call that's only proposed may be another one entirely, still to
     // be asked about (Codex's third review, 20 Nov 2026).
-    if (!this.movesAskedCalls || (u.status !== 'in_progress' && u.status !== 'completed')) return undefined;
+    if (!this.movesAskedCalls || (!previous?.ran && u.status !== 'in_progress' && u.status !== 'completed')) return undefined;
+    const kind = typeof u.kind === 'string' ? u.kind : previous?.acpKind;
     if (!writesFiles(kind)) return undefined;
     const named = namedFiles(u);
-    const paths = named.length ? named : knownPaths;
+    const known = previous?.paths ?? [];
+    // A later absolute location can replace a relative argument from an
+    // earlier frame. Keep the absolute paths that arrived across frames.
+    const paths = named.length ? [...known.filter((p) => path.isAbsolute(p)), ...named] : known;
     if (!paths.length || !paths.every((p) => path.isAbsolute(p))) return undefined;
-    const same = (a: string[], b: string[]) => {
-      const x = new Set(a.map((p) => path.resolve(p)));
-      const y = new Set(b.map((p) => path.resolve(p)));
-      return x.size === y.size && [...x].every((p) => y.has(p));
-    };
     // The oldest first: an agent runs what it asked for in turn.
-    const found = [...this.tools.values()].find((t) => t.asked && t.allowed === true && !t.approvalLink && !t.ran && !t.done && t.acpKind === kind && (t.askedFiles ?? []).every((p) => path.isAbsolute(p)) && same(t.askedFiles ?? [], paths));
+    const found = [...this.tools.values()].find((t) => t.asked && t.allowed === true && !t.approvalLink && !t.ran && !t.done && t.acpKind === kind && (t.askedFiles ?? []).every((p) => path.isAbsolute(p)) && sameFiles(t.askedFiles ?? [], paths));
     return found;
   }
 
@@ -494,7 +499,7 @@ export class AcpNormalizer {
     // Later frames may name the file after the tool's row is already out.
     const had = this.tools.get(u.toolCallId);
     const canLink = !had || ((!had.emitted || !had.asked) && !had.approvalLink && had.allowed === undefined && !had.done && had.row === had.id);
-    const asked = canLink ? this.askedFor(u, typeof u.kind === 'string' ? u.kind : had?.acpKind, had?.paths) : undefined;
+    const asked = canLink ? this.askedFor(u, had) : undefined;
     const t = this.tool(u.toolCallId);
     if (asked) {
       t.approvalLink = { kind: 'uses', toolCallId: asked.id };
@@ -594,7 +599,7 @@ export class AcpNormalizer {
   isNewToolWork(toolCallId: string, earlierIds: ReadonlySet<string>): boolean {
     const tool = this.tools.get(toolCallId);
     if (!tool?.ran || earlierIds.has(tool.id) || earlierIds.has(tool.row)) return false;
-    if (tool.approvalLink?.kind === 'uses' && earlierIds.has(tool.approvalLink.toolCallId)) return false;
+    if (tool.approvalLink?.kind === 'uses') return !earlierIds.has(tool.approvalLink.toolCallId);
     const kind = tool.acpKind === 'other' ? undefined : tool.acpKind;
     if (tool.asked || (kind && !writesFiles(kind))) return true;
     // A write can start under a second ID before the bridge sends its paths.
@@ -605,8 +610,8 @@ export class AcpNormalizer {
       if (kind && kind !== earlier.acpKind) continue;
       const files = earlier.askedFiles;
       if (!tool.done || !tool.paths.length || !tool.paths.every((p) => path.isAbsolute(p)) || !files?.length || !files.every((p) => path.isAbsolute(p))) return false;
-      const paths = new Set(tool.paths.map((p) => path.resolve(p)));
-      if (files.some((p) => paths.has(path.resolve(p)))) return false;
+      const approved = new Set(files.map((p) => path.resolve(p)));
+      if (tool.paths.every((p) => approved.has(path.resolve(p)))) return false;
     }
     return true;
   }
