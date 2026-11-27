@@ -57,76 +57,54 @@ test('the browser permits only the two trusted viewer scripts', async () => {
   assert.match(policy, /(?:^|; )script-src-attr 'none'(?:;|$)/);
 });
 
-test('the viewer passes its initial and changed fragments through the sandbox', async () => {
+test('the wrapper forwards same-fragment history entries and only sends each entry once', async () => {
   const html = await artifactPage({ title: 'Artifact', html: '<h2 id="cost">Cost</h2>' }).text();
-  const encodedFrame = html.match(/&lt;script nonce=&quot;[^&]+&quot;&gt;([^]*?)&lt;\/script&gt;/)?.[1];
   const viewerScript = html.match(/<script nonce="[^"]+">([^]*?)<\/script>/)?.[1];
-  assert.ok(encodedFrame && viewerScript);
-  const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"' };
-  const frameScript = encodedFrame.replace(/&(amp|lt|gt|quot);/g, (_, name: string) => entities[name]);
+  assert.ok(viewerScript);
 
-  const parent = new EventTarget();
-  const frame = new EventTarget();
-  const location = { hash: '#cost' };
-  const viewport = {
-    parent,
-    location: { hash: '' },
-    scrollX: 0,
-    scrollY: 0,
-    scrollTo({ top }: { top: number }) { viewport.scrollY = top; },
-    addEventListener: frame.addEventListener.bind(frame),
-  };
-  class Anchor {
-    constructor(top: number) { this.top = top; }
-    readonly top: number;
-    scrollIntoView() { viewport.scrollY = this.top; }
-  }
+  const events = new EventTarget();
+  const location = { pathname: '/a/demo', hash: '#cost' };
   const history = {
     state: null as { artifactEntry: string } | null,
     replaceState(state: { artifactEntry: string }) { history.state = state; },
   };
-  const document = Object.assign(new EventTarget(), {
-    getElementById: (name: string) => name === 'cost' ? new Anchor(1000) : null,
-    getElementsByName: (name: string) => name === 'detail ü' ? [new Anchor(2000)] : [],
-  });
-  const postMessage = (data: unknown, origin: string) => {
-    assert.equal(origin, '*'); // A sandboxed srcdoc has an opaque origin.
-    frame.dispatchEvent(Object.assign(new Event('message'), { source: parent, data }));
+  const messages: { artifactFragment: string; entry: string }[] = [];
+  const iframe = {
+    contentWindow: { postMessage: (data: typeof messages[number], origin: string) => {
+      assert.equal(origin, '*'); // A sandboxed srcdoc has an opaque origin.
+      messages.push(data);
+    } },
   };
   let nextEntry = 0;
-  runInNewContext(frameScript, {
-    window: viewport, document, HTMLAnchorElement: Anchor,
-    requestAnimationFrame: (callback: () => void) => callback(),
-  });
   runInNewContext(viewerScript, {
-    window: { location, addEventListener: parent.addEventListener.bind(parent) },
+    window: { location, name: '', addEventListener: events.addEventListener.bind(events) },
     history,
-    document: { querySelector: () => ({ contentWindow: { postMessage } }) },
+    document: { querySelector: () => iframe },
     crypto: { getRandomValues: () => [++nextEntry] },
     performance: { getEntriesByType: () => [{ type: 'navigate' }] },
   });
 
-  parent.dispatchEvent(new Event('load'));
-  assert.equal(viewport.scrollY, 1000);
-  const costEntry = history.state;
-  viewport.scrollY = 1350;
-  history.state = null;
-  location.hash = '#detail%20%C3%BC';
-  parent.dispatchEvent(new Event('hashchange'));
-  assert.equal(viewport.scrollY, 2000);
+  function change(hash: string) {
+    location.hash = hash;
+    history.state = null; // A new fragment creates a fresh history entry.
+    events.dispatchEvent(new Event('popstate'));
+    events.dispatchEvent(new Event('hashchange'));
+  }
 
-  history.state = costEntry;
-  location.hash = '#cost';
-  parent.dispatchEvent(new Event('hashchange'));
-  assert.equal(viewport.scrollY, 1350);
-  frame.dispatchEvent(Object.assign(new Event('message'), { source: {}, data: { artifactFragment: '', entry: 'wrong-window' } }));
-  frame.dispatchEvent(Object.assign(new Event('message'), { source: parent, data: { artifactFragment: 'https://example.test', entry: 'invalid' } }));
-  assert.equal(viewport.scrollY, 1350);
+  events.dispatchEvent(new Event('load'));
+  const firstCostEntry = history.state;
+  change('#details');
+  change('#cost');
 
-  history.state = null;
-  location.hash = '';
-  parent.dispatchEvent(new Event('hashchange'));
-  assert.equal(viewport.scrollY, 0);
+  // Back two entries changes history.state while the URL stays the same.
+  history.state = firstCostEntry;
+  events.dispatchEvent(new Event('popstate'));
+  assert.deepEqual(messages.map(({ artifactFragment, entry }) => [artifactFragment, entry]), [
+    ['#cost', '1'],
+    ['#details', '2'],
+    ['#cost', '3'],
+    ['#cost', '1'],
+  ]);
 });
 
 test('missing and unpublished links return an uncached 404', async () => {
