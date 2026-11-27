@@ -32,7 +32,8 @@ test('leaves everything else alone', () => {
 test('reads each kind of link', () => {
   assert.deepEqual(readLink('work:npm%20test'), { kind: 'step', quote: 'npm test' });
   assert.deepEqual(readLink('thread:a1b2c3d4'), { kind: 'thread', id: 'a1b2c3d4' });
-  assert.deepEqual(readLink('review:abc'), { kind: 'review' });
+  assert.deepEqual(readLink('review:abc'), { kind: 'review', id: 'abc' });
+  assert.equal(readLink('review:'), undefined);
   assert.equal(readLink('https://a.b'), undefined);
   assert.equal(readLink('/a/b.md'), undefined);
   assert.equal(readLink('work:'), undefined);
