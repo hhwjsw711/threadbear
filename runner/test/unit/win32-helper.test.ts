@@ -75,18 +75,30 @@ test("a helper that can't start fails the question rather than hanging it", asyn
 
 // PowerShell dying leaves a question's write with nowhere to go (EPIPE).
 // That has to be caught on the pipe: an uncaught EPIPE restarts the runner.
-// The pad is bigger than a pipe buffer, so the write is still in flight
-// when the process exits.
+// The first question is bigger than a pipe buffer, and that helper exits
+// without reading it. The next one has to be answered: it only starts once
+// the first has exited, so a late EPIPE from the dead pipe shows up first.
 test('a question written to a helper that has already gone is not an uncaught EPIPE', async () => {
+  const mark = path.join(tmpDir(), 'gone');
+  const script = `
+    const fs = require('fs');
+    const mark = ${JSON.stringify(mark)};
+    if (!fs.existsSync(mark)) { fs.writeFileSync(mark, '1'); process.exit(0); }
+    const rl = require('readline').createInterface({ input: process.stdin });
+    rl.on('line', (l) => {
+      const r = JSON.parse(l);
+      console.log(JSON.stringify({ id: r.id, ok: true, result: 'pong' }));
+    });
+  `;
   const crashes: string[] = [];
   const trap = (e: NodeJS.ErrnoException) => {
     crashes.push(e?.code ?? String(e));
   };
   process.on('uncaughtException', trap);
-  const h = new Win32Helper({ command: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMs: 5000 });
+  const h = new Win32Helper({ command: process.execPath, args: ['-e', script], timeoutMs: 5000, startTimeoutMs: PATIENCE_MS });
   try {
-    await assert.rejects(h.ask('ping', { pad: 'x'.repeat(1_000_000) }), /exited|couldn't start/);
-    await new Promise((r) => setImmediate(r));
+    await assert.rejects(h.ask('ping', { pad: 'x'.repeat(1_000_000) }), /exited/);
+    assert.equal(await h.ask('ping'), 'pong');
     assert.deepEqual(crashes, []);
   } finally {
     process.off('uncaughtException', trap);
