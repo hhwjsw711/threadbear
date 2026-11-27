@@ -14,7 +14,7 @@ import { checkPhoneToken, hasLiveKey, pageLimit, readRunnerOrder, runnerStatsRow
 import { API_VERSION } from './version';
 import { pushOff } from './pushHealth';
 import { imagesFrom, phoneImage, replyImagesFrom, siteUrl } from './share';
-import { deleteIfUnused, endCommandFiles, eventBodyAnswer, finishedArgs, readEventBody, runnerName } from './sync';
+import { deleteIfUnused, endCommandFiles, eventBodyAnswer, finishedArgs, MAX_FILES_PER_COMMAND, readEventBody, runnerName } from './sync';
 import { webLinksOnly, docBytes, holdReviewNumbers, holdThreadTimes, isReadableTime } from './runnerAccess';
 import { HEADS_MARK } from './projectHeads';
 import { notesOf } from './projectNotes';
@@ -885,7 +885,8 @@ export const reviewImages = query({
   handler: async (ctx, { token, threadId, sources }) => {
     await checkPhoneToken(ctx, token);
     await findThread(ctx, threadId);
-    if (sources.length > 40 || sources.some((src) => !/^review:[a-zA-Z0-9-]{1,200}:[a-f0-9]{64}$/.test(src))) throw new ConvexError('Invalid review pictures.');
+    // 80: a review's stills, and since API 106 its videos and sounds too.
+    if (sources.length > 80 || sources.some((src) => !/^review:[a-zA-Z0-9-]{1,200}:[a-f0-9]{64}$/.test(src))) throw new ConvexError('Invalid review pictures.');
     const out = [];
     for (const src of new Set(sources)) {
       const img = await ctx.db.query('replyImages').withIndex('by_thread_src', (q) => q.eq('threadId', threadId).eq('src', src)).order('desc').first();
@@ -912,6 +913,22 @@ export const designReviews = mutation({
 // any text, and Convex refuses an object key that isn't plain ASCII or
 // starts with "$". No pictures: a draft's are paths on the Mac, and the
 // runner keeps the ones saved there.
+//
+// marks (API 106): Mike's marks drawn on the phone, each with an optional
+// cut-out (storageId) uploaded through imageUploadUrl. The cut-outs go as
+// the command's `images`, checked as a send's photos are (commandImages),
+// and each mark names its own by `image`, an index into them; the runner
+// downloads them as it does a send's. The runner's reviews.respond checks the
+// rest (an option and shot that exist, at most 20 marks, numbers unique).
+const MAX_REVIEW_MARKS = MAX_FILES_PER_COMMAND;
+const reviewMark = v.object({
+  n: v.number(),
+  kind: v.union(v.literal('circle'), v.literal('highlight'), v.literal('pin')),
+  optionId: v.string(),
+  shot: v.number(),
+  box: v.array(v.number()),
+  storageId: v.optional(v.id('_storage')),
+});
 export const respondReview = mutation({
   args: {
     token: v.string(),
@@ -924,17 +941,25 @@ export const respondReview = mutation({
       notes: v.array(v.object({ id: v.string(), text: v.string() })),
       reply: v.optional(v.string()),
       none: v.optional(v.boolean()),
+      marks: v.optional(v.array(reviewMark)),
     }),
   },
   returns: v.id('commands'),
-  handler: async (ctx, { token, threadId, reviewId, revision, draft }) => {
-    await checkPhoneToken(ctx, token);
+  handler: async (ctx, { token, threadId, reviewId, revision, draft: { marks, ...draft } }) => {
+    const me = await checkPhoneToken(ctx, token);
     if (!/^[a-zA-Z0-9-]{1,200}$/.test(reviewId) || !Number.isSafeInteger(revision) || revision < 0) throw new ConvexError('Invalid review or revision.');
     if ((draft.pickedIds?.length ?? 0) > 12 || draft.notes.length > 12 || (draft.reply?.length ?? 0) > 8000 ||
         draft.notes.some((n) => n.text.length > 4000 || n.id.length > 200) || (draft.pickedId?.length ?? 0) > 200 ||
         (draft.pickedIds ?? []).some((id) => id.length > 200)) throw new ConvexError('The review answer is too long.');
+    if (marks && (marks.length > MAX_REVIEW_MARKS || marks.some((m) =>
+      !Number.isSafeInteger(m.n) || m.n < 1 || m.n > 1000 || !Number.isSafeInteger(m.shot) || m.shot < 0 || m.shot > 1000 || m.optionId.length > 200 ||
+      m.box.length !== 4 || m.box.some((x) => !Number.isFinite(x) || x < 0 || x > 1)))) throw new ConvexError('Invalid marks in the review answer.');
+    const cutOuts = (marks ?? []).flatMap((m) => (m.storageId ? [m.storageId] : []));
+    const images = await commandImages(ctx, me.id, cutOuts, MAX_REVIEW_MARKS);
+    let next = 0;
+    const sent = marks?.length ? { marks: marks.map(({ storageId, ...m }) => ({ ...m, ...(storageId ? { image: next++ } : {}) })) } : {};
     const t = await findThread(ctx, threadId);
-    return queue(ctx, t.runnerId, 'respondReview', threadId, { reviewId, revision, draft });
+    return queue(ctx, t.runnerId, 'respondReview', threadId, { reviewId, revision, draft: { ...draft, ...sent }, ...images });
   },
 });
 
@@ -1372,9 +1397,9 @@ async function findThread(ctx: QueryCtx, threadId: string) {
 // fetch an address of the phone's choosing. Each must be a photo this token
 // uploaded (phoneUploads), so a command can't name a runner's picture or
 // project icon, which finishing it would then try to delete.
-async function commandImages(ctx: QueryCtx, tokenId: Id<'tokens'>, images: Id<'_storage'>[] | undefined) {
+async function commandImages(ctx: QueryCtx, tokenId: Id<'tokens'>, images: Id<'_storage'>[] | undefined, max = MAX_COMMAND_IMAGES) {
   if (!images?.length) return {};
-  if (images.length > MAX_COMMAND_IMAGES) throw new ConvexError({ kind: 'invalid', message: `at most ${MAX_COMMAND_IMAGES} photos` });
+  if (images.length > max) throw new ConvexError({ kind: 'invalid', message: `at most ${max} photos` });
   const out = [];
   // Each in its place, repeats too: the text's [Picture N] markers count them in order.
   for (const storageId of images) {

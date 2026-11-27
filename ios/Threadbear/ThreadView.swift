@@ -116,7 +116,7 @@ struct ThreadView: View {
                 menu(model.shown(thread))
             }
         }
-        .sheet(item: $designReviewShown) { target in
+        .fullScreenCover(item: $designReviewShown) { target in
             DesignReviewsView(threadId: threadId, reviewId: target.id, drafts: $designReviewDrafts)
         }
         .hibernateDialog(for: $hibernateTarget, leaving: { dismiss() })

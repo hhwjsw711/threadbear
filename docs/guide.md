@@ -308,15 +308,20 @@ itself, and that's checked again when you press it.
 
 On the iPhone, tap Reviews in the thread's top bar, or a review link in a
 reply. The sheet shows the options, their notes and a still of each
-picture. Pick any options, None of these, or write a reply, then Send
-answer. Reference options are there to compare and can't be picked. The
-thread's Mac has to be on to load the review and take the answer, and it
-sends the stills only once you open the review, so they can take a moment
-to turn up. Pages, videos and sounds show their still; open the real thing on the
-Mac. Pictures pasted into an answer on the Mac stay with it, though the
-phone doesn't show them. This needs your backend on API 86 or newer. If
-the review changes on the Mac while you're answering, your answer stays
-in the sheet while it reloads, ready for you to check and send again.
+picture, with the agent's marks drawn on it. Videos and sounds play there
+too, up to 10 MB each; a bigger one, and a page, shows its still, so open
+the real thing on the Mac. You can mark a picture as you can on the Mac
+(a circle, a highlight or a pin) and put the mark in your reply. Pick any
+options, None of these, or write a reply, then Send answer. Reference
+options are there to compare and can't be picked. The thread's Mac has to
+be on to load the review and take the answer, and it sends the stills,
+videos and sounds only once you open the review, so they can take a moment
+to turn up. Pictures pasted into an answer on the Mac stay with it, though
+the phone doesn't show them, and so do marks made on the Mac unless you
+send marks of your own. Reviews need your backend on API 86 or newer;
+marks, videos and sounds need API 106 or newer. If the review changes on
+the Mac while you're answering, your answer stays in the sheet while it
+reloads, ready for you to check and send again.
 
 In the thread, a review's card shows the agent's lead and each option's
 small picture and name. Click one to open the comparison window on that

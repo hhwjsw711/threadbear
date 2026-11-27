@@ -6,13 +6,14 @@
 //
 // Stills go up only once the phone opens a review (reviewStills, from the
 // designReviews command in sync.ts), not as reviews are made, so a review
-// nobody reads on the phone never leaves the Mac.
+// nobody reads on the phone never leaves the Mac. A shot's video or sound
+// goes up with them (API 106), named the same way; a page stays on the Mac.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DesignReview, ReviewDraft } from './protocol.ts';
+import type { AgentMark, DesignReview, ImageRef, ReviewDraft, ReviewUserMark } from './protocol.ts';
 import { convertImage } from './images.ts';
-import { readShareImage, shrinkWouldDo } from './share-images.ts';
+import { readShareImage, readShareMedia, shrinkWouldDo } from './share-images.ts';
 
 export function reviewImageSource(reviewId: string, imagePath: string): string {
   return `review:${reviewId}:${crypto.createHash('sha256').update(imagePath).digest('hex')}`;
@@ -36,9 +37,23 @@ export function phoneDraft(d: ReviewDraft) {
   };
 }
 
+// A shot's video or sound the phone can play; never a page, which would run
+// there.
+function playable(media: ImageRef | undefined): media is ImageRef {
+  return Boolean(media && (media.mediaType.startsWith('video/') || media.mediaType.startsWith('audio/')));
+}
+
+// The agent's marks as the phone draws them: ink filled in with the window's
+// default, so the phone needn't know it.
+function phoneMarks(marks: AgentMark[]) {
+  return marks.map((m) => ({ kind: m.kind, box: m.box, ...(m.note ? { note: m.note } : {}), ink: m.ink ?? 'yellow' }));
+}
+
 // noPreview: sources whose still can't go to the phone (gone, or not a
 // picture even after shrinking), so it says so rather than waiting.
-export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string> = new Set()) {
+// media: the sources of shots' videos and sounds that go up (reviewStills),
+// each named on its shot as `media`; any other plays only on the Mac.
+export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string> = new Set(), media: ReadonlySet<string> = new Set()) {
   return {
     id: review.id, title: review.title, status: review.status, revision: review.revision,
     ...(review.note ? { note: review.note } : {}),
@@ -50,11 +65,14 @@ export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string>
       ...(option.reference ? { reference: true } : {}),
       shots: shotsOf(option).map((shot) => {
         const src = reviewImageSource(review.id, shot.image.path);
+        const play = playable(shot.media) ? reviewImageSource(review.id, shot.media.path) : undefined;
         return {
           src,
           ...(shot.title ? { title: shot.title } : {}),
           kind: shot.media?.mediaType === 'text/html' ? 'page' : shot.media?.mediaType.startsWith('audio/') ? 'audio' : shot.media ? 'video' : 'image',
           ...(noPreview.has(src) ? { preview: false } : {}),
+          ...(play && media.has(play) ? { media: play } : {}),
+          ...(shot.marks?.length ? { marks: phoneMarks(shot.marks) } : {}),
         };
       }),
     })),
@@ -66,7 +84,14 @@ export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string>
 // name files on this Mac) comes in with it. Notes come as a list: an option
 // id can be any text, and Convex refuses an object key that isn't plain
 // ASCII or starts with "$".
-export function draftFromPhone(raw: unknown): ReviewDraft {
+//
+// marks (API 106): Mike's marks drawn on the phone, each with `image`, the
+// index of its cut-out in the command's photos, which the runner has
+// downloaded into inbox/ (`images`, in the same order). reviews.respond
+// checks the rest (reviewDraft) and keeps the cut-outs (keepReplyImages).
+// Only a non-empty list goes in: an answer with none keeps the marks saved
+// on the Mac (withSavedImages), as an answer from an older phone does.
+export function draftFromPhone(raw: unknown, images: readonly ImageRef[] = []): ReviewDraft {
   const bad = () => new Error('Invalid review answer.');
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad();
   const r = raw as Record<string, unknown>;
@@ -91,6 +116,22 @@ export function draftFromPhone(raw: unknown): ReviewDraft {
     out.reply = r.reply;
   }
   if (r.none === true) out.none = true;
+  if (r.marks !== undefined) {
+    if (!Array.isArray(r.marks)) throw bad();
+    const marks = r.marks.map((m): ReviewUserMark => {
+      if (!m || typeof m !== 'object' || Array.isArray(m)) throw bad();
+      const { n, kind, optionId, shot, box, image } = m as Record<string, unknown>;
+      if (typeof n !== 'number' || typeof kind !== 'string' || typeof optionId !== 'string' || typeof shot !== 'number') throw bad();
+      if (!Array.isArray(box) || box.length !== 4 || !box.every((v) => typeof v === 'number')) throw bad();
+      let cut: ImageRef | undefined;
+      if (image !== undefined) {
+        if (typeof image !== 'number' || !Number.isSafeInteger(image) || !images[image]) throw bad();
+        cut = images[image];
+      }
+      return { n, kind: kind as ReviewUserMark['kind'], optionId, shot, box: box as ReviewUserMark['box'], ...(cut ? { image: cut } : {}) };
+    });
+    if (marks.length) out.marks = marks;
+  }
   return out;
 }
 
@@ -100,7 +141,8 @@ const PHONE_STILL_PX = 2400;
 // read: the file to send; within: the folder it must be in when it's read
 // (readShareImage: no links, nothing outside). The row in Convex is named by
 // src alone, never the path.
-export type ReviewStill = { src: string; read: string; within: string };
+// media: a video or sound, read as one (readShareMedia), not a picture.
+export type ReviewStill = { src: string; read: string; within: string; media?: true };
 
 // A review's stills ready to go up, and the ones that can't. Only files in
 // the review's own media folder (`<thread media>/reviews/<id>`, where
@@ -109,9 +151,14 @@ export type ReviewStill = { src: string; read: string; within: string };
 // over the reply-picture limit (10 MB; a review takes 25) or in a format the
 // phone doesn't take is shrunk to a JPEG in a `phone` folder beside it once,
 // and that copy goes instead.
-export async function reviewStills(review: DesignReview, threadMedia: string | undefined): Promise<{ stills: ReviewStill[]; noPreview: Set<string> }> {
+//
+// A shot's video or sound goes too, as it is, from the same folder and up
+// to the same 10 MB; a bigger one plays only on the Mac (media lists the
+// ones that go, for phoneReview).
+export async function reviewStills(review: DesignReview, threadMedia: string | undefined): Promise<{ stills: ReviewStill[]; noPreview: Set<string>; media: Set<string> }> {
   const stills: ReviewStill[] = [];
   const noPreview = new Set<string>();
+  const media = new Set<string>();
   const seen = new Set<string>();
   const within = threadMedia && /^[a-zA-Z0-9-]{1,200}$/.test(review.id) ? path.join(threadMedia, 'reviews', review.id) : undefined;
   for (const option of review.options) {
@@ -124,8 +171,26 @@ export async function reviewStills(review: DesignReview, threadMedia: string | u
       if (ready) stills.push({ src, read: ready, within: within! });
       else noPreview.add(src);
     }
+    for (const shot of shotsOf(option)) {
+      if (!within || !playable(shot.media)) continue;
+      const src = reviewImageSource(review.id, shot.media.path);
+      if (seen.has(src)) continue;
+      seen.add(src);
+      // Read once here to know it will go (the right kind, in the folder,
+      // not too big), and again as it goes up, through the same checks.
+      let ok = false;
+      try {
+        ok = !('skip' in readShareMedia(shot.media.path, within));
+      } catch {
+        // Only "no media": the phone shows the still.
+      }
+      if (ok) {
+        stills.push({ src, read: shot.media.path, within, media: true });
+        media.add(src);
+      }
+    }
   }
-  return { stills, noPreview };
+  return { stills, noPreview, media };
 }
 
 // Nothing here throws: a failure is only "no preview", as an error's text

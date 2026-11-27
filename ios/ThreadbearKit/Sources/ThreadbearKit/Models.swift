@@ -1082,6 +1082,10 @@ public enum BackendCompatibility {
     /// thread's design reviews through its runner, and phone:reviewImages
     /// follows their stills. Older backends: a review opens on the Mac.
     public static let designReviewsAPIVersion = 86
+    /// From 106 a review's shots carry the agent's marks and their video or
+    /// sound, and phone:respondReview takes the phone's own marks. Older
+    /// backends: no Mark button, and the board shows stills only.
+    public static let reviewMarksAPIVersion = 106
 
     /// The line to show, or nil when the backend is fine.
     public static func problem(_ identity: PhoneIdentity) -> String? {

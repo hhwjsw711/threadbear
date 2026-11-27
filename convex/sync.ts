@@ -238,8 +238,11 @@ const OLD_COMMANDS_READ = 2 * 1024 * 1024;
 // A command is over (finished, failed, cancelled, expired): its photos are no
 // longer on their way. Call before deleteIfUnused on them.
 export const MAX_COMMAND_FILES = 6;
+// The most files any one command names: a review answer's mark cut-outs
+// (phone.ts respondReview, API 106) go past a message's 6.
+export const MAX_FILES_PER_COMMAND = 20;
 export async function endCommandFiles(ctx: MutationCtx, commandId: Id<'commands'>): Promise<void> {
-  for (const f of await ctx.db.query('commandFiles').withIndex('by_commandId', (q) => q.eq('commandId', commandId)).take(MAX_COMMAND_FILES)) await ctx.db.delete(f._id);
+  for (const f of await ctx.db.query('commandFiles').withIndex('by_commandId', (q) => q.eq('commandId', commandId)).take(MAX_FILES_PER_COMMAND)) await ctx.db.delete(f._id);
 }
 
 export async function uploadedBy(ctx: QueryCtx | MutationCtx, storageId: Id<'_storage'>): Promise<string | undefined> {
@@ -596,6 +599,10 @@ const PICTURE_INDEX = 100;
 // A reply's media also takes a live page (API 95, the livePages experiment):
 // stored as plain bytes, run only in the apps' sealed views.
 export const REPLY_TYPES = new Set([...PICTURE_TYPES, 'text/html']);
+// A design review's shot for the phone (API 106; seq 0, src review:...) can
+// be a sound as well (runner/src/phone-reviews.ts reviewStills).
+export const REVIEW_MEDIA_TYPES = new Set([...REPLY_TYPES, 'audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/wav']);
+const REVIEW_SRC = /^review:[a-zA-Z0-9-]{1,200}:[a-f0-9]{64}$/;
 function checkPicture(caller: Caller, img: { seq: number; index?: number; path?: string; src?: string; mediaType: string; width?: number; height?: number }, types: Set<string> = PICTURE_TYPES): void {
   if (caller.owner) return;
   const whole = (n: number, lo: number, hi: number) => Number.isSafeInteger(n) && n >= lo && n <= hi;
@@ -1300,7 +1307,7 @@ export const addReplyImage = mutation({
   returns: pictureAnswer,
   handler: async (ctx, { key, ...sent }) => {
     const caller = await runnerAuth(ctx, key, 'addReplyImage');
-    checkPicture(caller, sent, REPLY_TYPES);
+    checkPicture(caller, sent, sent.seq === 0 && sent.src !== undefined && REVIEW_SRC.test(sent.src) ? REVIEW_MEDIA_TYPES : REPLY_TYPES);
     const img = clean(sent);
     const mine = await ownThread(ctx, caller, img.threadId);
     // The owner key on a thread it's kept off (ownThread) marks nothing as attached (mustMayUseStorage).

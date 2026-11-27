@@ -509,4 +509,6 @@
 //    the Runners panel's Use this Mac's Claude logins (docs/protocol/settings.md,
 //    "This Mac's logins on another runner"): owner key only, and a share
 //    carries each login sealed to that runner's key, never in the clear.
-export const API_VERSION = 105;
+// 106: design reviews send the agent's marks and the shots' video/sound to
+//    the phone; phone:respondReview takes the phone's own marks.
+export const API_VERSION = 106;

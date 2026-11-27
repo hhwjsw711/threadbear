@@ -356,7 +356,9 @@ phone names must be one that has heartbeated (or `"any"`), else
   86): the Reviews sheet. The first two are commands the thread's runner
   answers from its own reviews (the review comes back as the command's
   `result`); the stills go up only once the phone has opened that review
-  (docs/protocol/events.md, "Reviews on the phone").
+  (docs/protocol/events.md, "Reviews on the phone"). Since API 106 a
+  shot carries the agent's marks and its video or sound (`media`), and
+  `respondReview`'s draft takes the phone's own `marks` with cut-outs.
 - `phone:interrupt({ token, threadId })` (API 69) → commandId: Stop,
   queued as an `interrupt` command, which ends the thread's running turn as
   Stop on the Mac does. Runners have applied it since API 44 (the main

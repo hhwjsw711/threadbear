@@ -417,6 +417,47 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         return file.absoluteString
     }
 
+    /// A sound's still as the runner draws one: bars on dark.
+    private static func sampleWaveform(_ name: String, width: Int, height: Int) -> String {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("sample-\(name).png")
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let c = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return file.absoluteString }
+        c.setFillColor(CGColor(red: 0.1, green: 0.12, blue: 0.16, alpha: 1))
+        c.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        c.setFillColor(CGColor(red: 0.55, green: 0.75, blue: 1, alpha: 1))
+        let bars = 80, step = CGFloat(width) / CGFloat(bars)
+        for i in 0..<bars {
+            let t = Double(i) / Double(bars)
+            let level = (0.15 + 0.85 * exp(-4 * t)) * (0.6 + 0.4 * abs(sin(Double(i) * 1.7)))
+            let h = CGFloat(level) * CGFloat(height) * 0.85
+            c.fill(CGRect(x: CGFloat(i) * step + step * 0.2, y: (CGFloat(height) - h) / 2, width: step * 0.6, height: h))
+        }
+        if let image = c.makeImage(), let out = CGImageDestinationCreateWithURL(file as CFURL, "public.png" as CFString, 1, nil) {
+            CGImageDestinationAddImage(out, image, nil)
+            CGImageDestinationFinalize(out)
+        }
+        return file.absoluteString
+    }
+
+    /// A second and a half of a fading two-note chime, as a 16-bit WAV.
+    private static func sampleChime(_ name: String) -> String {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("sample-\(name).wav")
+        let rate = 16_000, count = rate * 3 / 2
+        var samples = Data(capacity: count * 2)
+        for i in 0..<count {
+            let t = Double(i) / Double(rate)
+            let tone = t < 0.4 ? sin(2 * .pi * 660 * t) : sin(2 * .pi * 880 * t)
+            let value = Int16(max(-1, min(1, tone * exp(-2.5 * t) * 0.6)) * Double(Int16.max))
+            withUnsafeBytes(of: value.littleEndian) { samples.append(contentsOf: $0) }
+        }
+        func le<T: FixedWidthInteger>(_ v: T) -> Data { withUnsafeBytes(of: v.littleEndian) { Data($0) } }
+        var wav = Data("RIFF".utf8) + le(UInt32(36 + samples.count)) + Data("WAVEfmt ".utf8)
+        wav += le(UInt32(16)) + le(UInt16(1)) + le(UInt16(1)) + le(UInt32(rate)) + le(UInt32(rate * 2)) + le(UInt16(2)) + le(UInt16(16))
+        wav += Data("data".utf8) + le(UInt32(samples.count)) + samples
+        try? wav.write(to: file, options: .atomic)
+        return file.absoluteString
+    }
+
     /// A GIF of a bar crossing the frame, holding longer on its last frame, so
     /// it shows whether a picture plays and keeps each frame's own time.
     private static func sampleAnimation(_ name: String, width: Int, height: Int) -> String {
@@ -752,11 +793,26 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         }
     }
 
-    // Synthetic review data for the simulator, never a real conversation.
+    // Synthetic review data for the simulator, never a real conversation:
+    // an option with the agent's marks, a video, a sound and a reference page.
     private static var sampleDesignReview: PhoneDesignReview {
         PhoneDesignReview(id: "sample-review", title: "Choose a layout", note: "Compare the spacing before choosing.", recommended: "A", status: "pending", revision: 0, draft: DesignReviewDraft(), options: [
-            .init(id: "A", title: "Roomier layout", reference: false, shots: [.init(src: "review:sample:a", title: "Overview", kind: "image")]),
-            .init(id: "B", title: "Current layout", reference: true, shots: [.init(src: "review:sample:b", title: nil, kind: "page")])
+            .init(id: "A", title: "Roomier layout", note: "More air between rows. **Easiest to scan** at a glance.", reference: false, shots: [
+                .init(src: "review:sample:a", title: "Overview", kind: "image", marks: [
+                    .init(kind: "circle", box: [0.08, 0.12, 0.42, 0.42], note: "bigger tap target", ink: "yellow"),
+                    .init(kind: "underline", box: [0.5, 0.62, 0.9, 0.7], note: nil, ink: "green"),
+                    .init(kind: "highlight", box: [0.56, 0.42, 0.9, 0.5], note: nil, ink: "yellow"),
+                    .init(kind: "arrow", box: [0.3, 0.88, 0.55, 0.72], note: "same gap here", ink: "rose"),
+                ]),
+                .init(src: "review:sample:a2", title: "Detail", kind: "image"),
+            ]),
+            .init(id: "B", title: "Card grid", note: "Cards slide in as they load.", reference: false, shots: [
+                .init(src: "review:sample:c", title: "Loading", kind: "video", media: "review:sample:c-media"),
+            ]),
+            .init(id: "C", title: "Soft chime", note: "A short sound when it's done.", reference: false, shots: [
+                .init(src: "review:sample:d", title: "Done sound", kind: "audio", media: "review:sample:d-media"),
+            ]),
+            .init(id: "D", title: "Current layout", reference: true, shots: [.init(src: "review:sample:b", title: "Today", kind: "page")]),
         ])
     }
 
@@ -777,9 +833,20 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     }
 
     public func reviewImages(threadId: String, sources: [String]) -> AsyncThrowingStream<[MessageImage], Error> {
+        // `-ThreadbearReviewVideo <path>`: an MP4 for the video option to
+        // play (made on the Mac with ffmpeg's software encoder). Without it
+        // the video shot shows its still and says it couldn't load.
+        let args = ProcessInfo.processInfo.arguments
+        let video = args.firstIndex(of: "-ThreadbearReviewVideo").flatMap { args.indices.contains($0 + 1) ? URL(fileURLWithPath: args[$0 + 1]).absoluteString : nil }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("sample-review-none.mp4").absoluteString
         let pictures = [
             MessageImage(seq: 1, src: "review:sample:a", url: Self.samplePicture("review-a", width: 1200, height: 800, hue: 0.33), width: 1200, height: 800),
-            MessageImage(seq: 1, src: "review:sample:b", url: Self.samplePicture("review-b", width: 1200, height: 800, hue: 0.58), width: 1200, height: 800)
+            MessageImage(seq: 1, src: "review:sample:a2", url: Self.samplePicture("review-a2", width: 1200, height: 900, hue: 0.4), width: 1200, height: 900),
+            MessageImage(seq: 1, src: "review:sample:b", url: Self.samplePicture("review-b", width: 1000, height: 1400, hue: 0.58), width: 1000, height: 1400),
+            MessageImage(seq: 1, src: "review:sample:c", url: Self.samplePicture("review-c", width: 1280, height: 720, hue: 0.1), width: 1280, height: 720),
+            MessageImage(seq: 1, src: "review:sample:c-media", url: video, mediaType: "video/mp4"),
+            MessageImage(seq: 1, src: "review:sample:d", url: Self.sampleWaveform("review-d", width: 1200, height: 400), width: 1200, height: 400),
+            MessageImage(seq: 1, src: "review:sample:d-media", url: Self.sampleChime("review-d"), mediaType: "audio/wav"),
         ]
         return AsyncThrowingStream { $0.yield(pictures); $0.finish() }
     }

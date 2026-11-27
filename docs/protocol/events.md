@@ -285,12 +285,34 @@ reply-picture limit (10 MB) or in a format the phone
 doesn't take is shrunk to a JPEG first, and one that can't be sent at all
 comes with `preview: false`, so the phone says so rather than waiting.
 
+Backend API 106 adds the comparison board. Each shot can carry the agent's
+`marks` (`[{ kind, box, note?, ink }]`, as on the shot, with `ink` filled
+in as `yellow` when the agent gave none) and `media`, an opaque source
+named like a still's, for a video (`video/mp4`, `video/quicktime`) or
+sound (`audio/mpeg`, `audio/mp4`, `audio/aac`, `audio/wav`) of at most
+10 MB in the review's own folder. The runner sends `media` only to a
+backend of 106 or later, and uploads those files with the stills, as reply
+pictures at seq 0 (`sync:addReplyImage` takes the sound types only for a
+seq 0 row with a `review:` src); the phone fetches them with
+`phone:reviewImages` (up to 80 sources a call). A page never goes. The
+answer's draft can carry the phone's own `marks`, `[{ n, kind: circle |
+highlight | pin, optionId, shot, box, storageId? }]`, at most 20, each box
+fractions 0..1; `storageId` is the mark's cut-out (a JPEG the phone
+uploaded with `phone:imageUploadUrl`), checked as a send's photos are.
+Convex passes the cut-outs as the command's `images` (`[{ storageId, url
+}]`) and each mark names its own by `image`, an index into them; the
+runner downloads them as it does a send's photos and keeps them with the
+review, so the answer reads as a Mac's does (`[Mark N]` in the reply, a
+line and a cut-out per mark). An answer with no marks keeps the marks
+saved on the Mac, as one from an older phone does; one with marks
+replaces them.
+
 The phone's Reviews sheet opens from the pending-review button or a
 `review:<id>` link. It shows reference and recommended options, each shot's
-still, multiple picks, none, per-option notes and a reply. HTML, video and
-sound originals stay on the Mac; the phone labels their stills (a shot's
-`kind` is `image`, `video`, `audio` or `page`; an unknown one reads as a
-still). Loading and
+still, multiple picks, none, per-option notes and a reply. Pages stay on
+the Mac, and so do videos and sounds before API 106 or over 10 MB; the
+phone labels their stills (a shot's `kind` is `image`, `video`, `audio` or
+`page`; an unknown one reads as a still). Loading and
 failed submissions keep the user's draft. A stale revision reloads the
 review and requires another deliberate send. Older backends keep the
 Mac-only explanation.

@@ -143,17 +143,98 @@ test("a still that can't be shrunk is only no preview, never an error naming a p
   }
 });
 
-// The review board's marks stay on the Mac: the phone doesn't
-// draw them, and a cut-out's path is a file on the Mac.
-test('marks, the agent\'s and Mike\'s, never reach the phone', () => {
+// Since API 106 the phone draws the agent's marks; Mike's own saved on the
+// Mac stay there, as a cut-out's path is a file on the Mac.
+test("the agent's marks reach the phone, Mike's saved ones and their paths don't", () => {
   const marked: DesignReview = {
     ...review,
-    options: [{ ...review.options[0], shots: [{ ...review.options[0].shots![0], marks: [{ kind: 'circle', box: [0, 0, 0.5, 0.5], note: 'Here' }] }] }, review.options[1]],
+    options: [{ ...review.options[0], shots: [{ ...review.options[0].shots![0], marks: [{ kind: 'circle', box: [0, 0, 0.5, 0.5], note: 'Here' }, { kind: 'arrow', box: [0.1, 0.2, 0.3, 0.4], ink: 'green' }] }] }, review.options[1]],
     draft: { notes: {}, reply: '[Mark 1]', marks: [{ n: 1, kind: 'pin', optionId: 'A', shot: 0, box: [0.2, 0.2, 0.2, 0.2], image: { path: '/Users/me/cut.png', mediaType: 'image/png' } }] },
   };
   const dto = phoneReview(marked);
-  assert.ok(!JSON.stringify(dto).includes('marks'), JSON.stringify(dto));
+  assert.deepEqual(dto.options[0].shots[0].marks, [
+    { kind: 'circle', box: [0, 0, 0.5, 0.5], note: 'Here', ink: 'yellow' },
+    { kind: 'arrow', box: [0.1, 0.2, 0.3, 0.4], ink: 'green' },
+  ]);
+  assert.equal(dto.options[1].shots[0].marks, undefined);
   assert.deepEqual(dto.draft, { notes: {}, reply: '[Mark 1]' });
-  // An answer from the phone brings none in.
-  assert.ok(!('marks' in draftFromPhone({ notes: [], marks: [{ n: 1 }] })));
+  assert.ok(!JSON.stringify(dto).includes('/Users/'), JSON.stringify(dto));
+  // An answer from the phone with no marks brings none in, so the Mac's stay.
+  assert.ok(!('marks' in draftFromPhone({ notes: [], marks: [] })));
+  assert.ok(!('marks' in draftFromPhone({ notes: [] })));
+});
+
+test("the phone's marks come in with their cut-outs, by index into the command's photos", () => {
+  const cut = { path: '/tmp/inbox/phone-1.jpg', mediaType: 'image/jpeg' };
+  const draft = draftFromPhone({ notes: [], reply: 'This [Mark 1] and [Mark 2]', marks: [
+    { n: 1, kind: 'circle', optionId: 'A', shot: 0, box: [0.1, 0.1, 0.4, 0.3], image: 0 },
+    { n: 2, kind: 'pin', optionId: 'A', shot: 0, box: [0.5, 0.5, 0.5, 0.5] },
+  ] }, [cut]);
+  assert.deepEqual(draft.marks, [
+    { n: 1, kind: 'circle', optionId: 'A', shot: 0, box: [0.1, 0.1, 0.4, 0.3], image: cut },
+    { n: 2, kind: 'pin', optionId: 'A', shot: 0, box: [0.5, 0.5, 0.5, 0.5] },
+  ]);
+  // A path from the phone is never taken, and an index must name a photo.
+  assert.ok(!('path' in draftFromPhone({ notes: [], marks: [{ n: 1, kind: 'pin', optionId: 'A', shot: 0, box: [0, 0, 0, 0], path: [[0, 0]] }] }).marks![0]!));
+  assert.throws(() => draftFromPhone({ notes: [], marks: [{ n: 1, kind: 'pin', optionId: 'A', shot: 0, box: [0, 0, 0, 0], image: 1 }] }, [cut]));
+  assert.throws(() => draftFromPhone({ notes: [], marks: [{ n: 1, kind: 'pin', optionId: 'A', shot: 0, box: [0, 0, 0, 0], image: { path: '/etc/passwd' } }] }, [cut]));
+  assert.throws(() => draftFromPhone({ notes: [], marks: [{ n: 1, kind: 'pin', optionId: 'A', shot: 0, box: [0, 0] }] }));
+  assert.throws(() => draftFromPhone({ notes: [], marks: 'x' }));
+});
+
+// A minimal MP4's start: its size, then ftyp and a brand.
+function mp4(brand = 'isom', size = 64): Buffer {
+  const b = Buffer.alloc(size);
+  b.writeUInt32BE(32, 0);
+  b.write('ftyp', 4);
+  b.write(brand, 8);
+  return b;
+}
+
+test("a shot's video or sound goes up with the stills, up to 10 MB, never a page", async () => {
+  const media = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-reviews-'));
+  try {
+    const dir = path.join(media, 'reviews', review.id);
+    fs.mkdirSync(dir, { recursive: true });
+    const still = path.join(dir, 's.png');
+    fs.writeFileSync(still, makePng(20, 20));
+    const clip = path.join(dir, 'clip.mp4');
+    fs.writeFileSync(clip, mp4());
+    const sound = path.join(dir, 'bed.wav');
+    const wav = Buffer.alloc(64);
+    wav.write('RIFF', 0);
+    wav.write('WAVE', 8);
+    fs.writeFileSync(sound, wav);
+    const big = path.join(dir, 'big.mp4');
+    fs.writeFileSync(big, Buffer.concat([mp4(), Buffer.alloc(10 * 1024 * 1024)]));
+    const page = path.join(dir, 'page.html');
+    fs.writeFileSync(page, '<!doctype html><title>x</title>');
+    const fake = path.join(dir, 'fake.mp4');
+    fs.writeFileSync(fake, 'not a video');
+    const img = { path: still, mediaType: 'image/png' };
+    const r: DesignReview = { ...review, options: [{ id: 'A', title: 'A', image: img, shots: [
+      { image: img, media: { path: clip, mediaType: 'video/mp4' } },
+      { image: img, media: { path: sound, mediaType: 'audio/wav' } },
+      { image: img, media: { path: big, mediaType: 'video/mp4' } },
+      { image: img, media: { path: page, mediaType: 'text/html' } },
+      { image: img, media: { path: fake, mediaType: 'video/mp4' } },
+    ] }] };
+    const { stills, noPreview, media: playable } = await reviewStills(r, media);
+    const src = (p: string) => reviewImageSource(r.id, p);
+    assert.deepEqual(stills, [
+      { src: src(still), read: still, within: dir },
+      { src: src(clip), read: clip, within: dir, media: true },
+      { src: src(sound), read: sound, within: dir, media: true },
+    ]);
+    assert.deepEqual([...playable], [src(clip), src(sound)]);
+    const dto = phoneReview(r, noPreview, playable);
+    assert.deepEqual(dto.options[0].shots.map((s) => [s.kind, s.media]), [
+      ['video', src(clip)], ['audio', src(sound)], ['video', undefined], ['page', undefined], ['video', undefined],
+    ]);
+    assert.ok(!JSON.stringify(dto).includes(dir));
+    // Without the set (an older backend), no shot names its media.
+    assert.ok(phoneReview(r, noPreview).options[0].shots.every((s) => s.media === undefined));
+  } finally {
+    fs.rmSync(media, { recursive: true, force: true });
+  }
 });

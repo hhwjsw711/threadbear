@@ -817,6 +817,10 @@ function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary
         applied.push(`share ${logins.length}`);
         return { logins: [], removed: [] };
       },
+      respondReview: (id, reviewId, revision, draft) => {
+        applied.push(`respondReview ${id} ${reviewId}`);
+        return h.runner.respondReview(id, reviewId, revision, draft);
+      },
       threadCommands: (id) => {
         applied.push(`commands ${id}`);
         return h.runner.threadCommands(id);
@@ -2625,6 +2629,35 @@ test('commands: a photo from the phone reaches the transcript and the inbox copy
   const inbox = path.join(h.cfg.home, 'inbox');
   assert.deepEqual(fs.existsSync(inbox) ? fs.readdirSync(inbox) : [], [], 'nothing left in the inbox');
   assert.equal(toMessageDoc(t.id, ev as never)?.text, '[1 picture]');
+  await sync.stop();
+});
+
+// API 106: a mark drawn on the phone comes with its cut-out as one of the
+// command's photos, named by index, and is kept with the review as the
+// Mac's are, with nothing left in the inbox.
+test("commands: a review answer's marks from the phone keep their cut-outs", async () => {
+  const { h, sync, push, calls } = setupFull();
+  sync.start();
+  await sync.flushNow();
+  const t = h.runner.create({ text: 'hello', cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  const source = path.join(h.cfg.home, 'mock.png');
+  fs.writeFileSync(source, makePng(40, 30));
+  const { review } = h.runner.createReview(t.id, { title: 'Pick', options: [{ id: 'A', title: 'One', path: source }, { id: 'B', title: 'Two', path: source }] });
+  push([{ commandId: 'rv1', kind: 'respondReview', threadId: t.id, args: { reviewId: review.id, revision: review.revision, images: [{ storageId: 's1', url: 'https://x/photo' }], draft: {
+    pickedIds: ['A'], notes: [], reply: 'This bit [Mark 1], and [Mark 2]',
+    marks: [{ n: 1, kind: 'circle', optionId: 'A', shot: 0, box: [0.1, 0.1, 0.5, 0.5], image: 0 }, { n: 2, kind: 'pin', optionId: 'B', shot: 0, box: [0.3, 0.3, 0.3, 0.3] }],
+  } }, createdAt: 1 }]);
+  await tick(10);
+  const finished = calls.filter((c) => c.fn === 'sync:finishCommand').map((c) => c.args);
+  assert.equal(finished[0]!.ok, true, String(finished[0]!.note));
+  const answered = h.runner.getReview(t.id, review.id).review;
+  const marks = answered.response!.marks!;
+  assert.deepEqual(marks.map((m) => [m.n, m.kind, m.optionId]), [[1, 'circle', 'A'], [2, 'pin', 'B']]);
+  assert.equal(marks[1]!.image, undefined);
+  assert.ok(marks[0]!.image && fs.existsSync(marks[0]!.image.path), 'the cut-out is kept with the review');
+  assert.ok(marks[0]!.image.path.includes(path.join('reviews', review.id, 'reply')));
+  const inbox = path.join(h.cfg.home, 'inbox');
+  assert.deepEqual(fs.existsSync(inbox) ? fs.readdirSync(inbox) : [], [], 'nothing left in the inbox');
   await sync.stop();
 });
 

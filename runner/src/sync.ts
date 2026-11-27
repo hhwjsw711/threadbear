@@ -30,7 +30,7 @@ import { phonePicture } from './project-icons.ts';
 import { RunnerStats, type MachineStats } from './runner-stats.ts';
 import { draftFromPhone, phoneReview, reviewStills } from './phone-reviews.ts';
 import { experimentOn } from './experiments.ts';
-import { imagesInEvent, PAGE_TYPE, pastedImagesInEvent, readReplyImage, readShareImage, replyImagesInEvent, type ReplyImage, type ShareImage } from './share-images.ts';
+import { imagesInEvent, PAGE_TYPE, pastedImagesInEvent, readReplyImage, readShareImage, readShareMedia, replyImagesInEvent, type ReplyImage, type ShareImage } from './share-images.ts';
 import { extForMediaType, sniffImage } from './media.ts';
 import { makeFunctionReference } from 'convex/server';
 import type { Clock, TimerHandle } from './clock.ts';
@@ -173,7 +173,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 105;
+export const BACKEND_API_VERSION = 106;
 export const INDEX_POOL_API_VERSION = 101;
 export const COORDINATORS_API_VERSION = 102;
 export const NEXT_PICK_API_VERSION = 103;
@@ -438,6 +438,9 @@ export const INDEX_MODE_API_VERSION = 88;
 // experiment) and the phone's pictures say their type. An older backend
 // would turn the row down.
 export const LIVE_PAGES_API_VERSION = 95;
+// From this one addReplyImage takes a design review's sound (audio types,
+// with a review: src), so a review's videos and sounds go up for the phone.
+export const REVIEW_MEDIA_API_VERSION = 106;
 // From this one a thread's row and its threadIndex row carry `waitState`
 // (docs/protocol/needs-you.md, "Wait state"), and a thread waiting on its own
 // work is in view "inbox" though hibernating, as it's drawn under Running.
@@ -1666,7 +1669,7 @@ export class ConvexSync {
   private replyDue = new Set<string>();
   // read and within: a design review's still (API 86), whose path is its
   // opaque src and whose file is read from inside its review's folder.
-  private pendingReplyImages: (ReplyImage & { threadId: string; read?: string; within?: string })[] = [];
+  private pendingReplyImages: (ReplyImage & { threadId: string; read?: string; within?: string; media?: true })[] = [];
   private replyUp = new Map<string, Set<string>>();
   private flushTimer?: TimerHandle;
   private heartbeatTimer?: TimerHandle;
@@ -3873,7 +3876,7 @@ export class ConvexSync {
       this.replyDue.delete(threadId);
     }
     while (this.pendingReplyImages.length) {
-      const { threadId, seq, path: file, src, pinned, read: readFrom, within } = this.pendingReplyImages[0]!;
+      const { threadId, seq, path: file, src, pinned, read: readFrom, within, media } = this.pendingReplyImages[0]!;
       let up = this.replyUp.get(threadId);
       if (!up) {
         const rows = (await this.post('query', 'sync:replyImages', { key, threadId })) as { seq: number; path: string }[] | null;
@@ -3882,7 +3885,7 @@ export class ConvexSync {
       }
       const id = `${seq} ${this.scrubber.safeText(file)}`;
       if (!up.has(id)) {
-        const read = readFrom && within ? readShareImage(readFrom, within) : readReplyImage(file);
+        const read = readFrom && within ? (media ? readShareMedia : readShareImage)(readFrom, within) : readReplyImage(file);
         if ('skip' in read) {
           this.deps.log.debug('reply picture not sent', { threadId, path: file, why: read.skip });
         } else {
@@ -5294,20 +5297,28 @@ export class ConvexSync {
         // phone keeps its pictures on the Mac. Seq 0 keeps them out of the
         // thread's own pictures (phone:images reads by seq), and each row is
         // named by its src, which carries the review's id.
-        const { stills, noPreview } = await reviewStills(review, this.deps.home ? paths.media(this.deps.home, id) : undefined);
-        const result = { review: phoneReview(review, noPreview) };
+        // A shot's video or sound (API 106) goes the same way, and only to a
+        // backend that takes sounds among its pictures.
+        const found = await reviewStills(review, this.deps.home ? paths.media(this.deps.home, id) : undefined);
+        const playOk = (this.backendApiVersion ?? 0) >= REVIEW_MEDIA_API_VERSION;
+        const stills = playOk ? found.stills : found.stills.filter((s) => !s.media);
+        const result = { review: phoneReview(review, found.noPreview, playOk ? found.media : new Set()) };
         if (Buffer.byteLength(JSON.stringify(result)) > 250 * 1024) throw new Error('This review is too large for the phone. Open it on the Mac.');
         if (stills.length) {
           // path is the opaque src too, so no path on this Mac goes up.
-          this.pendingReplyImages.push(...stills.map((s) => ({ threadId: id, seq: 0, path: s.src, src: s.src, read: s.read, within: s.within })));
+          this.pendingReplyImages.push(...stills.map((s) => ({ threadId: id, seq: 0, path: s.src, src: s.src, read: s.read, within: s.within, ...(s.media ? { media: true as const } : {}) })));
           this.scheduleFlush();
         }
         return { result };
       }
       case 'respondReview': {
-        if (!host.respondReview) throw new Error("Update the thread's runner to answer reviews on the phone.");
+        const respond = host.respondReview;
+        if (!respond) throw new Error("Update the thread's runner to answer reviews on the phone.");
         if (typeof a.reviewId !== 'string' || !Number.isSafeInteger(a.revision) || Number(a.revision) < 0) throw new Error('Invalid review or revision.');
-        await host.respondReview(needThread(), a.reviewId, Number(a.revision), draftFromPhone(a.draft));
+        // Marks' cut-outs (API 106) come as the command's photos, as a
+        // send's do, and are kept by reviews.respond before they go.
+        const reviewId = a.reviewId;
+        await this.withPhoneImages(a.images, (images) => respond(needThread(), reviewId, Number(a.revision), draftFromPhone(a.draft, images)));
         return undefined;
       }
       case 'slashCommands': {

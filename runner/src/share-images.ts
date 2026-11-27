@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { PersistedEvent } from './protocol.ts';
 import { absolute } from './highlights.ts';
-import { sniffImage, sniffVideo } from './media.ts';
+import { sniffAudio, sniffImage, sniffVideo, type ImageInfo } from './media.ts';
 import { IS_WINDOWS, isLocalPath, realPath } from './platform.ts';
 import { isSpace, seeker } from './linear-text.ts';
 
@@ -248,6 +248,17 @@ export function shrinkWouldDo(skip: string): boolean {
 // through one descriptor opened without following a link, and checked to
 // be the file at the real path, so nothing can be swapped in between.
 export function readShareImage(file: string, mediaDir: string | undefined): { bytes: Uint8Array; mediaType: string; width?: number; height?: number } | { skip: string } {
+  return readShareFile(file, mediaDir, sniffImage, NOT_A_PICTURE);
+}
+
+// A design review's video or sound for the phone (phone-reviews.ts), read
+// as readShareImage reads a picture, from the same folder and up to the same
+// 10 MB. A sound is sniffed first, as an M4A is an MPEG-4 file too.
+export function readShareMedia(file: string, mediaDir: string | undefined): { bytes: Uint8Array; mediaType: string; width?: number; height?: number } | { skip: string } {
+  return readShareFile(file, mediaDir, (buf) => sniffAudio(buf, file) ?? sniffVideo(buf), "it isn't a video or sound");
+}
+
+function readShareFile(file: string, mediaDir: string | undefined, sniff: (buf: Buffer) => ImageInfo | null, notIt: string): { bytes: Uint8Array; mediaType: string; width?: number; height?: number } | { skip: string } {
   if (!mediaDir) return { skip: OUTSIDE };
   const abs = path.resolve(file);
   // (On Windows also by the file's real name: it may be given by its 8.3 short
@@ -288,9 +299,9 @@ export function readShareImage(file: string, mediaDir: string | undefined): { by
       if (n === 0) break;
       got += n;
     }
-    // Pictures only: the page draws them with <img>.
-    const info = sniffImage(bytes.subarray(0, got));
-    if (!info) return { skip: NOT_A_PICTURE };
+    // Pictures only for a shared page: it draws them with <img>.
+    const info = sniff(bytes.subarray(0, got));
+    if (!info) return { skip: notIt };
     return { bytes: new Uint8Array(bytes.subarray(0, got)), mediaType: info.mediaType, ...(info.width ? { width: info.width } : {}), ...(info.height ? { height: info.height } : {}) };
   } catch {
     return { skip: "it can't be read" };
