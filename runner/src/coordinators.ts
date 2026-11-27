@@ -488,7 +488,15 @@ export class Coordinators {
   private now(): string { return new Date(this.deps.clock.now()).toISOString(); }
   on(): boolean { return this.deps.enabled() && !this.stopped; }
   // A runner handing over has stopped: the new one is the registry's only writer.
-  private requireOn(): void { if (!this.deps.enabled() || this.stopped) throw bad('Project coordinators are not enabled on this runner.'); }
+  private runnerRefusal(): string | undefined {
+    if (this.stopped) return 'This runner is stopping. Wait for it to come back before trying again.';
+    if (!this.deps.enabled()) return 'Project coordinators are disabled on this runner.';
+    return undefined;
+  }
+  private requireOn(): void {
+    const refusal = this.runnerRefusal();
+    if (refusal) throw bad(refusal);
+  }
   private save(): void {
     for (const row of this.rows.values()) ensureTaskDetails(row);
     atomicWriteFileSync(this.file, JSON.stringify([...this.rows.values()]));
@@ -553,7 +561,8 @@ export class Coordinators {
   projectForThread(threadId: string): string | undefined { return this.deps.enabled() ? this.forThread(threadId)?.projectId : undefined; }
   dispatchRefusal(threadId: string): string | undefined {
     const row = this.forThread(threadId) ?? this.helperOwner(threadId);
-    return row && (row.state === 'paused' || !this.deps.enabled() || this.stopped) ? 'This coordinator is paused. Resume it from the project home before sending more work.' : undefined;
+    if (!row) return undefined;
+    return this.runnerRefusal() ?? (row.state === 'paused' ? 'This coordinator is paused. Resume it from the project home before sending more work.' : undefined);
   }
   private must(projectId: string): Coordinator {
     const row = this.rows.get(projectId);
@@ -1150,7 +1159,7 @@ export class Coordinators {
   replyLoop(projectId: string, loopId: string, replyText: string, close?: boolean): CoordinatorView {
     this.requireOn();
     const row = this.must(projectId);
-    if (row.state !== 'active' || this.stopped) throw bad('This coordinator is paused. Resume it before replying to an open loop.');
+    if (row.state !== 'active') throw bad('This coordinator is paused. Resume it before replying to an open loop.');
     const loop = row.loops.find((l) => l.id === loopId);
     if (!loop) throw bad('That open loop is not in this project.');
     const reply = text(replyText, 4000);
@@ -1283,7 +1292,7 @@ export class Coordinators {
   startHelper(projectId: string, opts: StartHelperOptions): { coordinator: CoordinatorView; taskId: string; helperId: string } {
     this.requireOn();
     const row = this.must(projectId);
-    if (row.state !== 'active' || this.stopped) throw bad('This coordinator is paused. Resume it before starting a helper.');
+    if (row.state !== 'active') throw bad('This coordinator is paused. Resume it before starting a helper.');
     this.oneAtATime(row);
     const brief = text(opts.brief, MAX_HELPER_BRIEF);
     const { project } = this.deps.projects.get(projectId);
@@ -1377,7 +1386,7 @@ export class Coordinators {
   resumeHelper(projectId: string, opts: ResumeHelperOptions): { coordinator: CoordinatorView; taskId: string; helperId: string; message?: string } {
     this.requireOn();
     const row = this.must(projectId);
-    if (row.state !== 'active' || this.stopped) throw bad('This coordinator is paused. Resume it before resuming a helper.');
+    if (row.state !== 'active') throw bad('This coordinator is paused. Resume it before resuming a helper.');
     const brief = text(opts.brief, MAX_HELPER_BRIEF);
     const task = row.tasks.find((t) => {
       if (opts.taskId && t.id !== opts.taskId) return false;
@@ -1760,7 +1769,9 @@ export class Coordinators {
         role: 'coordinator',
         context: () => this.context(threadId),
         checkTool: ({ name, input }) => {
-          if (this.stopped || !this.deps.enabled() || row.state === 'paused') return 'The coordinator and its helpers are paused. Wait for the user to resume them.';
+          const refusal = this.runnerRefusal();
+          if (refusal) return refusal;
+          if (row.state === 'paused') return 'The coordinator and its helpers are paused. Wait for the user to resume them.';
           const tb = threadbearToolName(name);
           if (tb === 'update_project') {
             // An empty call (26 Nov) was told only "own project", not what to pass.
@@ -1780,7 +1791,9 @@ export class Coordinators {
         role: 'helper',
         context: () => COORDINATOR_WORKER_PROMPT,
         checkTool: ({ name }) => {
-          if (this.stopped || !this.deps.enabled() || owner.state === 'paused') return 'The coordinator and its helpers are paused. Wait for the user to resume them.';
+          const refusal = this.runnerRefusal();
+          if (refusal) return refusal;
+          if (owner.state === 'paused') return 'The coordinator and its helpers are paused. Wait for the user to resume them.';
           if (!owner.tasks.some((t) => t.run?.helperThreadId === threadId && ['queued', 'running'].includes(t.run.status))) {
             return 'This helper run is no longer active.';
           }

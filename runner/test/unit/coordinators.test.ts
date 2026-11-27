@@ -765,7 +765,7 @@ test('pause stops coordinator and helper sessions, rejects dispatch, and survive
   const helperBoundary = c.session(started.helperId)!;
   await c.pause(project.id, true);
   assert.equal(helperSession.endedHard, true);
-  assert.match(helperBoundary.checkTool({ name: 'Read', input: {} })!, /paused/);
+  assert.match(helperBoundary.checkTool({ name: 'Read', input: {} })!, /paused.*user to resume/);
   assert.match(c.dispatchRefusal(started.helperId)!, /paused/);
   c.stop();
   const restarted = new Coordinators({ home, host: h.runner, projects: h.runner.projects!, clock: h.clock, enabled: () => true, log: nullLogger });
@@ -806,10 +806,18 @@ test('a runner handover ends coordinator and helper sessions and prevents the dr
   await tick();
   const coordSession = claude.sessions.find((s) => s.opts.threadId === coordinator.threadId)!;
   const helperSession = claude.sessions.find((s) => s.opts.threadId === started.helperId)!;
+  const coordinatorBoundary = c.session(coordinator.threadId)!;
+  const helperBoundary = c.session(started.helperId)!;
   await c.handover();
   assert.equal(coordSession.endedHard, true);
   assert.equal(helperSession.endedHard, true);
-  assert.equal(c.get(project.id).tasks[0].run?.status, 'interrupted');
+  const view = c.get(project.id);
+  assert.equal(view.state, 'active');
+  assert.equal(view.tasks[0].run?.status, 'interrupted');
+  assert.match(coordinatorBoundary.checkTool({ name: 'mcp__threadbear__end_turn', input: {} })!, /runner is stopping/);
+  assert.match(helperBoundary.checkTool({ name: 'Read', input: {} })!, /runner is stopping/);
+  assert.match(c.dispatchRefusal(coordinator.threadId)!, /runner is stopping/);
+  assert.throws(() => c.startHelper(project.id, { brief: 'Inspect food' }), /runner is stopping/);
   const saved = fs.readFileSync(path.join(home, 'coordinators.json'), 'utf8');
   c.onHelperTurn(started.helperId, 'completed', 'Late finish');
   // Nor when the draining runner stops for good.
@@ -1706,8 +1714,9 @@ test('turning the experiment off stops coordinator and helper sessions and keeps
   assert.equal(helperSession.killed, true);
   assert.equal(c.get(project.id).state, 'paused');
   assert.equal(h.runner.get(coordinator.threadId).coordinatorProjectId, undefined);
-  assert.match(c.dispatchRefusal(coordinator.threadId)!, /paused/);
-  assert.match(c.dispatchRefusal(started.helperId)!, /paused/);
+  assert.match(c.session(coordinator.threadId)!.checkTool({ name: 'mcp__threadbear__end_turn', input: {} })!, /disabled on this runner/);
+  assert.match(c.dispatchRefusal(coordinator.threadId)!, /disabled on this runner/);
+  assert.match(c.dispatchRefusal(started.helperId)!, /disabled on this runner/);
   assert.match(c.rpcRefusal(coordinator.threadId, 'threads.create', {})!, /paused/);
   assert.match(c.rpcRefusal(started.helperId, 'threads.create', {})!, /paused/);
   c.stop();

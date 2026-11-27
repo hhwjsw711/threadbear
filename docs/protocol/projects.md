@@ -960,7 +960,9 @@ approval refusal, ACP `session/request_permission` and Cursor `ask` mode), plus
 hidden helper suppression of user approval and question cards.
 
 Pause blocks new dispatch and all coordinator/helper tool calls, cancels pending
-wake timers and interrupts its CLI. Resume reconciles interrupted work. It does
+wake timers and interrupts its CLI. Resume reconciles interrupted work. If a
+runner is stopping or handing over, refusals say to wait for the runner to come
+back. A disabled coordinator feature is reported separately. Pause does
 not pause independent threads that the coordinator messages. Completion/failure
 events from project threads and matching interest keywords are deduplicated and
 batched for ten minutes; progress does not wake it. An explicit timer or a helper
