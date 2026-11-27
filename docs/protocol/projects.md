@@ -809,10 +809,12 @@ require a nonblank `title` (up to 200 characters) and `doneWhen` (up to
 and `recommendation` (the recommended option's label). Omitted edit fields
 keep their values. Pass null to clear `now`, `due`, decision options or the
 recommendation, or to move a task out of a group or parent. Setting
-`state: "postponed"` takes a trigger in `due`. Moving a task under a
-parent inherits its group, including when an edit sends back the inherited
-`workItemId` shown on the board. Removing a work item moves its tasks out of
-the group. Update a work item with `beforeWorkItemId` to reorder it. Null
+`state: "postponed"` takes a trigger in `due`. The coordinator tool accepts the
+structured triggers below and the strings `"Tomorrow"`, `"YYYY-MM-DD"`, and
+a timestamp with an explicit offset such as `"2026-11-28T09:45:00+08:00"`.
+Moving a task under a parent inherits its group, including when an edit sends
+back the inherited `workItemId` shown on the board. Removing a work item moves
+its tasks out of the group. Update a work item with `beforeWorkItemId` to reorder it. Null
 moves it to the end.
 
 The Tasks tab and Highlights use these local runner RPCs. Each returns

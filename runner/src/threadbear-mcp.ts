@@ -24,6 +24,7 @@ import { MAX_CHECK_TIMEOUT_SECS } from './schedule-check.ts';
 import { checkCardProblem, checkDigest, type CheckCard } from './patch-trust.ts';
 import { applyNoteEdits, type Projects } from './projects.ts';
 import type { Coordinators } from './coordinators.ts';
+import { dueInputSchema, type TaskDueInput } from './coordinator-desk.ts';
 import { workTaskEditShape } from './coordinator-task-edits.ts';
 import { COORDINATOR_THREADBEAR_TOOLS, COORDINATOR_WORKER_PROMPT, HELPER_THREADBEAR_TOOLS } from './coordinator-policy.ts';
 import { parseWhen, relativeFuture, relativeTime } from './when.ts';
@@ -249,6 +250,22 @@ function inTime<T>(p: Promise<T>, ms: number, why: string): Promise<T> {
     timer.unref?.();
   });
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
+const coordinatorToolDue = z.union([
+  dueInputSchema,
+  z.enum(['Tomorrow', 'tomorrow']),
+  z.iso.date(),
+  z.iso.datetime({ offset: true }),
+], { error: 'Use Tomorrow, YYYY-MM-DD, an ISO timestamp with a time zone, or a task dependency object.' })
+  .nullish()
+  .describe('Examples: "Tomorrow", "2026-11-28", "2026-11-28T09:45:00+08:00", or { "type": "after_task", "taskId": "…" }.');
+
+function taskDueFromTool(due: z.infer<typeof coordinatorToolDue>): TaskDueInput | null | undefined {
+  if (typeof due !== 'string') return due;
+  if (due === 'Tomorrow' || due === 'tomorrow') return { type: 'tomorrow' };
+  if (due.includes('T')) return { type: 'at', at: due };
+  return { type: 'date', date: due };
 }
 
 export function buildThreadbearTools(
@@ -2213,6 +2230,7 @@ export function buildThreadbearTools(
       {
         action: z.enum(['get', 'addWorkItem', 'updateWorkItem', 'removeWorkItem', 'addWorkTask', 'updateWorkTask', 'moveWorkTask', 'postponeTask', 'addTask', 'selectTask', 'completeTask', 'archiveTask', 'dropTask', 'startHelper', 'resumeHelper', 'openLoop', 'updateLoop', 'closeLoop', 'update', 'answer']),
         ...workTaskEditShape,
+        due: coordinatorToolDue,
         taskId: z.string().optional(),
         collapsed: z.boolean().optional(),
         beforeWorkItemId: z.string().max(100).nullish().describe('Move a work item before this one. Null moves it to the end.'),
@@ -2235,7 +2253,8 @@ export function buildThreadbearTools(
         options: z.array(z.string().max(80)).max(4).optional(),
         sourceSeq: z.number().int().nonnegative().optional(),
       },
-      handle(async (p) => {
+      handle(async ({ due, ...args }) => {
+        const p = { ...args, due: taskDueFromTool(due) };
         const service = opts.coordinators?.();
         const own = service?.forThread(selfId);
         if (!service || !own) throw new Error('This session has no coordinator desk.');

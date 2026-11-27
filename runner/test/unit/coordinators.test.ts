@@ -18,6 +18,7 @@ import type { Settings } from '../../src/settings.ts';
 import { buildThreadbearTools, type ProjectControl } from '../../src/threadbear-mcp.ts';
 import { CARRY_ON_HELPER_RESTART } from '../../src/runner/carry-on.ts';
 import { SessionNotFoundError } from '../../src/adapters/types.ts';
+import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
 
 const ANTIGRAVITY_ACCOUNT: Account = {
   id: 'antigravity-main',
@@ -2740,6 +2741,64 @@ test('the scoped coordinator tool organizes work, decisions and one level of sub
   assert.equal(c.get(project.id).taskBoard.tasks[1]!.now, 'Both rooms are available');
   assert.equal(c.forThread(coordinator.threadId)!.tasks[1]!.work?.workItemId, undefined);
   assert.match(c.context(coordinator.threadId)!, /The venue.*\n.*Inspect the venues.*working.*Lee called.*\n.*Which room\?/);
+});
+
+test('an ISO timestamp sent to postponeTask through MCP sets the task wake', async (t) => {
+  const { c, h, project } = setup();
+  const { coordinator } = c.create({ projectId: project.id });
+  const task = c.addTask(project.id, 'Check stock', 'Items counted').tasks[0]!;
+  const tools = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { provider: 'codex', coordinators: () => c });
+  const server = new AcpMcpServer(tools, {
+    mode: () => 'full',
+    requestApproval: async () => { throw Error('Unexpected approval'); },
+    cwd: () => '',
+    rules: () => [],
+    addRules: () => {},
+    log: nullLogger,
+    label: 'coordinator test',
+  });
+  t.after(() => { server.close(); c.stop(); });
+  const url = await server.listen();
+  const postpone = async (due: unknown) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${server.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+        name: 'coordinator', arguments: { action: 'postponeTask', taskId: task.id, due },
+      } }),
+    });
+    const { result } = await response.json() as { result: { isError?: boolean; content: { text: string }[] } };
+    return result;
+  };
+  const row = () => c.get(project.id).taskBoard.tasks[0]!;
+  const at = '2026-10-26T20:05:00+08:00';
+  const invalid = await postpone('2026-10-26T20:05:00');
+  assert.equal(invalid.isError, true);
+  assert.match(invalid.content[0]!.text, /time zone/);
+  assert.equal(row().state, 'todo');
+  for (const due of ['Tomorrow', '2026-10-27', { type: 'at', at }, JSON.stringify({ type: 'at', at })]) {
+    const accepted = await postpone(due);
+    assert.notEqual(accepted.isError, true, accepted.content[0]!.text);
+    assert.equal(row().state, 'postponed');
+  }
+  const result = await postpone(at);
+  assert.notEqual(result.isError, true, result.content[0]!.text);
+  assert.equal(row().state, 'postponed');
+  assert.deepEqual(row().due, { type: 'at', at });
+
+  const sent: string[] = [];
+  const send = h.runner.send.bind(h.runner);
+  h.runner.send = (id, message, ...rest) => {
+    if (id === coordinator.threadId && message.includes('postponed task is due')) sent.push(message);
+    return send(id, message, ...rest);
+  };
+  const delay = Date.parse(at) - h.clock.now();
+  h.clock.advance(delay - 1);
+  assert.equal(sent.length, 0);
+  h.clock.advance(1);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]!, new RegExp(task.id));
+  assert.equal(row().state, 'todo');
 });
 
 test('a published decision has one id through the card, postponement, wake and answer', async (t) => {
