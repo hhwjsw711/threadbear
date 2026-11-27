@@ -2230,7 +2230,7 @@ export function buildThreadbearTools(
     endTurn(),
     ...(isCoordinator ? [tool(
       'coordinator',
-      'Organize your project Tasks board. addWorkTask and addTask need title and doneWhen. startHelper takes a taskId or title. Use resumeHelper for existing runs. Ask for decisions via end_turn with taskId if on the board.',
+      'Organize your project Tasks board. addWorkTask and addTask need title and doneWhen. Use moveWorkTask for groups and parents, and updateWorkTask for state. startHelper takes a taskId or title. Use resumeHelper for existing runs. Ask for decisions via end_turn with taskId if on the board.',
       {
         action: z.enum(['get', 'addWorkItem', 'updateWorkItem', 'removeWorkItem', 'addWorkTask', 'updateWorkTask', 'moveWorkTask', 'postponeTask', 'addTask', 'selectTask', 'completeTask', 'archiveTask', 'dropTask', 'startHelper', 'resumeHelper', 'openLoop', 'updateLoop', 'closeLoop', 'update', 'answer']),
         ...workTaskEditShape,
@@ -2271,7 +2271,12 @@ export function buildThreadbearTools(
         });
         else if (p.action === 'removeWorkItem') service.removeWorkItem(own.projectId, p.workItemId ?? '');
         else if (p.action === 'updateWorkTask') service.updateBoardTask(own.projectId, p.taskId ?? '', p);
-        else if (p.action === 'moveWorkTask') service.updateBoardTask(own.projectId, p.taskId ?? '', { workItemId: p.workItemId, parentTaskId: p.parentTaskId });
+        else if (p.action === 'moveWorkTask') {
+          if (Object.entries(p).some(([key, value]) => value !== undefined && !['action', 'taskId', 'workItemId', 'parentTaskId'].includes(key))) {
+            throw new Error('moveWorkTask takes taskId, workItemId and parentTaskId. Use updateWorkTask with the same taskId to change state or other task fields.');
+          }
+          service.updateBoardTask(own.projectId, p.taskId ?? '', { workItemId: p.workItemId, parentTaskId: p.parentTaskId });
+        }
         else if (p.action === 'postponeTask') {
           if (!p.due) throw new Error('postponeTask needs a due trigger.');
           service.postponeTask(own.projectId, p.taskId ?? '', p.due);

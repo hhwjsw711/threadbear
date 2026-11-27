@@ -809,6 +809,8 @@ message still goes ahead and the runner records the attempt as skipped.
 The coordinator tool offers `addWorkItem`, `updateWorkItem`, `removeWorkItem`,
 `addWorkTask`, `updateWorkTask`, `moveWorkTask` and `postponeTask`.
 Select rows with `taskId` or `workItemId`. Edit older questions and decisions with `updateWorkTask` and their `taskId`.
+Use `moveWorkTask` with the `taskId` and a `workItemId` or `parentTaskId` for placement.
+Use `updateWorkTask` to edit state, including setting unstarted helper work to `todo` before dispatch.
 `addWorkTask` and `addTask` require a nonblank `title` (up to 200 characters)
 and `doneWhen` (up to 1,000 characters for completion criteria). Task edits accept `title`,
 `doneWhen`, `kind`, `owner`, `state`, `now`, `due`, `workItemId`,

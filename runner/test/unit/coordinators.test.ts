@@ -3037,6 +3037,63 @@ test('the scoped coordinator tool organizes work, decisions and one level of sub
   assert.match(c.context(coordinator.threadId)!, /The venue.*\n.*Inspect the venues.*working.*Lee called.*\n.*Which room\?/);
 });
 
+test('the scoped coordinator tool guides a helper start through an unstarted task state edit', async (t) => {
+  const { c, h, project, projects } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id });
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { coordinators: () => c })
+    .find((item) => item.name === 'coordinator')!;
+  const call = (p: Record<string, unknown>) => tool.handler(p as never, {});
+  const added = await call({ action: 'addWorkTask', title: 'Review stock counts', doneWhen: 'Differences reported', state: 'working' });
+  assert.ok(!added.isError, said(added));
+  const taskId = c.get(project.id).taskBoard.tasks[0]!.id;
+  const workItemId = c.addWorkItem(project.id, 'Stock checks').workItemId;
+  const start = { action: 'startHelper', taskId, brief: 'Compare the new stock counts' };
+  const refused = await call(start);
+  assert.equal(refused.isError, true);
+  assert.match(said(refused), /working.*no helper run.*updateWorkTask.*taskId.*state "todo"/);
+  const named = { action: 'startHelper', title: 'Review stock counts', brief: start.brief };
+  const refusedByTitle = await call(named);
+  assert.equal(refusedByTitle.isError, true);
+  assert.equal(said(refusedByTitle), said(refused));
+  assert.ok(said(refusedByTitle).includes(taskId));
+  const before = c.get(project.id).taskBoard;
+  for (const fields of [{ state: 'todo' }, { state: 'todo', workItemId }, { now: 'Start soon', workItemId }]) {
+    const move = await call({ action: 'moveWorkTask', taskId, ...fields });
+    assert.equal(move.isError, true);
+    assert.match(said(move), /updateWorkTask.*taskId.*state/);
+    assert.deepEqual(c.get(project.id).taskBoard, before);
+  }
+  const placement = await call({ action: 'moveWorkTask', taskId, workItemId });
+  assert.ok(!placement.isError, said(placement));
+  assert.equal(c.get(project.id).taskBoard.tasks[0]?.workItemId, workItemId);
+  assert.equal(c.get(project.id).taskBoard.tasks[0]?.state, 'working');
+  const edit = await call({ action: 'updateWorkTask', taskId, state: 'todo' });
+  assert.ok(!edit.isError, said(edit));
+  const launched = await call(start);
+  assert.ok(!launched.isError, said(launched));
+  const run = c.get(project.id).tasks[0]?.run;
+  assert.equal(run?.status, 'running');
+  c.onHelperTurn(run!.helperThreadId!, 'completed', 'Differences reported', run!.id);
+  const retry = await call(named);
+  assert.equal(retry.isError, true);
+  assert.match(said(retry), /already has a helper run.*resumeHelper.*taskId/);
+  assert.ok(said(retry).includes(taskId));
+  h.runner.threads.delete(run!.helperThreadId!);
+  const missing = await call(start);
+  const missingResume = await call({ ...start, action: 'resumeHelper' });
+  assert.equal(missing.isError, true);
+  assert.equal(missingResume.isError, true);
+  assert.match(said(missing), /no resumable helper session.*new to-do.*startHelper.*its taskId/);
+  assert.equal(said(missing), said(missingResume));
+  const other = projects.create({ title: 'Another project', by: 'mike' });
+  c.create({ projectId: other.id });
+  const foreign = c.addTask(other.id, 'Inspect a different shelf', 'Shelf checked').tasks[0]!;
+  const wrong = await call({ ...start, taskId: foreign.id });
+  assert.equal(wrong.isError, true);
+  assert.match(said(wrong), /That task is not in this project/);
+});
+
 test('an ISO timestamp sent to postponeTask through MCP sets the task wake', async (t) => {
   const { c, h, project } = setup();
   const { coordinator } = c.create({ projectId: project.id });

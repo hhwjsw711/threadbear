@@ -169,6 +169,7 @@ const BATCH_MS = 10 * 60_000;
 const MAX_REPORTS = 50;
 const MAX_REPORT_RETRIES = 3;
 const MAX_HELPER_BRIEF = 16_000;
+const HELPER_SESSION_GONE = 'This task has no resumable helper session. Add a new to-do for the remaining work and use startHelper with its taskId. Include any saved checkpoint in the brief.';
 const RESUME_WAKE = 'Resumed by the user. Reconcile any interrupted helper before deciding what to do next.';
 const RESTART_WAKE = 'The runner restarted with interrupted helper work. Inspect the saved records and existing effects before resuming any helper.';
 const RESENT_NOTE = 'Sent again: a restart, pause or failure cut off the turn this came in. You may have seen it already; check before acting on it twice.';
@@ -1349,8 +1350,15 @@ export class Coordinators {
     if (taskId) {
       task = pending.find((t) => t.id === taskId);
       if (!task) {
-        this.refuseTaskActionOnLoop(row, taskId);
-        throw bad('Choose an unstarted to-do for startHelper, or use resumeHelper for existing work.');
+        const blocked = requested ?? this.requireTaskRecord(row, taskId);
+        if (isTaskDone(blocked)) throw bad('That task is done. Add a new to-do for new work.');
+        if (blocked.run) {
+          const helperId = blocked.run.helperThreadId;
+          if (!helperId || !this.deps.host.has(helperId)) throw bad(HELPER_SESSION_GONE);
+          throw bad(`This task already has a helper run. Use resumeHelper with taskId "${blocked.id}" to carry it on.`);
+        }
+        const { state } = workTaskView(blocked, row.threadId);
+        throw bad(`This task is ${state} and has no helper run. If it is ready for a helper, use updateWorkTask with taskId "${blocked.id}" and state "todo", then call startHelper.`);
       }
     } else if (selectedId) {
       task = pending.find((t) => t.id === selectedId);
@@ -1453,7 +1461,7 @@ export class Coordinators {
     }
     this.oneAtATime(row);
     if (!helperId || !this.deps.host.has(helperId)) {
-      throw bad('This task has no resumable helper session. Start a new bounded helper with startHelper from the saved checkpoint instead.');
+      throw bad(HELPER_SESSION_GONE);
     }
     if (opts.model || opts.effort || opts.poolId || opts.accountId) {
       this.deps.host.update({
