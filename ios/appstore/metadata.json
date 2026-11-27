@@ -47,7 +47,9 @@
     "advertising": false,
     "healthOrWellnessTopics": false,
     "socialMedia": false,
-    "socialMediaAgeRestricted": false
+    "socialMediaAgeRestricted": false,
+    "datingAndRelationships": false,
+    "sharedLocation": false
   },
   "review": {
     "contactFirstName": "Mike",
