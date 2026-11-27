@@ -834,6 +834,10 @@ test('unansweredItems: items an earlier project-step note listed before a Done t
     ];
   };
 
+  // Turn 2 gets the note, then archives: left alone like a snooze, so still open.
+  const archived = [...base, started(), note(['What should the new plug be called?']), ...acceptDone({ needs: 'nothing', archive: true }), done()];
+  assert.deepEqual(unansweredItems(archived), ['What should the new plug be called?', 'Check "Plug" wiring']);
+
   // Turn 2 gets the note and stops without an accepted second Done call: still open.
   const refusedOnly = [...base, started(), note(['What should the new plug be called?']), done()];
   assert.deepEqual(unansweredItems(refusedOnly), ['What should the new plug be called?', 'Check "Plug" wiring']);

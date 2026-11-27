@@ -794,7 +794,7 @@ export function unansweredItems(events: PersistedEvent[], now: string[] = []): s
       }
       const call = endCalls.get(e.itemId);
       if (notedThisTurn.length && call && endTurnTaken(e)) {
-        const deferred = Boolean(snoozeFromTool({ ...call, needs: 'nothing' }) || waitForFromTool(call)?.length);
+        const deferred = Boolean(archiveFromTool(call) || snoozeFromTool({ ...call, needs: 'nothing' }) || waitForFromTool(call)?.length);
         const parsed = needsFromTool(call);
         if (!deferred && (!parsed || parsed.needs === 'nothing')) doneAfterNote = true;
       }

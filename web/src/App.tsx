@@ -445,6 +445,10 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
   const [pager, setPager] = useState<{ threadId?: string; card?: number; page: number }>({ page: 0 });
   const pageTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(pageTimerRef.current), [t.threadId, t.asksSeq]);
+  // After a pick pages on by itself, focus goes to the new ask's first choice,
+  // so a keyboard or screen reader isn't left on a button that's gone.
+  const asksRef = useRef<HTMLElement>(null);
+  const focusPageRef = useRef(false);
   const [ticked, setTicked] = useState<Draft['ticked']>({ set: new Set() });
   // The composer keeps what's typed and picked until the backend has the
   // message, and gets it back if it fails later: its words above whatever
@@ -480,10 +484,20 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
     const threadKey = t.threadId;
     const card = t.asksSeq;
     pageTimerRef.current = setTimeout(
-      () => setPager((cur) => ((cur.threadId === threadKey && cur.card === card ? cur.page : 0) === page ? { threadId: threadKey, card, page: to } : cur)),
+      () =>
+        setPager((cur) => {
+          if ((cur.threadId === threadKey && cur.card === card ? cur.page : 0) !== page) return cur;
+          focusPageRef.current = true;
+          return { threadId: threadKey, card, page: to };
+        }),
       300,
     );
   };
+  useEffect(() => {
+    if (!focusPageRef.current) return;
+    focusPageRef.current = false;
+    asksRef.current?.querySelector<HTMLElement>('.choices button')?.focus();
+  }, [page]);
   const goPage = (p: number) => {
     clearTimeout(pageTimerRef.current);
     setPager({ threadId: t.threadId, card: t.asksSeq, page: p });
@@ -508,7 +522,7 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
   const card = t.pendingApproval ? (
     <ApprovalCard key={t.pendingApproval.approvalId} token={token} threadId={t.threadId} approval={t.pendingApproval} />
   ) : asks.length ? (
-    <section className="card">
+    <section className="card" ref={asksRef}>
       <h2>
         ✋ {asks.length === 1 ? 'Decision needed' : 'Decisions needed'}
         {paged ? (
@@ -516,7 +530,7 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
             <button type="button" className="btn plain" disabled={page === 0} onClick={() => goPage(page - 1)} aria-label="Previous ask" title="Previous ask">
               ‹
             </button>
-            <span className="of">
+            <span className="of" aria-live="polite">
               {page + 1} of {asks.length}
             </span>
             <button type="button" className="btn plain" disabled={page === asks.length - 1} onClick={() => goPage(page + 1)} aria-label="Next ask" title="Next ask">
