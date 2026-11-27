@@ -4675,6 +4675,7 @@ pub(crate) fn automation(
                         // a long Inbox (the quiet inbox's line), below the
                         // fold on those Macs (23 Nov).
                         let threads = Some(app.read(cx).sidebar.scroll.clone());
+                        let usage = Some(app.read(cx).usage.scroll.clone());
                         let scrolls = app
                             .read(cx)
                             .side
@@ -4684,6 +4685,7 @@ pub(crate) fn automation(
                             .into_iter()
                             .chain(crate::activity_panels::panel_scrolls())
                             .chain(recipes)
+                            .chain(usage)
                             .chain(threads);
                         for scroll in scrolls {
                             let pane = scroll.bounds();

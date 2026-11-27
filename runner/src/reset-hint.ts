@@ -5,7 +5,7 @@
 // granted. This is the one place the rule lives; the apps, the phone, the
 // website and `tb accounts` draw what it says. It never spends a reset:
 // only Mike's click does (accounts.useReset).
-import type { Account, AccountUsage, ResetHint } from './protocol.ts';
+import type { Account, AccountUsage, Provider, ResetHint } from './protocol.ts';
 
 // Out of room: under this in a window, usage.ts's MIN_ROOM_PERCENT, the
 // floor pools skip a login at (not imported, as usage.ts imports this).
@@ -56,4 +56,10 @@ export function resetHintWords(hint: ResetHint, when: (iso: string) => string): 
   const count = `${hint.available} ${hint.available === 1 ? 'reset' : 'resets'} left`;
   const expires = hint.nextExpiresAt ? `, the next expires ${when(hint.nextExpiresAt)}` : '';
   return hint.why === 'expiring' ? `${count}${expires}: worth using one before it's lost` : `${count}${expires}: use one to carry on now`;
+}
+
+export function unsupportedResetMessage(provider: Provider): string {
+  return provider === 'claude'
+    ? 'To use a Claude reset, open https://claude.ai/settings/usage and choose Reset for free.'
+    : 'Threadbear can only redeem Codex resets here.';
 }

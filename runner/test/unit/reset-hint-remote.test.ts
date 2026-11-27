@@ -76,7 +76,7 @@ test("Use a reset on a remote thread's login spends it on this runner's twin, el
     call: async () => undefined,
     create: async () => undefined,
     listFolder: async () => undefined,
-    logins: async () => ({ accounts: [OUT, { ...OUT, id: 'codex-2', email: 'sam@example.net' }] }),
+    logins: async () => ({ accounts: [OUT, { ...OUT, id: 'codex-2', email: 'sam@example.net' }, { ...OUT, id: 'claude-main', provider: 'claude' }] }),
     useReset: async (runnerId: string, accountId: string) => (relayed.push([runnerId, accountId]), { outcome: 'reset' }),
   };
   const server = new RpcServer({ host: '127.0.0.1', port: 0, token: 'tok', runner: h.runner, log: nullLogger, relay });
@@ -90,6 +90,10 @@ test("Use a reset on a remote thread's login spends it on this runner's twin, el
     assert.deepEqual(relayed, []);
     // No twin here: on that runner, through Convex.
     assert.deepEqual(await c.call('accounts.useReset', { accountId: 'codex-2', runnerId: 'bruce' }), { outcome: 'reset' });
+    assert.deepEqual(relayed, [['bruce', 'codex-2']]);
+    // An older app may still ask for a remote Claude reset. The remote
+    // runner needn't be online to tell the app where to use it.
+    await assert.rejects(c.call('accounts.useReset', { accountId: 'claude-main', runnerId: 'bruce' }), /https:\/\/claude\.ai\/settings\/usage/);
     assert.deepEqual(relayed, [['bruce', 'codex-2']]);
     // Without a runnerId it's this runner's own login, as before.
     await c.call('accounts.useReset', { accountId: 'codex-main' });

@@ -67,7 +67,7 @@ pub(crate) struct UsageState {
     hovered: Option<i64>,
     /// The chart's plot, where it was last drawn, for the pointer.
     plot: Rc<Cell<Option<Bounds<Pixels>>>>,
-    scroll: ScrollHandle,
+    pub(crate) scroll: ScrollHandle,
     /// The panel's width when it was last drawn: SwiftUI's ViewThatFits picks
     /// the meters' layout and whether a tile's line fits from it.
     width: Rc<Cell<f32>>,

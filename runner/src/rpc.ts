@@ -17,6 +17,7 @@ import type { CallerGate } from './rpc-gate.ts';
 import { ForeignPeer, type PeerCaller, type PeerSocket } from './peer.ts';
 import { cutSafely } from './safe-cut.ts';
 import { wellFormedJson } from './well-formed-json.ts';
+import { unsupportedResetMessage } from './reset-hint.ts';
 import { fetchPr, fetchPrFiles, forgetStates, parsePrUrl, prAct, prStates, type PrAction, type PrRef } from './github-pr.ts';
 
 type Conn = {
@@ -263,8 +264,9 @@ export class RpcServer {
     const relay = this.opts.relay;
     if (!relay) throw new RpcError(ErrorCode.other, "This Mac's runner can't reach other runners through Convex.");
     const theirs = ((await relay.logins(runnerId)) as { accounts?: Account[] } | undefined)?.accounts?.find((a) => a.id === accountId);
+    if (theirs && theirs.provider !== 'codex') throw new RpcError(ErrorCode.badParams, unsupportedResetMessage(theirs.provider));
     const email = theirs?.email?.toLowerCase();
-    const mine = email ? this.opts.runner.safeAccounts().find((a) => a.provider === theirs!.provider && a.email?.toLowerCase() === email && !a.signedOut && !a.planEnded) : undefined;
+    const mine = email ? this.opts.runner.safeAccounts().find((a) => a.provider === 'codex' && a.email?.toLowerCase() === email && !a.signedOut && !a.planEnded) : undefined;
     if (mine) return this.opts.runner.useReset(mine.id);
     if (!relay.useReset) throw new RpcError(ErrorCode.other, "This Mac's runner can't use another runner's resets.");
     return relay.useReset(runnerId, accountId);

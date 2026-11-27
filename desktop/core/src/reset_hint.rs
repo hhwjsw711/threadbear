@@ -20,7 +20,7 @@ pub enum ResetAction {
 
 impl ResetAction {
     fn for_account(account: &Account) -> Option<Self> {
-        match account.provider_id() {
+        match account.provider.as_str() {
             "codex" => Some(Self::RedeemCodex),
             "claude" => Some(Self::OpenClaudeUsage),
             _ => None,
@@ -220,6 +220,26 @@ mod tests {
             offer(&odd, now()).is_none(),
             "a field of the wrong type is dropped, not a failure"
         );
+    }
+
+    #[test]
+    fn the_reset_action_comes_from_the_provider() {
+        let mut login = codex(
+            "login",
+            "alex@example.com",
+            json!({ "why": "out", "available": 2 }),
+        );
+        assert_eq!(
+            offer(&login, now()).map(|(action, _)| action),
+            Some(ResetAction::RedeemCodex)
+        );
+        login.provider = "claude".into();
+        assert_eq!(
+            offer(&login, now()).map(|(action, _)| action),
+            Some(ResetAction::OpenClaudeUsage)
+        );
+        login.provider.clear();
+        assert!(offer(&login, now()).is_none());
     }
 
     #[test]
