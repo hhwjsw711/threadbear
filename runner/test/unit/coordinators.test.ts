@@ -2853,6 +2853,40 @@ test('a loop-backed entry cannot become a child that blocks its parent from arch
   assert.deepEqual(c.get(project.id).taskBoard.tasks.map(({ id }) => id), [loopId]);
 });
 
+test('legacy task actions explain how to edit a loop-backed Tasks board entry', async (t) => {
+  const { c, h, project, projects } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id });
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { coordinators: () => c })
+    .find((item) => item.name === 'coordinator')!;
+  const decision = c.openLoop(project.id, { kind: 'waiting_on_user', title: 'Which room should we book?' }).loopId;
+  const question = c.openLoop(project.id, { kind: 'user_question', title: 'How many seats does it have?' }).loopId;
+  const other = projects.create({ title: 'An unrelated project', by: 'mike' });
+  c.create({ projectId: other.id });
+  const foreign = c.openLoop(other.id, { kind: 'waiting_on_user', title: 'Another decision' }).loopId;
+  const before = c.get(project.id).taskBoard;
+  for (const action of ['completeTask', 'dropTask', 'archiveTask', 'selectTask', 'startHelper']) {
+    for (const [taskId, expected] of [
+      [decision, /keep.*unanswered.*decision.*open/i],
+      [question, /record.*verified answer/i],
+    ] as const) {
+      const result = await tool.handler({ action, taskId, brief: 'Find a room' } as never, {});
+      assert.equal(result.isError, true);
+      assert.match(said(result), /updateWorkTask.*taskId/);
+      assert.match(said(result), expected);
+    }
+  }
+  const result = await tool.handler({ action: 'completeTask', taskId: foreign } as never, {});
+  assert.equal(result.isError, true);
+  assert.match(said(result), /That task is not in this project/);
+  assert.deepEqual(c.get(project.id).taskBoard, before);
+  const edited = await tool.handler({ action: 'updateWorkTask', taskId: question, now: 'Twenty seats', state: 'ready_to_close' } as never, {});
+  assert.equal(edited.isError, undefined, said(edited));
+  const answered = c.get(project.id).taskBoard.tasks.find(({ id }) => id === question);
+  assert.equal(answered?.now, 'Twenty seats');
+  assert.equal(answered?.state, 'ready_to_close');
+});
+
 test('coordinator task creation names the invalid field', async (t) => {
   const { c, h, project } = setup();
   t.after(() => c.stop());

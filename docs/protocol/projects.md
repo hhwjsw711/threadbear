@@ -807,11 +807,11 @@ message still goes ahead and the runner records the attempt as skipped.
 
 ### Tasks and work items
 
-The coordinator tool adds `addWorkItem`, `updateWorkItem`, `removeWorkItem`,
-`addWorkTask`, `updateWorkTask`, `moveWorkTask`, and `postponeTask`. Use
-`taskId` or `workItemId` to select a row. `addWorkTask` and `addTask`
-require a nonblank `title` (up to 200 characters) and `doneWhen` (up to
-1,000 characters describing how to tell the task is done). Task edits accept `title`,
+The coordinator tool offers `addWorkItem`, `updateWorkItem`, `removeWorkItem`,
+`addWorkTask`, `updateWorkTask`, `moveWorkTask` and `postponeTask`.
+Select rows with `taskId` or `workItemId`. Edit older questions and decisions with `updateWorkTask` and their `taskId`.
+`addWorkTask` and `addTask` require a nonblank `title` (up to 200 characters)
+and `doneWhen` (up to 1,000 characters for completion criteria). Task edits accept `title`,
 `doneWhen`, `kind`, `owner`, `state`, `now`, `due`, `workItemId`,
 `parentTaskId`, `decisionOptions` (objects with `label` and optional `does`),
 and `recommendation` (the recommended option's label). Omitted edit fields
@@ -821,9 +821,8 @@ recommendation, or to move a task out of a group or parent. Setting
 structured triggers below and the strings `"Tomorrow"`, `"YYYY-MM-DD"`, and
 a timestamp with an explicit offset such as `"2026-11-28T09:45:00+08:00"`.
 Moving a task under a parent inherits its group, including when an edit sends
-back the inherited `workItemId` shown on the board. Removing a work item moves
-its tasks out of the group. Update a work item with `beforeWorkItemId` to reorder it. Null
-moves it to the end.
+back the inherited `workItemId` shown on the board. Removing a work item
+moves its tasks out of the group. Reorder with `beforeWorkItemId`, or null to move the item to the end.
 
 The Tasks tab and Highlights use these local runner RPCs. Each returns
 `{ coordinator }` with the updated board, plus `workItemId` on creation.

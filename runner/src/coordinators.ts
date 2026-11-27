@@ -1207,11 +1207,26 @@ export class Coordinators {
     return this.get(projectId);
   }
 
+  private refuseTaskActionOnLoop(row: Coordinator, id: string): void {
+    const loop = this.workLoop(row, id);
+    if (!loop) return;
+    const next = isUserDecision(loop)
+      ? "Keep an unanswered decision open. Once the user answers, record their answer in now and set state to done."
+      : 'Record a verified answer in now and set state to ready_to_close.';
+    throw bad(`This ID is for a question or decision on this project's Tasks board. Use updateWorkTask with this taskId. ${next} Choose a separate agent-owned action for helper work.`);
+  }
+
+  private requireTaskRecord(row: Coordinator, id: string): Coordinator['tasks'][number] {
+    const task = row.tasks.find((t) => t.id === id);
+    if (task) return task;
+    this.refuseTaskActionOnLoop(row, id);
+    throw bad('That task is not in this project.');
+  }
+
   completeTask(projectId: string, id: string): CoordinatorView {
     this.requireOn();
     const row = this.must(projectId);
-    const task = row.tasks.find((t) => t.id === id);
-    if (!task) throw bad('That task is not in this project.');
+    const task = this.requireTaskRecord(row, id);
     requireTaskAwake(task);
     if (task.run && ['queued', 'running'].includes(task.run.status)) throw bad('Inspect the helper result before marking this task done.');
     if (row.questions.some((q) => q.agentId === task.run?.agentId && q.state === 'open')) throw bad('Resolve this helper’s open questions before marking the task done.');
@@ -1224,8 +1239,7 @@ export class Coordinators {
   selectTask(projectId: string, id: string): CoordinatorView {
     this.requireOn();
     const row = this.must(projectId);
-    const task = row.tasks.find((t) => t.id === id);
-    if (!task) throw bad('That task is not in this project.');
+    const task = this.requireTaskRecord(row, id);
     const helper = task.run ? `helper ${task.run.helperThreadId ?? task.run.agentId ?? 'unknown'}` : '';
     if (task.run && ['queued', 'running'].includes(task.run.status)) throw bad(`A helper is already working on that task (${helper}). You are woken when its turn ends; nothing to select.`);
     if (task.state === 'done') throw bad('That task is done: archive it with archiveTask, or addTask for new work.');
@@ -1241,8 +1255,7 @@ export class Coordinators {
   archiveTask(projectId: string, id: string): CoordinatorView {
     this.requireOn();
     const row = this.must(projectId);
-    const task = row.tasks.find((t) => t.id === id);
-    if (!task) throw bad('That task is not in this project.');
+    const task = this.requireTaskRecord(row, id);
     if (task.state === 'review') throw bad('This task is in review: check its result against doneWhen, call completeTask, then archiveTask. If it is not wanted after all, dropTask with a summary saying why.');
     if (task.state !== 'done') throw bad('Only a finished task can be archived. To drop a to-do that is no longer needed, call dropTask (or archiveTask) with a summary saying why.');
     this.toHistory(row, task, { archivedAt: this.now() });
@@ -1256,8 +1269,7 @@ export class Coordinators {
   dropTask(projectId: string, id: string, reason?: string): CoordinatorView {
     this.requireOn();
     const row = this.must(projectId);
-    const task = row.tasks.find((t) => t.id === id);
-    if (!task) throw bad('That task is not in this project.');
+    const task = this.requireTaskRecord(row, id);
     requireTaskAwake(task);
     if (task.state === 'done') throw bad('That task is done: archive it with archiveTask.');
     if (task.run && ['queued', 'running'].includes(task.run.status)) throw bad('A helper is working on this task. Wait for its result before dropping it.');
@@ -1327,7 +1339,10 @@ export class Coordinators {
     let createdTask = false;
     if (opts.taskId) {
       task = pending.find((t) => t.id === opts.taskId);
-      if (!task) throw bad('Choose an unstarted to-do for startHelper, or use resumeHelper for existing work.');
+      if (!task) {
+        this.refuseTaskActionOnLoop(row, opts.taskId);
+        throw bad('Choose an unstarted to-do for startHelper, or use resumeHelper for existing work.');
+      }
     } else if (row.selectedTaskId) {
       task = pending.find((t) => t.id === row.selectedTaskId);
       if (!task && pending.length) throw bad('Choose the intended to-do with taskId or coordinator action selectTask before starting a helper.');
