@@ -2915,6 +2915,7 @@ const DEMO_ASKS = [
 /**
  * MOCK_SCRIPTED_TURNS names a JSON file of made-up turns, each
  * { match (a regex for the message) or answer (one for a question's answer), thinking, tools: [{ name, kind, title, input, result, ms }],
+ *   secret ({ label, reason, placeholder, at (the tool it comes before), declined, afterMs }: an ask_secret card the turn waits on),
  *   reply, chunk, chunkMs, end ({ needs, asks } or { needs, next }) }, played at a believable speed
  * instead of the canned answer. For recording the site's clips; nothing else sets it.
  */
@@ -2981,8 +2982,28 @@ async function playScripted(threadId, turnId, started, turn, interrupted) {
   if (turn.usage) scriptUsage(threadId, turn.usage);
   await sleep(turn.firstMs ?? 500);
   if (turn.thinking) persist(threadId, { type: 'reasoning', itemId: 'r_' + crypto.randomBytes(4).toString('hex'), text: turn.thinking }, turnId);
-  for (const tool of turn.tools ?? []) {
+  const tools = turn.tools ?? [];
+  for (let i = 0; i <= tools.length; i++) {
     if (interrupted()) break;
+    // `secret: { label, reason, placeholder, at, declined }`: an ask_secret card before
+    // tools[at] (0 if left out), and the turn waits for it. Declined, the turn ends with
+    // `declined` (or a line saying so) as its reply.
+    if (turn.secret && i === (turn.secret.at ?? 0)) {
+      const { label, reason = '', placeholder } = turn.secret;
+      const approvalId = 'sec_' + crypto.randomBytes(4).toString('hex');
+      persist(threadId, { type: 'secret.requested', approvalId, label, reason, ...(placeholder ? { placeholder } : {}) }, turnId);
+      setStatus(threadId, 'waiting', true);
+      t.approvalWaiters ??= new Map();
+      const answer = await new Promise((resolve) => t.approvalWaiters.set(approvalId, resolve));
+      setStatus(threadId, 'running', false);
+      if (answer.decision === 'deny') {
+        persist(threadId, { type: 'assistant.text', itemId: 'm_' + crypto.randomBytes(4).toString('hex'), text: turn.secret.declined ?? "OK, I've left it without one." }, turnId);
+        return finishTurn(threadId, turnId, started, 'completed');
+      }
+      await sleep(turn.secret.afterMs ?? 600);
+    }
+    const tool = tools[i];
+    if (!tool) break;
     const toolId = 'c_' + crypto.randomBytes(4).toString('hex');
     persist(threadId, { type: 'tool.call', itemId: toolId, name: tool.name ?? 'Bash', kind: tool.kind ?? 'command', title: tool.title, input: tool.input ?? { command: tool.title } }, turnId);
     await sleep(tool.ms ?? 700);
