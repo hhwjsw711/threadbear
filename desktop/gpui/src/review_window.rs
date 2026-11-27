@@ -83,6 +83,22 @@ pub(crate) fn edit_page_command(handle: AnyWindowHandle, command: &str, cx: &App
     }))
 }
 
+/// Runs before GPUI dispatches command/control keys through its last frame's
+/// focus tree. Native CEF ownership wins even if that tree still names reply.
+pub(crate) fn guard_page_shortcut(key: &Keystroke, window: &mut Window, cx: &mut App) -> bool {
+    if !key.modifiers.platform && !key.modifiers.control {
+        return false;
+    }
+    let handle = window.window_handle();
+    let view = cx.try_global::<Reviews>().and_then(|r| {
+        r.windows
+            .values()
+            .find(|(w, _)| *w == handle)
+            .map(|(_, v)| v.clone())
+    });
+    view.is_some_and(|v| v.update(cx, |this, cx| this.capture_page_key(key, window, cx)))
+}
+
 struct PendingList {
     thread_id: String,
     loading: bool,
@@ -1059,6 +1075,7 @@ impl ReviewWindow {
     /// Hide before dropping, then reclaim native focus outside this window's
     /// current borrow. A GPUI focus handle alone cannot reclaim AppKit keys.
     fn drop_page(&mut self, cx: &mut Context<Self>) {
+        self.stage.page_events = None;
         if let Some((_, page)) = self.stage.page.take() {
             page.set_hidden(true);
             let handle = self.handle;
@@ -1079,6 +1096,39 @@ impl ReviewWindow {
             .is_some_and(|(_, page)| !page.hidden() && page.has_keyboard())
     }
 
+    /// Only GPUI focus moves: the browser retains AppKit's first responder.
+    fn release_reply_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page_has_keys() && self.reply_focused(window, cx) {
+            window.focus(&self.focus, cx);
+            cx.notify();
+        }
+    }
+
+    fn capture_page_key(
+        &mut self,
+        key: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let m = &key.modifiers;
+        if !self.page_has_keys() || (!m.platform && !m.control) {
+            return false;
+        }
+        self.release_reply_keys(window, cx);
+        // Keep the window/app commands working while editing stays in CEF.
+        if m.platform && !m.shift && !m.control && !m.alt {
+            match key.key.as_str() {
+                "w" => self.close(cx),
+                "q" => cx.quit(),
+                "h" => cx.hide(),
+                "m" => window.minimize_window(),
+                _ => {}
+            }
+        }
+        cx.stop_propagation();
+        true
+    }
+
     // ------------------------------------------------------------ keys
 
     /// The window's keys, outside the reply box, which keeps its own arrows
@@ -1094,6 +1144,10 @@ impl ReviewWindow {
             return;
         }
         if self.page_has_keys() {
+            self.release_reply_keys(window, cx);
+            if m.platform || m.control {
+                cx.stop_propagation();
+            }
             if !m.platform && !m.control && !m.alt && ev.keystroke.key == "escape" {
                 self.canvas_stop_playing(cx);
                 crate::web_panels::keyboard_to_app(window);
@@ -1554,9 +1608,7 @@ impl Render for ReviewWindow {
         self.sync_reply_box(window, cx);
         // CEF keeps AppKit's keys; remove the reply's GPUI key context so
         // command/control shortcuts cannot edit or submit a hidden draft.
-        if self.page_has_keys() && self.reply_focused(window, cx) {
-            window.focus(&self.focus, cx);
-        }
+        self.release_reply_keys(window, cx);
         // A page's view goes once its shot isn't the one on show.
         let page_shown = self.session.mode == ReviewMode::Single
             && self
@@ -1630,12 +1682,19 @@ impl Render for ReviewWindow {
             .size_full()
             .bg(cx.theme().background)
             .text_color(style::label_text(cx))
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.capture_page_key(&event.keystroke, window, cx);
+            }))
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
             // ⌘Return in the reply box sends rather than making a new line.
-            .capture_action(cx.listener(|this, action: &Enter, _, cx| {
-                if action.secondary && !this.page_has_keys() {
-                    this.submit(cx);
+            .capture_action(cx.listener(|this, action: &Enter, window, cx| {
+                if action.secondary {
+                    if this.page_has_keys() {
+                        this.release_reply_keys(window, cx);
+                    } else {
+                        this.submit(cx);
+                    }
                     cx.stop_propagation();
                 }
             }))
@@ -1956,6 +2015,9 @@ pub(crate) async fn automation(
             "that review isn't open".into()
         });
     };
+    if cmd["canvasReplyFocusProbe"].as_bool() == Some(true) {
+        return reply_focus_probe(&view, cx).await;
+    }
     // This probe deliberately owns a separate hidden page that GPUI never
     // places or repaints. Only CEF's load callbacks can restore its zoom.
     if let Some(width) = cmd["canvasLoadZoomProbe"].as_f64() {
@@ -2169,6 +2231,109 @@ pub(crate) async fn automation(
     }
     let state = state_with_keys(cmd, &view, handle, cx)?;
     Ok(json!(format!("ok {state}")))
+}
+
+/// Uses the mounted browser and AppKit hit testing, not a GPUI click/focus
+/// command (those render before dispatch and can hide a stale focus tree).
+#[cfg(feature = "automation")]
+async fn reply_focus_probe(
+    view: &Entity<ReviewWindow>,
+    cx: &mut AsyncApp,
+) -> Result<Value, String> {
+    use gpui_kit::test::TestWindowExt as _;
+    let (handle, page, seed) = view.read_with(cx, |v, cx| {
+        (
+            v.handle,
+            v.stage.page.as_ref().map(|(_, p)| p.clone()),
+            v.reply.read(cx).value().to_string(),
+        )
+    });
+    let page = page.ok_or("no mounted page for the reply focus probe")?;
+    let answer = page.devtools("Runtime.evaluate", json!({"expression": "(() => {const r=document.getElementById('reply-guard-test').getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()", "returnByValue":true})).await.map_err(|_| "page closed")??;
+    let point = &answer["result"]["value"];
+    let (x, y, width, _) = page.bounds();
+    let x = x + point[0].as_f64().ok_or("no input x")? as f32 * (width / 1024.);
+    let y = y + point[1].as_f64().ok_or("no input y")? as f32 * (width / 1024.);
+    let prepare = |cx: &mut AsyncApp| -> Result<u64, String> {
+        cx.update_window(handle, |_, window, cx| {
+            let reply = view.read(cx).reply.read(cx).focus_handle(cx);
+            window.focus(&reply, cx);
+            crate::web_panels::keyboard_to_app(window);
+            // The only forced frame is BEFORE focus transfers into CEF.
+            window.render_frame(cx);
+            view.read(cx).stage.focus_events
+        })
+        .map_err(|e| e.to_string())
+    };
+    let before = prepare(cx)?;
+    let hit = crate::web_panels::send_click(handle, x, y, cx)?;
+    let mut notified = false;
+    for _ in 0..30 {
+        cx.background_executor()
+            .timer(Duration::from_millis(10))
+            .await;
+        notified = cx
+            .update_window(handle, |_, window, cx| {
+                let v = view.read(cx);
+                v.stage.focus_events > before && v.page_has_keys() && !v.reply_focused(window, cx)
+            })
+            .map_err(|e| e.to_string())?;
+        if notified {
+            break;
+        }
+    }
+    if !notified {
+        let state = cx.update_window(handle, |_, window, cx| {
+            let v = view.read(cx);
+            json!({"before":before, "events":v.stage.focus_events, "pageKeys":v.page_has_keys(), "replyKeys":v.reply_focused(window, cx)})
+        }).map_err(|e| e.to_string())?;
+        return Err(format!(
+            "native focus did not notify within 300ms: {state}; {}",
+            hit.lines().next().unwrap_or("no hit")
+        ));
+    }
+    prepare(cx)?;
+    crate::web_panels::send_click(handle, x, y, cx)?;
+    // No await or render between this click and the shortcuts. Force GPUI's
+    // stale reply focus for each key to exercise the pre-dispatch guard even
+    // if the focus event happened to arrive already.
+    let keys = [
+        "secondary-enter",
+        "secondary-backspace",
+        "secondary-left",
+        "secondary-right",
+        "ctrl-k",
+    ];
+    cx.update_window(handle, |_, window, cx| -> Result<(), String> {
+        if !view.read(cx).page_has_keys() {
+            return Err("native click missed the mounted HTML input".into());
+        }
+        for key in keys {
+            let reply = view.read(cx).reply.read(cx).focus_handle(cx);
+            window.focus(&reply, cx); // Deliberately leave AppKit with CEF.
+            let key =
+                Keystroke::parse_with_os(key, cx.platform_info().os).map_err(|e| e.to_string())?;
+            let handled = window.dispatch_keystroke(key.clone(), cx);
+            window.dispatch_event(
+                gpui_kit::PlatformInput::KeyUp(KeyUpEvent { keystroke: key }),
+                cx,
+            );
+            let v = view.read(cx);
+            if !handled
+                || v.reply.read(cx).value().to_string() != seed
+                || v.session.submitting()
+                || !v.session.review().is_pending()
+            {
+                return Err("a shortcut edited/submitted the reply before a repaint".into());
+            }
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())??;
+    Ok(json!(format!(
+        "ok {}",
+        json!({"notified":notified, "sameTickKeys":keys.len()})
+    )))
 }
 
 #[cfg(feature = "automation")]

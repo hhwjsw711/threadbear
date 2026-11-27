@@ -132,6 +132,13 @@ impl Shared {
     }
 }
 
+// SAFETY: native registration borrows Arc::as_ptr while PanelPage owns its
+// Shared. Drop unregisters before removing the view or releasing that Arc.
+unsafe extern "C" fn page_focused(context: *mut c_void) {
+    let shared = unsafe { &*context.cast::<Shared>() };
+    shared.send(Event::Focused);
+}
+
 thread_local! {
     /// The Convex dashboards' context: kept in memory, gone with the app.
     static CONVEX_CONTEXT: RefCell<Option<RequestContext>> = const { RefCell::new(None) };
@@ -303,6 +310,17 @@ impl PanelPage {
         // shim ignores null), alive in `parent`, and open runs on the main
         // thread. The shim's map holds it weakly.
         unsafe { tb_view_watch_input(view) };
+        if matches!(&kind, Kind::Preview(_)) {
+            // SAFETY: this page's Shared allocation is stable and retained
+            // until Drop unregisters, and both calls run on the main thread.
+            unsafe {
+                super::host::tb_view_watch_focus(
+                    view,
+                    page_focused,
+                    Arc::as_ptr(&shared).cast_mut().cast(),
+                )
+            };
+        }
         let mut observer = Answers::new(shared.clone());
         let registration = host.add_dev_tools_message_observer(Some(&mut observer));
         // Out of sight until the app puts it somewhere.
@@ -634,6 +652,9 @@ impl PanelPage {
 
 impl Drop for PanelPage {
     fn drop(&mut self) {
+        // SAFETY: the native view and Shared are still alive here; remove
+        // their borrowed callback before either can be destroyed.
+        unsafe { super::host::tb_view_unwatch_focus(self.view) };
         if let Ok(mut events) = self.shared.events.lock() {
             events.take();
         }

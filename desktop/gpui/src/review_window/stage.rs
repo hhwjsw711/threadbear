@@ -7,6 +7,7 @@
 // not the app's text zoom), and hands it the pointer.
 use super::ReviewWindow;
 use crate::style::{self, px};
+use futures::StreamExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
@@ -53,6 +54,9 @@ pub(crate) struct StageState {
     /// A page shot on show, sealed with its scripts off (`review.media`):
     /// its file and its view, dropped once another shot shows.
     pub(crate) page: Option<(String, Rc<threadbear_web::PanelPage>)>,
+    pub(super) page_events: Option<Task<()>>,
+    #[cfg(feature = "automation")]
+    pub(super) focus_events: u64,
     live_digest: Option<String>,
     pub(super) notice: Option<String>,
     /// Why the page shot on show couldn't show in place, by its file.
@@ -706,17 +710,43 @@ impl ReviewWindow {
                 };
                 let parent = crate::web_panels::native_view(window)
                     .ok_or_else(|| "the window has no view".to_owned())?;
-                let (page, _events) = threadbear_web::PanelPage::open(
+                let (page, events) = threadbear_web::PanelPage::open(
                     parent,
                     &preview.page_url(),
                     threadbear_web::PanelKind::Preview(preview),
                 )?;
-                Ok::<_, String>(page)
+                Ok::<_, String>((page, events))
             })();
             match made {
-                Ok(page) => {
+                Ok((page, mut events)) => {
                     let page = Rc::new(page);
                     self.stage.page = Some((path.to_owned(), page.clone()));
+                    let tracked = Rc::downgrade(&page);
+                    let handle = self.handle;
+                    self.stage.page_events = Some(cx.spawn(async move |this, cx| {
+                        while let Some(event) = events.next().await {
+                            if !matches!(event, threadbear_web::PanelEvent::Focused) {
+                                continue;
+                            }
+                            cx.update_window(handle, |_, window, cx| {
+                                this.update(cx, |this, cx| {
+                                    if !this.stage.page.as_ref().is_some_and(|(_, p)| {
+                                        std::rc::Weak::ptr_eq(&Rc::downgrade(p), &tracked)
+                                    }) {
+                                        return;
+                                    }
+                                    #[cfg(feature = "automation")]
+                                    {
+                                        this.stage.focus_events += 1;
+                                    }
+                                    this.release_reply_keys(window, cx);
+                                    cx.notify();
+                                })
+                                .ok();
+                            })
+                            .ok();
+                        }
+                    }));
                     if let Some(digest) = self.stage.live_digest.clone() {
                         let path = path.to_owned();
                         let page = Rc::downgrade(&page);

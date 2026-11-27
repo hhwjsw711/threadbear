@@ -229,14 +229,11 @@ Then('a live HTML input cannot edit or submit the focused reply draft', async fu
   await board(this, {reply: 'Keep this draft', focusReply: true});
   await this.app.do({cmd: 'click', review: reviewId(this), tip: 'Interact with B. One picker, shot 2 here, sealed and offline'});
   await untilBoard(this, 'the HTML running', (s) => s.canvas?.playing === 'page');
-  await js(`(() => {const input=document.createElement('input');input.id='reply-guard-test';input.value='HTML input';document.body.prepend(input);input.focus();return true})()`);
-  await board(this, {canvasFocusPage: true});
-  await untilBoard(this, 'CEF keeps native keys and reply loses GPUI keys', (s) => s.pageKeys === true && s.replyKeys === false);
-  await key('enter');
-  await key('backspace');
-  await key('left');
-  await key('right');
-  await key('k', ['ctrl']);
+  await js(`(() => {const input=document.createElement('input');input.id='reply-guard-test';input.value='HTML input';input.style.cssText='position:fixed;left:24px;top:24px;width:220px;height:40px;z-index:2147483647';document.body.prepend(input);return true})()`);
+  // The native probe renders only before the click from reply into the
+  // mounted input, then tests focus notification and shortcuts without a frame.
+  const probe = JSON.parse(okValue(await this.app.do({cmd: 'review', id: reviewId(this), open: false, canvasReplyFocusProbe: true}, 30)));
+  if (!probe.notified || probe.sameTickKeys !== 5) throw new Error(`Incomplete no-repaint probe: ${JSON.stringify(probe)}`);
   const guarded = await board(this);
   if (guarded.status !== 'pending' || guarded.reply !== 'Keep this draft') throw new Error(`HTML shortcut changed the review: ${JSON.stringify(guarded)}`);
   await board(this, {focusReply: true});

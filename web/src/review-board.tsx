@@ -714,7 +714,7 @@ function ReviewBoard({
     return () => window.removeEventListener('keydown', key);
   });
 
-  // ---- the world, drawn once per change of what's on it (the camera only moves it)
+  // The world is memoized through pans; zoom also changes label clearance.
   const chosen = picks(draft);
   const world = useMemo(() => {
     if (!board) return null;
@@ -764,10 +764,10 @@ function ReviewBoard({
                       {picked ? <Icon.Check /> : null}
                     </button>
                   ) : null}
-                  <button className="rb-name" style={html ? {minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto'} : undefined} onPointerDown={(e) => e.stopPropagation()} onClick={() => go(stopIndex(stops, laid.index, 0))} title="Show it on the board">
+                  <button className="rb-name" style={html ? {minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '0 1 auto'} : undefined} onPointerDown={(e) => e.stopPropagation()} onClick={() => go(stopIndex(stops, laid.index, 0))} title="Show it on the board">
                     {optionLabel(option)}
                   </button>
-                  {review.recommended === option.id ? (
+                  {review.recommended === option.id && labelWidth * camera.s >= 190 ? (
                     <span className="rb-tag">
                       <span className="rb-star">★</span> Recommended
                     </span>
@@ -880,7 +880,7 @@ function ReviewBoard({
       </>
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- lit by its parts, so a new object for the same stop doesn't redraw the board
-  }, [board, review, draft, lit?.kind, lit && litOption(lit), lit?.kind === 'shot' ? lit.shot : -1, showNotes, pictures, busy, pending, playback, stops]);
+  }, [board, camera.s, review, draft, lit?.kind, lit && litOption(lit), lit?.kind === 'shot' ? lit.shot : -1, showNotes, pictures, busy, pending, playback, stops]);
 
   const s = camera.s;
   // The dot grid: 2 px dots on a 48-unit grid that stays 18 to 36 px apart on screen.

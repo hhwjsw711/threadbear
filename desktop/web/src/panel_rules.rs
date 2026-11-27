@@ -11,6 +11,8 @@ pub enum Event {
     /// Loading started or stopped, going back became possible or not, or the
     /// title or address changed.
     Changed,
+    /// The native page acquired keyboard focus.
+    Focused,
 }
 
 /// Whose page it is, which decides where its links may go.

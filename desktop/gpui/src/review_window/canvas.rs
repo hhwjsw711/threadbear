@@ -1039,12 +1039,14 @@ impl ReviewWindow {
             })
             .child(
                 div()
-                    .flex_1()
+                    .flex_initial()
                     .min_w_0()
                     .text_ellipsis()
                     .child(option.label()),
             )
-            .when(starred, |d| d.child(super::parts::recommended_mark(cx)))
+            .when(starred && width >= 190., |d| {
+                d.child(super::parts::recommended_mark(cx))
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if let Some(i) = this
                     .session

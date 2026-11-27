@@ -32,6 +32,12 @@ unsafe extern "C" {
     pub(crate) fn tb_view_input_count(view: *mut c_void) -> u64;
     pub(crate) fn tb_view_note_input(view: *mut c_void);
     pub(crate) fn tb_view_has_keyboard(view: *mut c_void) -> bool;
+    pub(crate) fn tb_view_watch_focus(
+        view: *mut c_void,
+        notify: unsafe extern "C" fn(*mut c_void),
+        context: *mut c_void,
+    );
+    pub(crate) fn tb_view_unwatch_focus(view: *mut c_void);
     // The layer Chromium shows a page's picture in, which should be the view's size (panel.rs).
     pub(crate) fn tb_view_picture_size(
         view: *mut c_void,

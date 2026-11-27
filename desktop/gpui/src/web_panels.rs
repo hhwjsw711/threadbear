@@ -126,7 +126,9 @@ pub(crate) fn init(cx: &mut App) {
     // the runtime changes.
     // ⌘C and the like while a page has the keyboard are the page's.
     cx.intercept_keystrokes(|event, window, cx| {
-        if edit_key(&event.keystroke, window.window_handle(), cx) {
+        // Native focus can change before a frame rebuilds GPUI's key tree.
+        let guarded = crate::review_window::guard_page_shortcut(&event.keystroke, window, cx);
+        if edit_key(&event.keystroke, window.window_handle(), cx) || guarded {
             cx.stop_propagation();
         }
     })
@@ -545,7 +547,7 @@ impl WebPanels {
                 }
                 crate::open_gate::open_web(&url, cx);
             }
-            PanelEvent::Changed => {}
+            PanelEvent::Changed | PanelEvent::Focused => {}
         }
         let _ = key;
         cx.notify();

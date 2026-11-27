@@ -235,3 +235,12 @@ test('compact HTML headers leave label space beside fixed pills only when their 
     }
   }
 });
+
+
+test('HTML label clearance follows open, zoom-in flights and zoom-out using the same board', () => {
+  const r = review({options: [{id: 'A', title: 'Recommended HTML', shots: [{src: 'still', kind: 'page'}]}]});
+  const option = layout(r, () => 4 / 3, measure).options[0]!;
+  const widths = [0.4, 1, 1.4, 0.4].map((scale) => htmlLabelWidth(option.title, option.shots[0]!.picture, scale));
+  assert.deepEqual(widths, [90, 640, 640, 90]);
+  assert.deepEqual(widths.map((width, i) => width * [0.4, 1, 1.4, 0.4][i]! >= 190), [false, true, true, false], 'tight headers collapse the recommendation so the title retains room');
+});
