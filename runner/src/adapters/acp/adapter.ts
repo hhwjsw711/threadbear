@@ -401,11 +401,25 @@ const MODEL_PROBE_MS = 5_000;
 const CLOSE_SESSION_MS = 5_000;
 // More than any answer is: what a runaway one adds past it is dropped.
 const USAGE_TEXT_MAX = 64_000;
+// The bridge can finish the prompt or resume work after a failed tool.
+export const ANTIGRAVITY_QUOTA_GRACE_MS = 30_000;
+const ANTIGRAVITY_EXECUTOR_429 = /^Agent execution terminated due to error\. \("agent executor error: Error 429\b/i;
+const ANTIGRAVITY_INDIVIDUAL_QUOTA = /^, Message: Individual quota reached\./i;
+const ANTIGRAVITY_EXHAUSTED_STATUS = /, Status: RESOURCE_EXHAUSTED\b/;
+const ANTIGRAVITY_RATE_RETRY = /\b(?:requests?|tokens?) per (?:minute|hour)\b|\bretry in \d+(?:\.\d+)?\s*(?:s|secs?|seconds?)\b/i;
 
 type State = 'starting' | 'ready' | 'turn' | 'closing' | 'closed';
 // failure: what the agent said went wrong in the turn outside the prompt's
 // answer (Grok's retry_state and turn_completed notes), with any HTTP status.
-type Turn = { id?: string; startedAt: number; interrupted: boolean; dropped: string[]; failure?: { message: string; httpStatus?: number }; dispatched?: boolean };
+type Turn = {
+  id?: string;
+  startedAt: number;
+  interrupted: boolean;
+  dropped: string[];
+  failure?: { message: string; httpStatus?: number };
+  dispatched?: boolean;
+  quota?: { message: string; timer: NodeJS.Timeout };
+};
 // cancelled: what a cancelled turn answers it with (a form's differs).
 type Pending = { abort: AbortController; options: PermissionOption[]; cancelled?: unknown };
 type PermissionOption = { optionId?: string; kind?: string };
@@ -732,7 +746,12 @@ export class AcpSession implements AgentSession {
       if (update.sessionUpdate === 'config_option_update' && Array.isArray(update.configOptions)) this.noteOptions({ configOptions: update.configOptions as ConfigOption[] });
       if (update.sessionUpdate === 'available_commands_update' && Array.isArray(update.availableCommands)) this.noteCommands(update.availableCommands);
     }
-    this.emit(this.normalizer.handle(update));
+    const outputs = this.normalizer.handle(update);
+    this.emit(outputs);
+    if (this.turn && this.deps.agent.provider === 'antigravity' && this.antigravity429(this.turn, outputs)) {
+      this.chunkBuffer = '';
+      return;
+    }
     if (isPlainObject(params.update)) {
       const u = params.update;
       if (u.sessionUpdate === 'agent_message_chunk') {
@@ -766,17 +785,55 @@ export class AcpSession implements AgentSession {
     }
   }
 
+  // Antigravity can send the error text and the failed status in separate
+  // updates. The normalizer joins them before it emits the failed result.
+  private antigravity429(turn: Turn, outputs: AdapterOutput[]): boolean {
+    for (const output of outputs) {
+      if (output.kind !== 'event' || output.event.type !== 'tool.result' || output.event.ok) continue;
+      const message = output.event.text?.trimStart();
+      const prefix = message?.match(ANTIGRAVITY_EXECUTOR_429)?.[0];
+      if (!message || !prefix) continue;
+      // An executor 429 can also be a transient requests-per-minute limit.
+      // Only the individual-quota diagnostic warrants a watchdog.
+      const individualQuota = ANTIGRAVITY_INDIVIDUAL_QUOTA.test(message.slice(prefix.length)) && ANTIGRAVITY_EXHAUSTED_STATUS.test(message);
+      if (!individualQuota) return ANTIGRAVITY_RATE_RETRY.test(message) && !outOfUsage({ message });
+      // A parallel tool can fail while the bridge is already waiting for an
+      // answer. Giving that answer must not expose an old prompt deadline.
+      if (!turn.quota && this.pending.size === 0) {
+        const timer = setTimeout(() => {
+          if (this.turn !== turn || this.state !== 'turn') return;
+          if (turn.interrupted) this.kill();
+          else if (this.pending.size || this.normalizer.hasRunningTools()) this.clearQuotaNotice(turn);
+          else this.failFatal(message, true);
+        }, ANTIGRAVITY_QUOTA_GRACE_MS);
+        timer.unref();
+        turn.quota = { message, timer };
+      }
+      return true;
+    }
+    if (turn.quota && outputs.some((o) => o.kind === 'delta' || (o.kind === 'event' && (o.event.type === 'tool.call' || (o.event.type === 'tool.result' && o.event.ok))))) {
+      this.clearQuotaNotice(turn);
+    }
+    return false;
+  }
+
+  private clearQuotaNotice(turn: Turn): void {
+    clearTimeout(turn.quota?.timer);
+    turn.quota = undefined;
+  }
+
   // A fatal harness crash or agent execution termination leaves the agent's
   // background process unresponsive to session/prompt. Terminate the session
   // at once so the turn ends in error rather than hanging forever.
-  private failFatal(detail: string): void {
+  private failFatal(detail: string, quotaTimedOut = false): void {
     if (this.state === 'closed' || this.state === 'closing') return;
     this.state = 'closing';
     this.held = [];
-    const fail = this.turn ? this.failureFor(this.turn) : { error: detail };
+    const fail = this.turn ? this.failureFor(this.turn, new Error(detail)) : { error: detail };
     const errorText = fail.error ?? detail;
     const err = new Error(errorText);
-    this.deps.log.error('acp fatal execution error; terminating session', { threadId: this.opts.threadId, error: errorText, errorKind: fail.errorKind });
+    if (quotaTimedOut) this.deps.log.info('antigravity did not finish the prompt after reaching its quota', { threadId: this.opts.threadId });
+    else this.deps.log.error('acp fatal execution error; terminating session', { threadId: this.opts.threadId, error: errorText, errorKind: fail.errorKind });
     this.proc.kill(new AcpExitedError(errorText));
     this.exited(err);
   }
@@ -948,6 +1005,13 @@ export class AcpSession implements AgentSession {
   }
 
   private request(id: RequestId, method: string, params: unknown): void {
+    // A new user-facing request means the bridge is still working, even if
+    // it sends no more updates while it waits for Mike to answer.
+    const turn = this.turn;
+    if (turn?.quota && !this.replaying && isPlainObject(params) && params.sessionId === this.sessionId &&
+        ((method === 'session/request_permission' && isPlainObject(params.toolCall)) || (method === 'elicitation/create' && params.mode === 'form'))) {
+      this.clearQuotaNotice(turn);
+    }
     if (method === 'session/request_permission' && !this.replaying) {
       const p = (isPlainObject(params) ? params : {}) as { toolCall?: AcpToolCall; options?: PermissionOption[]; _meta?: unknown };
       // Its own frame counts in the call's history too, as sent.
@@ -1432,6 +1496,8 @@ export class AcpSession implements AgentSession {
       const auth = e instanceof AcpRpcError && e.code === AUTH_REQUIRED;
       result = { outcome: turn.interrupted ? 'interrupted' : 'failed', durationMs: Math.max(0, this.now() - turn.startedAt), ...(auth ? { errorKind: 'auth' as const } : {}) };
       if (!turn.interrupted) Object.assign(result, auth ? { error: (e as Error).message } : this.failureFor(turn, e));
+    } finally {
+      clearTimeout(turn.quota?.timer);
     }
     if (this.turn !== turn) return;
     turn.dispatched = dispatched;
@@ -1465,7 +1531,8 @@ export class AcpSession implements AgentSession {
     const thrown = e instanceof Error ? e.message : e === undefined ? undefined : String(e);
     const fromRpc = rpc && rpc.message !== rpc.rpcMessage ? rpc.message : undefined;
     const noted = turn.failure && !genericRpcMessage(turn.failure.message) ? turn.failure.message : undefined;
-    const detail = fromRpc ?? noted ?? thrown ?? turn.failure?.message ?? 'The agent stopped with an error.';
+    const quotaNote = (!e || (rpc && rpc.httpStatus === undefined && genericRpcMessage(rpc.message))) ? turn.quota?.message : undefined;
+    const detail = fromRpc ?? noted ?? quotaNote ?? thrown ?? turn.failure?.message ?? 'The agent stopped with an error.';
     const httpStatus = rpc?.httpStatus ?? turn.failure?.httpStatus;
     if (!outOfUsage({ message: detail, httpStatus })) return { error: detail };
     const name = providerName(this.deps.agent.provider);
@@ -1608,6 +1675,7 @@ export class AcpSession implements AgentSession {
     this.proc.onRequest = null;
     this.mcp?.close();
     this.emit(this.normalizer.closeOpen('Interrupted'));
+    clearTimeout(this.turn?.quota?.timer);
     this.turn = undefined;
     if (this.ownFolder) removeQuietly(this.ownFolder);
     this.resolveExit();

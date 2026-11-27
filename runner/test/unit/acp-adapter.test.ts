@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { AcpAdapter, AcpSession, EDIT_RULE, LIMITS_POLL_MS, modelChoices } from '../../src/adapters/acp/adapter.ts';
+import { AcpAdapter, AcpSession, ANTIGRAVITY_QUOTA_GRACE_MS, EDIT_RULE, LIMITS_POLL_MS, modelChoices } from '../../src/adapters/acp/adapter.ts';
 import { ACP_AGENTS, acpAccounts, antigravityInput, folderPlugins, isCursorBinary, isGoogleSigned, opencodeEnv } from '../../src/adapters/acp/agents.ts';
 import type { AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
@@ -44,7 +44,7 @@ afterEach(async () => {
   for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; mcpServers?: () => Record<string, { command: string; args: string[] }>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer>; question?: (r: QuestionRequest) => QuestionAnswer | Promise<QuestionAnswer> } = {}) {
+function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; mcpServers?: () => Record<string, { command: string; args: string[] }>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer>; question?: (r: QuestionRequest) => QuestionAnswer | Promise<QuestionAnswer>; onOutput?: (output: AdapterOutput) => void } = {}) {
   const root = tmp();
   made.push(root);
   const cwd = path.join(root, 'work');
@@ -60,6 +60,7 @@ function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, 
   const sink: SessionSink = {
     output(out) {
       outputs.push(out);
+      o.onOutput?.(out);
       if (out.kind === 'result') results.splice(0).forEach((f) => f());
     },
     async requestApproval(req) {
@@ -2043,13 +2044,121 @@ test('Antigravity: completed tool output with error words and assistant explanat
   assert.equal(res[0].outcome, 'completed');
 });
 
-test('Antigravity: individual quota reached (Error 429 RESOURCE_EXHAUSTED) terminates the session with usageLimit', async () => {
-  const r = agy({ mode: 'full' });
+async function quotaBeforeStatus() {
+  const failedTool = Promise.withResolvers<void>();
+  const r = agy({ mode: 'full', onOutput: (out) => {
+    if (out.kind === 'event' && out.event.type === 'tool.result' && !out.event.ok) failedTool.resolve();
+  } });
   const s = r.start();
   s.send({ id: 'turn-quota', text: 'quota_fail', images: [] });
-  await r.exited();
+  const exit = r.exited();
+  await Promise.race([failedTool.promise, exit]);
+  assert.equal(r.exitError(), null, 'the prompt gets a chance to return');
+  return { r, s, exit };
+}
+
+test('Antigravity: a quota diagnostic sent before the failed tool status still ends an unanswered prompt', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { r, exit } = await quotaBeforeStatus();
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  await exit;
   const err = r.exitError();
   assert.ok(err, 'session must exit with error');
   assert.match(err.message, /is out of Gemini usage.*Individual quota reached/i);
 });
 
+test('Antigravity: Stop during an unanswered quota failure exits without a usage error', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { r, s, exit } = await quotaBeforeStatus();
+  await s.interrupt();
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  await exit;
+  assert.equal(r.exitError(), undefined);
+});
+
+test('Antigravity: a specific prompt error takes precedence over a quota-looking tool result', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'full' });
+  await turn(r, r.start(), 'quota_prompt_error');
+  const result = results(r.outputs)[0];
+  assert.equal(result?.outcome, 'failed');
+  assert.equal(result?.error, 'Context length exceeded');
+  assert.equal(result?.errorKind, undefined);
+});
+
+test('Antigravity: an executor 429 without an individual quota or retry diagnostic still ends the session', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'full' });
+  r.start().send({ id: 'executor-429', text: 'executor_429', images: [] });
+  await r.exited();
+  assert.match(r.exitError()?.message ?? '', /Too many requests/);
+});
+
+for (const [scenario, description, resumedTool] of [
+  ['quota_recovers', 'new tool work after a Gemini quota diagnostic', true],
+  ['quota_parallel_tool', 'a parallel tool that was already running', false],
+  ['rate_limit', 'a temporary per-minute rate limit', false],
+  ['retry_delay', 'a 429 with a fractional-second retry hint', false],
+] as const) {
+  test(`Antigravity: ${description} leaves the session open`, { timeout: 5000 }, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const paused = Promise.withResolvers<void>();
+    const r = agy({ mode: 'full', onOutput: (out) => {
+      if (out.kind === 'event' && out.event.type === 'tool.result' && out.event.ok === resumedTool) paused.resolve();
+    } });
+    const s = r.start();
+    const done = turn(r, s, scenario, 'turn-diagnostic');
+    const exit = r.exited();
+    await Promise.race([paused.promise, exit]);
+    assert.equal(r.exitError(), null);
+    t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+    assert.equal(r.exitError(), null);
+    s['proc'].notify('_test/finish_prompt', { sessionId: s['sessionId'] });
+    await Promise.race([done, exit]);
+    assert.equal(results(r.outputs)[0]?.outcome, 'completed');
+    await turn(r, s, 'hello', 'turn-next');
+    assert.equal(results(r.outputs)[1]?.outcome, 'completed');
+  });
+}
+
+test('Antigravity: a quota-looking tool failure does not stop a turn waiting for an answer', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const asked = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<QuestionAnswer>();
+  const r = agy({ mode: 'full', question: () => {
+    asked.resolve();
+    return answer.promise;
+  } });
+  const s = r.start();
+  const done = turn(r, s, 'quota_question');
+  const exit = r.exited();
+  await Promise.race([asked.promise, exit]);
+  assert.equal(r.exitError(), null);
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  assert.equal(r.exitError(), null);
+  answer.resolve({ answers: null });
+  await Promise.race([done, exit]);
+  assert.equal(results(r.outputs)[0]?.outcome, 'completed');
+});
+
+test('Antigravity: answering a question that predates the quota notice does not expose an old deadline', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const failedTool = Promise.withResolvers<void>();
+  const answered = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<QuestionAnswer>();
+  const r = agy({ mode: 'full', question: () => answer.promise, onOutput: (out) => {
+    if (out.kind === 'event' && out.event.type === 'tool.result' && !out.event.ok) failedTool.resolve();
+    if (out.kind === 'context' && out.contextTokens === 42) answered.resolve();
+  } });
+  const s = r.start();
+  const done = turn(r, s, 'quota_pending_question');
+  const exit = r.exited();
+  await Promise.race([failedTool.promise, exit]);
+  assert.equal(r.questions.length, 1);
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS - 1);
+  answer.resolve({ answers: null });
+  await Promise.race([answered.promise, exit]);
+  t.mock.timers.tick(1);
+  assert.equal(r.exitError(), null);
+  s['proc'].notify('_test/finish_prompt', { sessionId: s['sessionId'] });
+  await Promise.race([done, exit]);
+  assert.equal(results(r.outputs)[0]?.outcome, 'completed');
+});

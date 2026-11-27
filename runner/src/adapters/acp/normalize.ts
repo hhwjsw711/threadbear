@@ -583,6 +583,13 @@ export class AcpNormalizer {
     out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images } });
   }
 
+  hasRunningTools(): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.ran && !tool.done) return true;
+    }
+    return false;
+  }
+
   // The turn has ended, or the agent has gone: no more updates are coming
   // for anything still open.
   closeOpen(reason: string): AdapterOutput[] {

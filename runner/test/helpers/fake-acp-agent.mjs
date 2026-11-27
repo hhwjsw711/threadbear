@@ -46,6 +46,7 @@ const send = (m) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...
 const AGENT = env.FAKE_ACP_NAME ?? 'OpenCode';
 let nextOwn = 0; // from 0, as OpenCode's are
 const waiting = new Map();
+const pausedPrompts = new Map();
 const ask = (method, params) =>
   new Promise((resolve) => {
     const id = nextOwn++;
@@ -447,16 +448,45 @@ async function agyPrompt(id, p, s, word, rest) {
     send({ id, result: { stopReason: 'end_turn' } });
     return;
   }
-  else if (word === 'quota_fail') {
+  else if (['quota_fail', 'quota_recovers', 'quota_question', 'quota_pending_question', 'quota_parallel_tool', 'quota_prompt_error', 'rate_limit', 'retry_delay', 'executor_429'].includes(word)) {
+    const askQuestion = () => ask('elicitation/create', { mode: 'form', sessionId: p.sessionId, message: 'Finish the test prompt?' });
+    const pendingQuestion = word === 'quota_pending_question' ? askQuestion() : undefined;
+    const parallelTool = word === 'quota_parallel_tool' ? 'parallel-command' : undefined;
+    if (parallelTool) update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId: parallelTool, title: 'parallel work', kind: 'execute', status: 'in_progress' });
     const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
     update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'run', kind: 'execute', status: 'in_progress', rawInput: {} });
+    const reason = {
+      rate_limit: ': RESOURCE_EXHAUSTED: quota exceeded for requests per minute. Retry in 1s.',
+      retry_delay: ': RESOURCE_EXHAUSTED: Please retry in 1.5s.',
+      executor_429: ', Message: Too many requests., Status: RESOURCE_EXHAUSTED',
+    }[word] ?? ', Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED';
+    const text = `Agent execution terminated due to error. ("agent executor error: Error 429${reason}")`;
     update(p.sessionId, {
       sessionUpdate: 'tool_call_update',
       toolCallId,
-      status: 'failed',
-      content: [{ type: 'text', text: 'Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")' }],
+      ...(word === 'quota_fail' ? {} : { status: 'failed' }),
+      content: [{ type: 'content', content: { type: 'text', text } }],
     });
-    return; // leaves session/prompt hanging, as agy_acp_server does
+    if (word === 'quota_fail') {
+      update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed' });
+      return; // leaves session/prompt hanging, as agy_acp_server does
+    }
+    if (word === 'executor_429') return;
+    if (word === 'quota_prompt_error') return send({ id, error: { code: -32603, message: 'Context length exceeded' } });
+    if (word === 'quota_recovers') {
+      await tool('read', 'Running view_file', { AbsolutePath: '/tmp/example' }, {}, () => log({ recovered: true }));
+    }
+    if (word === 'quota_question') {
+      await askQuestion();
+    } else {
+      if (pendingQuestion) {
+        await pendingQuestion;
+        update(p.sessionId, { sessionUpdate: 'usage_update', used: 42 });
+      }
+      // Let the test advance its clock without sending the client another frame.
+      await new Promise((resolve) => pausedPrompts.set(p.sessionId, resolve));
+      if (parallelTool) update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: parallelTool, status: 'completed' });
+    }
   }
   update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'done' } });
   send({ id, result: { stopReason: 'end_turn' } });
@@ -534,6 +564,11 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (m.method === 'session/cancel') {
     log({ cancelled: true });
+    return;
+  }
+  if (m.method === '_test/finish_prompt') {
+    pausedPrompts.get(m.params.sessionId)?.();
+    pausedPrompts.delete(m.params.sessionId);
     return;
   }
   if (m.method === 'session/prompt') {
