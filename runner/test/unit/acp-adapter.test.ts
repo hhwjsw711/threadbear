@@ -1504,6 +1504,29 @@ test('an edit whose folder becomes a link out while its card waits is not run', 
   assert.ok(!fs.existsSync(path.join(r.root, 'dotclaude', 'settings.json')));
 });
 
+test('an edit whose file becomes a hard link to one elsewhere while its card waits is not run, and one already linked is Mike\'s', async () => {
+  let release!: () => void;
+  const r = rig({ mode: 'auto', answer: () => new Promise((res) => (release = () => res({ decision: 'allow' }))) });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  const file = path.join(home, 'notes.json');
+  fs.writeFileSync(file, '{}');
+  fs.writeFileSync(path.join(r.root, 'settings.json'), '{}');
+  const a = fakeRequest(r, s, { toolCallId: 'h1', kind: 'edit', locations: [{ path: file }], rawInput: { path: file, content: '{"x":1}' } });
+  await until(() => r.cards.length === 1);
+  fs.rmSync(file);
+  fs.linkSync(path.join(r.root, 'settings.json'), file);
+  release();
+  await until(() => a.length === 1);
+  assert.notDeepEqual(a[0], { outcome: { outcome: 'selected', optionId: 'once' } });
+  const b = fakeRequest(r, s, { toolCallId: 'h2', kind: 'edit', locations: [{ path: file }], rawInput: { path: file, content: '{"x":2}' } });
+  await until(() => r.cards.length === 2);
+  assert.equal(r.cards[1].noReview, true);
+  release();
+  await until(() => b.length === 1);
+});
+
 test('the saved edit rule never covers a file outside the thread\'s folder, by path or through a link', async () => {
   const r = agy({ deny: true });
   const s = r.start();

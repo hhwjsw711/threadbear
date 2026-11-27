@@ -1189,7 +1189,8 @@ export class AcpSession implements AgentSession {
     // with `..`, `~` or relative to the agent's own folder: the reviewer
     // reads the spelling, not where it lands (a link in the folder to ~/.ssh,
     // `link/..`), so those are Mike's (Codex's and Gemini's reviews, 27 Nov).
-    const reachesOut = paths.some((f) => !this.inFolder(f));
+    // A file with more than one hard link may be one outside too.
+    const reachesOut = paths.some((f) => !this.inFolder(f) || (fileId(f)?.[2] ?? 1) > 1);
     const opaque =
       relative ||
       reachesOut ||
@@ -1221,7 +1222,9 @@ export class AcpSession implements AgentSession {
     // land by then (Codex's reviews, 27 Nov 2026: a frame during the card
     // reviewer's look; a parent folder swapped for a link to ~/.claude).
     const asked = frames ? frameState(frames) : '';
-    const placesNow = () => JSON.stringify([paths.map((f) => this.diskPlace(f) ?? null), this.runsAsCode(paths), paths.every((f) => this.inFolder(f))]);
+    // Which file each is too (device, inode, links), so one swapped for a
+    // hard link to a file elsewhere reads as changed (Codex's re-check).
+    const placesNow = () => JSON.stringify([paths.map((f) => [this.diskPlace(f) ?? null, fileId(f)]), this.runsAsCode(paths), paths.every((f) => this.inFolder(f))]);
     const placed = paths.length ? placesNow() : '';
     const pending: Pending = { abort: new AbortController(), options };
     this.pending.set(id, pending);
@@ -1556,6 +1559,16 @@ export class AcpSession implements AgentSession {
     if (this.ownFolder) removeQuietly(this.ownFolder);
     this.resolveExit();
     this.sink.exited(error);
+  }
+}
+
+// A file's device, inode and hard link count, or undefined if it isn't there.
+function fileId(f: string): [number, number, number] | undefined {
+  try {
+    const st = fs.lstatSync(f);
+    return [st.dev, st.ino, st.nlink];
+  } catch {
+    return undefined;
   }
 }
 
