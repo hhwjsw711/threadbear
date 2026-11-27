@@ -617,3 +617,98 @@ test("a legacy rename's card names where it goes, so the phone can't allow it fr
   assert.deepEqual(h.asked[0].input.paths, ['/w/notes.txt', '/elsewhere/notes.txt']);
   assert.equal(remoteCardShowsAll('apply_patch', h.asked[0].input), false);
 });
+
+test('card reviewer flags: visible shell commands are reviewable; file changes, writeStdin, missing commands, unresolvable cwd and permissions set noReview', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-codex-review-'));
+  const realDir = fs.realpathSync.native(dir);
+  try {
+    const h = harness();
+    h.answerWith(async () => ({ decision: 'deny' }));
+    h.a.handle(1, 'item/commandExecution/requestApproval', req('ls -la /w', { cwd: dir, reason: 'Inspect directory' }), { fromChild: false });
+    h.a.handle(2, 'item/commandExecution/requestApproval', req('python app.py', { cwd: dir, kind: 'writeStdin' }), { fromChild: false });
+    h.a.handle(3, 'item/commandExecution/requestApproval', { threadId: 't', turnId: 'u', itemId: 'i3', command: null, cwd: dir, commandActions: [{ type: 'read', command: 'cat a' }] }, { fromChild: false });
+    h.a.handle(4, 'item/fileChange/requestApproval', { threadId: 't', turnId: 'u', itemId: 'i4' }, { fromChild: false });
+    h.a.handle(5, 'item/permissions/requestApproval', { threadId: 't', turnId: 'u', itemId: 'i5', cwd: dir, reason: 'Network', permissions: { network: { enabled: true }, fileSystem: null } }, { fromChild: false });
+    h.a.handle(6, 'execCommandApproval', { conversationId: 'c', callId: 'k6', command: ['/bin/zsh', '-lc', 'git status'], cwd: dir, reason: null }, { fromChild: false });
+    h.a.handle(7, 'applyPatchApproval', { conversationId: 'c', callId: 'k7', fileChanges: { '/w/a.ts': { type: 'update' } }, reason: null }, { fromChild: false });
+    h.a.handle(8, 'item/commandExecution/requestApproval', req('ls -la', { cwd: '/nonexistent/folder/for/test' }), { fromChild: false });
+    await flush();
+    assert.equal(h.asked.length, 8);
+    assert.equal(h.asked[0].noReview, undefined, 'visible v2 shell command in real folder is reviewable');
+    assert.equal(h.asked[0].wholeInput?.command, 'ls -la /w');
+    assert.equal(h.asked[0].wholeInput?.cwd, realDir);
+    assert.equal(h.asked[1].noReview, true, 'writeStdin hides the bytes sent');
+    assert.equal(h.asked[2].noReview, true, 'missing command string is opaque');
+    assert.equal(h.asked[3].noReview, true, 'fileChange omits the diff');
+    assert.equal(h.asked[4].noReview, true, 'turn-scoped permissions last past one call');
+    assert.equal(h.asked[5].noReview, undefined, 'visible legacy shell command in real folder is reviewable');
+    assert.equal(h.asked[5].wholeInput?.command, 'git status');
+    assert.equal(h.asked[5].wholeInput?.cwd, realDir);
+    assert.equal(h.asked[6].noReview, true, 'legacy applyPatch omits the diff');
+    assert.equal(h.asked[7].noReview, true, 'unresolvable cwd hides where the command runs');
+    // Saved Always-allow rule must NOT bypass additionalPermissions.
+    const hRule = harness([commandRule(['ls', '-la'], realDir)]);
+    hRule.answerWith(async () => ({ decision: 'deny' }));
+    hRule.a.handle(9, 'item/commandExecution/requestApproval', { ...req('ls -la', { cwd: dir }), additionalPermissions: { network: true } } as unknown as CommandExecutionRequestApprovalParams, { fromChild: false });
+    await flush();
+    assert.equal(hRule.asked.length, 1, 'additionalPermissions must not be auto-accepted by a saved rule');
+    assert.equal(hRule.asked[0].noReview, true);
+    assert.equal(hRule.asked[0].canAlwaysAllow, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('codex command approvals resolve symlinked cwd in wholeInput and decline if the folder is swapped while waiting', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-codex-cwd-'));
+  const work = path.join(root, 'work');
+  const docs = path.join(root, 'docs');
+  const link = path.join(work, 'generated');
+  fs.mkdirSync(work);
+  fs.mkdirSync(docs);
+  fs.symlinkSync(docs, link);
+  const realDocs = fs.realpathSync.native(docs);
+  try {
+    // 1. Symlinked cwd: wholeInput and card both show the resolved real folder plus "cwd as given".
+    const h = harness();
+    h.answerWith(async () => ({ decision: 'deny' }));
+    h.a.handle(1, 'item/commandExecution/requestApproval', req('rm -rf invoices', { cwd: link }), { fromChild: false });
+    h.a.handle(2, 'execCommandApproval', { conversationId: 'c', callId: 'k2', command: ['/bin/zsh', '-lc', 'rm -rf invoices'], cwd: link, reason: null }, { fromChild: false });
+    await flush();
+    assert.equal(h.asked[0].wholeInput?.cwd, realDocs);
+    assert.equal(h.asked[0].wholeInput?.['cwd as given'], link);
+    assert.equal(h.asked[0].input.cwd, realDocs);
+    assert.equal(h.asked[1].wholeInput?.cwd, realDocs);
+    assert.equal(h.asked[1].wholeInput?.['cwd as given'], link);
+
+    // 2. TOCTOU: swapping a real folder for a symlink while waiting declines v2 and legacy commands.
+    const swap = path.join(work, 'swap');
+    fs.mkdirSync(swap);
+    let releaseV2!: (a: ToolApprovalAnswer) => void;
+    let releaseLegacy!: (a: ToolApprovalAnswer) => void;
+    const h2 = harness();
+    let idx = 0;
+    h2.answerWith(
+      () =>
+        new Promise<ToolApprovalAnswer>((resolve) => {
+          if (idx++ === 0) releaseV2 = resolve;
+          else releaseLegacy = resolve;
+        }),
+    );
+    h2.a.handle(10, 'item/commandExecution/requestApproval', req('touch x', { cwd: swap }), { fromChild: false });
+    h2.a.handle(11, 'execCommandApproval', { conversationId: 'c', callId: 'k11', command: ['touch', 'x'], cwd: swap, reason: null }, { fromChild: false });
+    await flush();
+    // Swap the directory to a symlink pointing outside before approval resolves.
+    fs.rmdirSync(swap);
+    fs.symlinkSync(docs, swap);
+    releaseV2({ decision: 'allowAlways' });
+    releaseLegacy({ decision: 'allowAlways' });
+    await flush();
+    assert.deepEqual(h2.replies[0], { id: 10, result: { decision: 'decline' } });
+    assert.deepEqual(h2.replies[1], { id: 11, result: { decision: { denied: { rejection: 'The folder changed while waiting for approval.' } } } });
+    assert.equal(h2.added.length, 0, 'no Always allow rule saved after folder swap');
+    assert.equal(h2.notes.length, 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

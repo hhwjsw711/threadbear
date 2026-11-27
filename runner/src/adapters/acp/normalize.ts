@@ -172,6 +172,107 @@ export function isPlainEdit(input: Record<string, unknown>): boolean {
   return Object.entries(input).every(([k, v]) => PLAIN_EDIT_KEYS.has(k.toLowerCase()) && (typeof v === 'string' || typeof v === 'boolean') && (k.toLowerCase() !== 'variant' || EDIT_VARIANTS.has(String(v))));
 }
 
+// Whether an edit's rawInput actually carries what it writes (new text, a
+// complete text diff, or a list of edit chunks). An edit naming only its file
+// path or a binary-diff summary is opaque, like Codex's apply_patch, so Auto's
+// reviewer skips it.
+const EDIT_TEXT_KEYS = new Set(['content', 'codecontent', 'new_string', 'newstring', 'new_text', 'newtext', 'replacement', 'replacementcontent', 'text', 'body']);
+const FULL_FILE_KEYS = new Set(['content', 'codecontent', 'text', 'body']);
+const OLD_TEXT_KEYS = new Set(['old_string', 'oldstring', 'old_text', 'oldtext', 'targetcontent']);
+const NEW_TEXT_KEYS = new Set(['new_string', 'newstring', 'new_text', 'newtext', 'replacement', 'replacementcontent']);
+const EDIT_DIFF_KEYS = new Set(['diff', 'patch']);
+const EDIT_LIST_KEYS = new Set(['edits', 'changes', 'replacementchunks']);
+const BINARY_DIFF_LINE = /^(?:Binary files\b.*\bdiffer|Files\b.*\bdiffer|GIT binary patch)\s*$/m;
+const UNIFIED_HUNK = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m;
+const DIFF_CHANGE_LINE = /^[+-](?![+-]{2})/m;
+const APPLY_PATCH_BLOCK = /^\*\*\* (?:Add|Update|Delete) File: \S+/m;
+
+export function isCompleteDiff(s: string): boolean {
+  if (!s.trim() || BINARY_DIFF_LINE.test(s)) return false;
+  if (UNIFIED_HUNK.test(s) && DIFF_CHANGE_LINE.test(s)) return true;
+  if (APPLY_PATCH_BLOCK.test(s) && (DIFF_CHANGE_LINE.test(s) || /^\*\*\* Delete File: \S+/m.test(s))) return true;
+  return false;
+}
+
+export function hasEditContent(input: Record<string, unknown>, depth = 0): boolean {
+  if (depth > 4) return false;
+  let found = false;
+  for (const [k, v] of Object.entries(input)) {
+    const lower = k.toLowerCase();
+    if (EDIT_DIFF_KEYS.has(lower)) {
+      if (typeof v !== 'string' || !isCompleteDiff(v)) return false;
+      found = true;
+    } else if (EDIT_TEXT_KEYS.has(lower) && typeof v === 'string') {
+      found = true;
+    } else if (EDIT_LIST_KEYS.has(lower)) {
+      if (!Array.isArray(v) || v.length === 0 || !v.every((x) => isPlainObject(x) && hasEditContent(x, depth + 1))) return false;
+      found = true;
+    }
+  }
+  return found;
+}
+
+function singleReplacementMatches(oldText: string, newText: string, oldVal: string, newVal: string): boolean {
+  if (!oldVal) return false;
+  let idx = oldText.indexOf(oldVal);
+  while (idx !== -1) {
+    if (oldText.slice(0, idx) + newVal + oldText.slice(idx + oldVal.length) === newText) return true;
+    idx = oldText.indexOf(oldVal, idx + 1);
+  }
+  return false;
+}
+
+// Whether every ACP content diff preview agrees with what rawInput says it
+// writes. Contradictory or unverifiable previews bypass Auto's reviewer.
+export function diffsAgreeWithInput(diffs: Record<string, unknown>[], input: Record<string, unknown>, cwd: string): boolean {
+  if (!diffs.length) return true;
+  const seenPaths = new Set<string>();
+  for (const d of diffs) {
+    if (typeof d.path !== 'string' || !d.path || typeof d.newText !== 'string') return false;
+    if (d.oldText !== undefined && d.oldText !== null && typeof d.oldText !== 'string') return false;
+    const abs = absolutePath(d.path, cwd);
+    if (seenPaths.has(abs)) return false;
+    seenPaths.add(abs);
+  }
+  if (diffs.length !== 1) return false;
+  const d = diffs[0];
+  const newText = d.newText as string;
+  const oldText = typeof d.oldText === 'string' ? d.oldText : undefined;
+
+  let fullVal: string | undefined;
+  let oldVal: string | undefined;
+  let newVal: string | undefined;
+  let replaceAll = false;
+  let fullCount = 0;
+  let newCount = 0;
+  let oldCount = 0;
+  for (const [k, v] of Object.entries(input)) {
+    const lower = k.toLowerCase();
+    if (EDIT_DIFF_KEYS.has(lower) || EDIT_LIST_KEYS.has(lower)) return false;
+    if (FULL_FILE_KEYS.has(lower)) {
+      if (typeof v !== 'string') return false;
+      fullVal = v;
+      fullCount++;
+    } else if (NEW_TEXT_KEYS.has(lower)) {
+      if (typeof v !== 'string') return false;
+      newVal = v;
+      newCount++;
+    } else if (OLD_TEXT_KEYS.has(lower)) {
+      if (typeof v !== 'string') return false;
+      oldVal = v;
+      oldCount++;
+    } else if (lower === 'replaceall' || lower === 'replace_all') {
+      replaceAll = v === true;
+    }
+  }
+  if (fullCount === 1 && newCount === 0 && oldCount === 0) return newText === fullVal;
+  if (fullCount === 0 && newCount === 1 && oldCount === 1 && oldText !== undefined && oldVal !== undefined && newVal !== undefined) {
+    if (replaceAll) return oldVal !== '' && oldText.includes(oldVal) && oldText.replaceAll(oldVal, newVal) === newText;
+    return singleReplacementMatches(oldText, newText, oldVal, newVal);
+  }
+  return false;
+}
+
 // Kinds whose paths say what a call will change.
 export function writesFiles(kind: string | undefined): boolean {
   return kind === 'edit' || kind === 'delete' || kind === 'move';

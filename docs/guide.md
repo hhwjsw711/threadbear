@@ -501,25 +501,30 @@ shown on the composer (the box you type in) and changed by clicking it.
   Allow lets through the ticked ones and refuses the rest, and Deny all
   refuses them all. The iPhone shows the first and asks about the rest one
   at a time.
-- **Auto** (Claude threads only): a separate safety check approves or blocks
+- **Auto**: on Claude threads, a separate safety check approves or blocks
   each action, and a card shows only when it can't decide. The card says
   why it couldn't, in the check's own words, and an action it stops
   outright leaves a note in the thread saying why. It's for work on
   text you didn't write, like an error report or a web page. It catches a lot
-  but it's no guarantee, and on a Codex thread it behaves like Ask before edits.
-  Before a card reaches you in an Auto thread (the safety check unsure, an edit
-  to a file Threadbear runs as code, a message to a thread with more access,
-  a project's brief), a reviewer looks at it first: Opus, with no tools,
-  shown the card in full and what the thread was asked to do. If it fits the
-  task and can't do real harm, it goes ahead and the thread says "Allowed by
-  the reviewer" with its reason. If the reviewer has doubts, or can't run (no
-  pool, a private folder, a card or brief too long to read whole), the card
-  comes to you after a note with its reason. It treats everything it reads
-  as data, and text trying to tell it what to answer is a reason to hand you
-  the card. Cards that hand out access lasting past the one action
-  (switching a thread to more access, starting a thread with more, a
-  schedule, moving a thread or changing its logins) always come to you, and
-  so do Codex threads' own tool cards.
+  but it's no guarantee. On Codex, Gemini, Grok and OpenCode threads there is
+  no built-in safety check, so tools still ask Threadbear first.
+  Before a card reaches you in an Auto thread (Claude's safety check unsure,
+  a Codex command, a Gemini, Grok or OpenCode command, MCP call or edit with
+  its full change, an edit to a file Threadbear runs as code, a message to a
+  thread with more access, a project's brief), a reviewer looks at it first on
+  your small-jobs pool (Opus when Claude has room, falling back to the pool's
+  next small-job provider otherwise, with no tools), shown the card in full
+  and what the thread was asked to do. If it fits the task and can't do real
+  harm, it goes ahead and the thread says "Allowed by the reviewer" with its
+  reason. If the reviewer has doubts, or can't run (no pool, a private folder,
+  a card or brief too long to read whole), the card comes to you after a note
+  with its reason. It treats everything it reads as data, and text trying to
+  tell it what to answer is a reason to hand you the card. Cards that hand out
+  access lasting past the one action (switching a thread to more access,
+  starting a thread with more, a schedule, moving a thread, changing its
+  logins, or Codex's turn permissions) always come to you, and so do cards
+  whose full action isn't shown (Codex's file change and `writeStdin` cards,
+  or an ACP edit without its change).
 - **Plan first**: the agent looks around and writes a plan, but changes
   nothing yet. The plan shows as a card with Go ahead and Send back. Go
   ahead (or Return in an empty message box) lets it start, back in the mode
@@ -1689,8 +1694,8 @@ Google's FAQ says using an Antigravity login from other software can get the
 account suspended, so that risk is yours. Every tool it uses asks Threadbear
 first, and reads inside the thread's folder go ahead.
 Everything the agent wants to do comes through Threadbear first: on Ask and
-Plan first you get the usual cards, Auto behaves like Ask, and Full access
-goes ahead without them. A folder's own OpenCode config and plugins aren't
+Plan first you get the usual cards, Auto sends cards whose full action is
+shown past the card reviewer first, and Full access goes ahead without them. A folder's own OpenCode config and plugins aren't
 read in these threads. Cursor can't be told to always ask, so its Ask, Auto
 and Plan first threads run in its read-only modes and can't change
 anything; to let Cursor change files, use Full access. Grok's own settings

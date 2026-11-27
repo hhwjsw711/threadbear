@@ -501,13 +501,16 @@ sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks.
   is on.
 - **Card reviewer** (standard since 20 Nov 2026, an experiment before;
   `runner/src/runner/card-review.ts`). In a thread whose `permissionMode`
-  is `auto`, a Claude tool approval (`requestApproval`, except
-  `ExitPlanMode`; a Codex one isn't reviewed, as its file change card names
-  the files but not the change)
+  is `auto`, a tool approval across any provider (`requestApproval`, except
+  `ExitPlanMode`, `permissions`, and any card whose adapter sets
+  `noReview: true` because what Allow does isn't shown whole — such as
+  Codex's file change and `writeStdin` cards or an ACP edit without its
+  change)
   or a threadbear tool's own card (`requestAgentApproval`, except
-  `create_thread`, `update_thread`, `schedule_message`, `update_schedule`
-  and `move_thread`, whose access lasts past the call) first goes to a
-  small-jobs `generate` with `strong` (Opus, no tools), shown the card's
+  `create_thread`, `update_thread`, `schedule_message`, `update_schedule`,
+  `move_thread` and any marked `noReview`, whose access lasts past the call) first goes to a
+  small-jobs `generate` with `strong` (Opus on Claude, falling back to the
+  pool's next small-job provider when Claude has no room or can't run, with no tools), shown the card's
   title, the call's whole input (`wholeInput` on the request, as the card's
   `input` may have parts cut short), the thread's opening message, Mike's
   latest message and any newer one not from him, labelled as such (a brief

@@ -216,6 +216,10 @@ export type ToolApprovalRequest = {
   // under a composer saying Full is the thing Ian hit (13 Nov). Never on
   // a card every mode shows (delete_thread, a raise, a plan).
   fullAllows?: boolean;
+  // Never Auto's card reviewer: what Allow does isn't shown whole here (a
+  // patch whose diff arrives separately, stdin whose bytes aren't sent) or
+  // hands out access lasting past the one call (Codex's turn permissions).
+  noReview?: true;
 };
 
 // mode: the permission mode to switch to as the call goes ahead (approving

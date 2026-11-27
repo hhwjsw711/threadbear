@@ -445,7 +445,7 @@ const ANTIGRAVITY: AcpAgent = {
     if (!meta || typeof meta !== 'object') return undefined;
     const m = meta as Record<string, unknown>;
     const mcp = m.mcp as Record<string, unknown> | undefined;
-    if (m.is_mcp_tool_call !== true || !mcp || typeof mcp.server !== 'string' || typeof mcp.tool !== 'string' || !mcp.server || !mcp.tool) return undefined;
+    if (m.is_mcp_tool_call !== true || !mcp || typeof mcp.server !== 'string' || typeof mcp.tool !== 'string' || !mcp.server.trim() || !mcp.tool.trim()) return undefined;
     return `${mcp.server}__${mcp.tool}`;
   },
 };
@@ -549,7 +549,7 @@ export const ACP_AGENTS: Record<AcpProvider, AcpAgent> = {
       const input = call.rawInput;
       if (input && typeof input === 'object' && !Array.isArray(input)) {
         const r = input as Record<string, unknown>;
-        if (r.variant === 'UseTool' && typeof r.tool_name === 'string') return r.tool_name;
+        if (r.variant === 'UseTool' && typeof r.tool_name === 'string' && r.tool_name.trim()) return r.tool_name;
       }
       return undefined;
     },

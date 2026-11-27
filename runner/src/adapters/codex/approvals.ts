@@ -244,6 +244,7 @@ export function shellWords(s: string): string[] | null {
 export function plainArgv(p: CommandExecutionRequestApprovalParams): string[] | null {
   if ((p.kind ?? 'command') !== 'command') return null;
   if (p.networkApprovalContext || (Array.isArray(p.proposedNetworkPolicyAmendments) && p.proposedNetworkPolicyAmendments.length)) return null;
+  if ((p as Record<string, unknown>).additionalPermissions) return null;
   if (typeof p.command !== 'string') return null;
   const argv = shellWords(unwrapShell(p.command));
   if (!argv || !argv.length || !ruleMayCover(argv)) return null;
@@ -421,25 +422,41 @@ export class CodexApprovals {
     const inner = raw ? unwrapShell(raw) : (p.commandActions?.[0]?.command ?? '');
     const network = p.networkApprovalContext;
     const stdin = (p.kind ?? 'command') === 'writeStdin';
-    const cwd = p.cwd || this.deps.cwd();
-    const rule = stdin || network ? null : ruleFor(p, cwd);
-    if (this.deps.fullAccess?.() || commandAllowed(p, this.deps.rules(), cwd)) {
+    const baseCwd = this.deps.cwd();
+    const rawCwd = p.cwd || baseCwd;
+    const resolvedCwd = resolveCommandCwd(rawCwd, baseCwd);
+    const where = resolvedCwd ?? rawCwd;
+    const withWhere = { ...p, cwd: where };
+    const rule = stdin || network ? null : ruleFor(withWhere, where);
+    if (this.deps.fullAccess?.() || commandAllowed(withWhere, this.deps.rules(), where)) {
       this.deps.reply(id, { decision: 'accept' });
       return;
     }
     let title = firstLine(inner) || 'Run a command';
     if (stdin) title = `Send input to a running command${inner ? `: ${firstLine(inner)}` : ''}`;
     else if (network) title = `Allow network access to ${network.host}${inner ? ` for ${firstLine(inner)}` : ''}`;
-    const input: Record<string, unknown> = { command: inner, cwd };
+    const extraPerms = (p as Record<string, unknown>).additionalPermissions;
+    const input: Record<string, unknown> = { command: inner, cwd: where };
+    if (resolvedCwd && resolvedCwd !== rawCwd) input['cwd as given'] = rawCwd;
     if (p.reason) input.reason = p.reason;
     if (network) input.network = network;
-    const card = cardInput(input, ['command', 'cwd', 'network']);
+    if (extraPerms) input.additionalPermissions = extraPerms;
+    const card = cardInput(input, ['command', 'cwd', 'cwd as given', 'network', 'additionalPermissions']);
     if (card.tooLong) return this.tooLong(id, card.tooLong, { decision: 'decline' });
+    // writeStdin hides the bytes sent, a missing command string omits what runs,
+    // an unresolvable/ambiguous cwd hides where it runs, and any extra
+    // permissions field widens the grant past this one command.
+    const opaque = (p.kind ?? 'command') !== 'command' || !raw.trim() || !resolvedCwd || Boolean((p as Record<string, unknown>).additionalPermissions);
     this.ask(
       id,
       'item/commandExecution/requestApproval',
-      { toolUseId: fromChild ? undefined : p.itemId, name: 'shell', title, input: card.input, canAlwaysAllow: Boolean(rule) },
+      { toolUseId: fromChild ? undefined : p.itemId, name: 'shell', title, input: card.input, wholeInput: input, ...(opaque ? { noReview: true as const } : {}), canAlwaysAllow: Boolean(rule) },
       (a) => {
+        const allow = a.decision === 'allow' || a.decision === 'allowAlways';
+        if (allow && resolveCommandCwd(rawCwd, baseCwd) !== resolvedCwd) {
+          this.deps.note(`The folder for "${firstLine(inner, 80) || 'this command'}" changed while it waited for an answer, so it wasn't run. The agent can ask again.`);
+          return { decision: 'decline' };
+        }
         if (a.decision === 'allowAlways' && rule) this.deps.addRules([rule]);
         return { decision: commandDecision(a) };
       },
@@ -463,7 +480,9 @@ export class CodexApprovals {
     this.ask(
       id,
       'item/fileChange/requestApproval',
-      { toolUseId: fromChild ? undefined : p.itemId, name: 'apply_patch', title: code ? `${title} (${codeWriteNote(code)})` : title, input, canAlwaysAllow: !code },
+      // Only names the files (the diff arrives separately as edit.diff), so
+      // Auto's card reviewer can't see what it would allow.
+      { toolUseId: fromChild ? undefined : p.itemId, name: 'apply_patch', title: code ? `${title} (${codeWriteNote(code)})` : title, input, noReview: true, canAlwaysAllow: !code },
       (a) => {
         if (a.decision === 'allowAlways' && !code) this.deps.addRules([FILE_CHANGE_RULE]);
         return { decision: commandDecision(a) };
@@ -494,6 +513,8 @@ export class CodexApprovals {
         // never "Always allow", and never the session scope that would hand
         // it to every later command in the thread (Daybreak, 7 Nov 2026).
         // A client that sends allowAlways anyway gets the one turn.
+        // Turn-scoped permissions still last past one call, so never reviewed.
+        noReview: true,
         canAlwaysAllow: false,
       },
       (a) => (a.decision === 'allow' || a.decision === 'allowAlways' ? { permissions: requested, scope: 'turn' } : { permissions: {}, scope: 'turn' }),
@@ -587,7 +608,13 @@ export class CodexApprovals {
 
   private legacyCommand(id: RequestId, p: ExecCommandApprovalParams, fromChild: boolean): void {
     // Treated like the v2 request, with the legacy decision names.
-    const argv = Array.isArray(p.command) ? p.command.filter((x) => typeof x === 'string') : [];
+    const rawArgv = Array.isArray(p.command) ? p.command : [];
+    const allStrings = rawArgv.every((x) => typeof x === 'string');
+    const argv = rawArgv.filter((x): x is string => typeof x === 'string');
+    const baseCwd = this.deps.cwd();
+    const rawCwd = p.cwd || baseCwd;
+    const resolvedCwd = resolveCommandCwd(rawCwd, baseCwd);
+    const where = resolvedCwd ?? rawCwd;
     const asV2: CommandExecutionRequestApprovalParams = {
       kind: 'command',
       threadId: p.conversationId,
@@ -597,24 +624,30 @@ export class CodexApprovals {
       // `bin/bash`, or a bare `bash` PATH might find there, is the program
       // being run (Codex review, 7 Nov 2026).
       command: argv.length === 3 && /^\/(?:usr\/)?bin\/(?:zsh|bash|sh)$/.test(argv[0]) && /^-l?c$/.test(argv[1]) ? argv[2] : argv.map(quoteWord).join(' '),
-      cwd: p.cwd,
+      cwd: where,
       reason: p.reason,
     };
-    const cwd = p.cwd || this.deps.cwd();
-    if (this.deps.fullAccess?.() || commandAllowed(asV2, this.deps.rules(), cwd)) {
+    if (this.deps.fullAccess?.() || commandAllowed(asV2, this.deps.rules(), where)) {
       this.deps.reply(id, { decision: 'approved' });
       return;
     }
-    const rule = ruleFor(asV2, cwd);
-    const input: Record<string, unknown> = { command: asV2.command, cwd };
+    const rule = ruleFor(asV2, where);
+    const input: Record<string, unknown> = { command: asV2.command, cwd: where };
+    if (resolvedCwd && resolvedCwd !== rawCwd) input['cwd as given'] = rawCwd;
     if (p.reason) input.reason = p.reason;
-    const card = cardInput(input, ['command', 'cwd']);
+    const card = cardInput(input, ['command', 'cwd', 'cwd as given']);
     if (card.tooLong) return this.tooLong(id, card.tooLong, { decision: 'abort' });
+    const opaque = !allStrings || argv.length === 0 || !(asV2.command ?? '').trim() || !resolvedCwd;
     this.ask(
       id,
       'execCommandApproval',
-      { toolUseId: fromChild ? undefined : p.callId, name: 'shell', title: firstLine(asV2.command ?? '') || 'Run a command', input: card.input, canAlwaysAllow: Boolean(rule) },
+      { toolUseId: fromChild ? undefined : p.callId, name: 'shell', title: firstLine(asV2.command ?? '') || 'Run a command', input: card.input, wholeInput: input, ...(opaque ? { noReview: true as const } : {}), canAlwaysAllow: Boolean(rule) },
       (a) => {
+        const allow = a.decision === 'allow' || a.decision === 'allowAlways';
+        if (allow && resolveCommandCwd(rawCwd, baseCwd) !== resolvedCwd) {
+          this.deps.note(`The folder for "${firstLine(asV2.command ?? '', 80) || 'this command'}" changed while it waited for an answer, so it wasn't run. The agent can ask again.`);
+          return { decision: { denied: { rejection: 'The folder changed while waiting for approval.' } } };
+        }
         if (a.decision === 'allowAlways' && rule) this.deps.addRules([rule]);
         return { decision: legacyDecision(a) };
       },
@@ -640,7 +673,7 @@ export class CodexApprovals {
     this.ask(
       id,
       'applyPatchApproval',
-      { toolUseId: fromChild ? undefined : p.callId, name: 'apply_patch', title: code ? `${title} (${codeWriteNote(code)})` : title, input, canAlwaysAllow: !code },
+      { toolUseId: fromChild ? undefined : p.callId, name: 'apply_patch', title: code ? `${title} (${codeWriteNote(code)})` : title, input, noReview: true, canAlwaysAllow: !code },
       (a) => {
         if (a.decision === 'allowAlways' && !code) this.deps.addRules([FILE_CHANGE_RULE]);
         return { decision: legacyDecision(a) };
@@ -661,7 +694,7 @@ function commandDecision(a: ToolApprovalAnswer): 'accept' | 'decline' | 'cancel'
 function legacyDecision(a: ToolApprovalAnswer): unknown {
   if (a.decision === 'allow' || a.decision === 'allowAlways') return 'approved';
   if (a.decision === 'expired') return 'abort';
-  return { denied: { rejection: a.message || 'The user denied this.' } };
+  return { denied: { rejection: [a.message || 'The user denied this.', a.reviewer].filter(Boolean).join(' ') } };
 }
 
 function hasRule(rules: Iterable<string>, rule: string): boolean {
@@ -681,5 +714,24 @@ function firstLine(s: string, max = 200): string {
 
 function quoteWord(w: string): string {
   return /^[A-Za-z0-9_./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`;
+}
+
+function realFolder(p: string): string | undefined {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return undefined;
+  }
+}
+
+// Resolve a command's cwd on disk (links followed, and checked against the
+// normalized path so link/.. ambiguity is caught). Undefined when the folder
+// doesn't exist, uses ~, or resolves differently taken lexically vs by chdir.
+function resolveCommandCwd(cwd: string, base: string): string | undefined {
+  if (!cwd || cwd.startsWith('~')) return undefined;
+  const joined = path.isAbsolute(cwd) ? cwd : `${base}/${cwd}`;
+  const normalized = path.isAbsolute(cwd) ? path.resolve(cwd) : path.resolve(base, cwd);
+  const disk = realFolder(joined);
+  return disk !== undefined && disk === realFolder(normalized) ? disk : undefined;
 }
 

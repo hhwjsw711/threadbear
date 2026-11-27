@@ -28,7 +28,7 @@ import { SessionNotFoundError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
 import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, failureNote, genericRpcMessage, laterFailure, outOfUsage, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
 import { AcpMcpServer } from './mcp-http.ts';
-import { AcpNormalizer, absolutePath, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpToolCall } from './normalize.ts';
+import { AcpNormalizer, absolutePath, diffsAgreeWithInput, hasEditContent, hasOddPatchHeader, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpToolCall } from './normalize.ts';
 
 // Where an execute call can say it runs (OpenCode's bash tool: workdir).
 const FOLDER_KEYS = ['workdir', 'cwd', 'workingDirectory', 'directory', 'dir'];
@@ -443,7 +443,7 @@ export class AcpSession implements AgentSession {
   // can't wash out what an earlier one said (Codex's and Gemini's third
   // reviews, 20 Nov 2026). Kept for the session's life: a call can ask after
   // its turn.
-  private callFrames = new Map<string, { mcp: boolean; ids: Set<string>; names: Set<string>; acting: number; named: Map<string, number>; inputs: Record<string, unknown>[]; kinds: Set<string>; paths: Set<string> }>();
+  private callFrames = new Map<string, { mcp: boolean; ids: Set<string>; names: Set<string>; acting: number; named: Map<string, number>; inputs: Record<string, unknown>[]; kinds: Set<string>; paths: Set<string>; diffs: Record<string, unknown>[]; otherContent: unknown[] }>();
   private configOptions: ConfigOption[] = [];
   // The plugin whose hook must be reported running before the model does
   // anything in a turn (Grok's guard), and whether it has been this turn.
@@ -841,14 +841,14 @@ export class AcpSession implements AgentSession {
 
   private noteFrame(u: unknown): void {
     if (!isPlainObject(u) || typeof u.toolCallId !== 'string' || u.toolCallId === '') return;
-    const f = this.callFrames.get(u.toolCallId) ?? { mcp: false, ids: new Set<string>(), names: new Set<string>(), acting: 0, named: new Map<string, number>(), inputs: [], kinds: new Set<string>(), paths: new Set<string>() };
+    const f = this.callFrames.get(u.toolCallId) ?? { mcp: false, ids: new Set<string>(), names: new Set<string>(), acting: 0, named: new Map<string, number>(), inputs: [], kinds: new Set<string>(), paths: new Set<string>(), diffs: [], otherContent: [] };
     // Which tool the frame says it is: Antigravity's _meta.mcp, or the
     // tool_name Grok's use_tool carries. A frame that carries anything (its
     // arguments, an MCP mark) counts, named or not, so a call can be taken
     // for one of Threadbear's own tools only when every such frame named it
     // (Codex's and Gemini's ninth reviews, 20 Nov 2026).
     const raw = isPlainObject(u.rawInput) ? u.rawInput : undefined;
-    const id = mcpIdOf(u) ?? (this.deps.agent.provider === 'grok' && typeof raw?.tool_name === 'string' && raw.tool_name ? raw.tool_name : undefined);
+    const id = mcpIdOf(u) ?? (this.deps.agent.provider === 'grok' && typeof raw?.tool_name === 'string' && raw.tool_name.trim() ? raw.tool_name : undefined);
     if (id) f.ids.add(id);
     if (typeof u.name === 'string' && u.name) f.names.add(u.name);
     const acting =
@@ -870,6 +870,12 @@ export class AcpSession implements AgentSession {
     if (isPlainObject(u.rawInput)) {
       if (Object.keys(u.rawInput).length) f.inputs.push(u.rawInput);
     } else if (u.rawInput !== undefined && u.rawInput !== null) f.inputs.push({ '': u.rawInput });
+    if (Array.isArray(u.content)) {
+      for (const c of u.content) {
+        if (isPlainObject(c) && c.type === 'diff') f.diffs.push(c);
+        else if (c !== undefined && c !== null) f.otherContent.push(c);
+      }
+    }
     this.callFrames.set(u.toolCallId, f);
   }
 
@@ -982,8 +988,11 @@ export class AcpSession implements AgentSession {
     if (kind === 'read' && p.toolCall && !mcpName && !mcpCall && this.readGoesAhead(p.toolCall, seen.paths)) return this.answer(id, options, true, seen.id);
     // Another MCP server's tool, whatever kind it says it is: never a local
     // command or edit, so no saved rule covers it and its card shows every
-    // argument as an MCP tool's does.
-    const external = mcpCall || mcpName !== undefined;
+    // argument as an MCP tool's does. Grok's UseTool wrapper (even with an
+    // empty tool_name) is also an external/deferred call, never a plain local tool.
+    const rawInEarly = isPlainObject(p.toolCall?.rawInput) ? p.toolCall.rawInput : undefined;
+    const grokUseTool = this.deps.agent.provider === 'grok' && (rawInEarly?.variant === 'UseTool' || p.toolCall?.name === 'use_tool' || frames?.names.has('use_tool'));
+    const external = mcpCall || mcpName !== undefined || Boolean(grokUseTool);
     // What this request names and what earlier updates to the call said:
     // more names only makes the check stricter.
     const paths = [...new Set([...seen.paths, ...(frames?.paths ?? []), ...requestPaths(p.toolCall ?? {})].map((f) => absolutePath(f, this.opts.cwd)))];
@@ -1028,9 +1037,10 @@ export class AcpSession implements AgentSession {
         return disk !== undefined && disk === realFolder(absolutePath(d, this.opts.cwd)) ? disk : undefined;
       });
     const places = resolve();
+    const baseReal = realFolder(this.opts.cwd);
     const said = [...new Set(places.filter((d): d is string => d !== undefined))];
     const unknownPlace = places.includes(undefined);
-    const where = said[0] ?? (named[0] !== undefined ? absolutePath(named[0], this.opts.cwd) : (realFolder(this.opts.cwd) ?? this.opts.cwd));
+    const where = said[0] ?? (named[0] !== undefined ? absolutePath(named[0], this.opts.cwd) : (baseReal ?? this.opts.cwd));
     // A saved rule is for this command in this folder and nothing else. Two
     // folders that disagree, or anything else the call carries that could
     // change what runs (an env, a shell, a folder under a name not listed
@@ -1091,10 +1101,28 @@ export class AcpSession implements AgentSession {
     // anything more shows every argument, as an MCP tool's card does
     // (Gemini's and Codex's reviews, 20 Nov 2026). Grok's `variant` names
     // its tool ("Bash").
+    const reqContent = Array.isArray(p.toolCall?.content) ? p.toolCall.content : [];
+    const dedup = <T,>(items: T[]): T[] => {
+      const seenJson = new Set<string>();
+      const out: T[] = [];
+      for (const item of items) {
+        const k = JSON.stringify(item);
+        if (!seenJson.has(k)) {
+          seenJson.add(k);
+          out.push(item);
+        }
+      }
+      return out;
+    };
+    const allDiffs = dedup([...(frames?.diffs ?? []), ...reqContent.filter((c): c is Record<string, unknown> => isPlainObject(c) && c.type === 'diff')]);
+    const otherContent = dedup([...(frames?.otherContent ?? []), ...reqContent.filter((c) => c !== undefined && c !== null && !(isPlainObject(c) && c.type === 'diff'))]);
+    const diffsAgree = edits && kind === 'edit' ? diffsAgreeWithInput(allDiffs, input, this.opts.cwd) : allDiffs.length === 0;
     const shellCard =
       Boolean(command) &&
       consistent &&
       !saysMore &&
+      allDiffs.length === 0 &&
+      otherContent.length === 0 &&
       placeKnown &&
       !unknownPlace &&
       said.length <= 1 &&
@@ -1104,9 +1132,11 @@ export class AcpSession implements AgentSession {
     // line it shows) never allows it.
     const runsIn = !placeKnown ? 'not known: its own scratch folder, unless the command says' : unknownPlace || said.length > 1 ? 'not known' : where;
     const mcpTool = (() => {
+      const cleanName = mcpName && mcpName.split('__').every((s) => s.trim().length > 0) ? mcpName : undefined;
+      if (cleanName) return cleanName;
       const meta = (p.toolCall as { _meta?: unknown } | undefined)?._meta;
       const m = isPlainObject(meta) && isPlainObject(meta.mcp) ? meta.mcp : undefined;
-      return mcpName ?? (m && typeof m.server === 'string' && typeof m.tool === 'string' ? `${m.server}__${m.tool}` : undefined);
+      return m && typeof m.server === 'string' && typeof m.tool === 'string' && m.server.trim() && m.tool.trim() ? `${m.server}__${m.tool}` : undefined;
     })();
     // Only two kinds of card are short: a plain shell command whose folder is
     // known (shellCard), and a plain edit of files inside the folder, where
@@ -1117,7 +1147,7 @@ export class AcpSession implements AgentSession {
     // and nothing in it is drawn as a shell command (Codex's and Gemini's
     // eighth reviews, 20 Nov 2026: patching card shapes one at a time kept
     // leaving one short).
-    const plainEdit = edits && !outside && !relative && isPlainEdit(input) && (frames?.inputs ?? []).every(isPlainEdit) && consistent && paths.length > 0 && !Object.hasOwn(input, 'arguments as sent');
+    const plainEdit = edits && !outside && !relative && diffsAgree && otherContent.length === 0 && isPlainEdit(input) && (frames?.inputs ?? []).every(isPlainEdit) && consistent && paths.length > 0 && !Object.hasOwn(input, 'arguments as sent');
     // An edit whose frames didn't all say the same (OpenCode's do differ)
     // shows what this request writes, as the preview may be an earlier
     // frame's.
@@ -1128,14 +1158,39 @@ export class AcpSession implements AgentSession {
       tool: { kind: kind ?? 'not said', ...(frames && frames.names.size ? { 'names it said': [...frames.names] } : {}), ...(frames && frames.ids.size && !external ? { 'tools it said': [...frames.ids] } : {}), ...(frames && frames.kinds.size > 1 ? { 'kinds it said': [...frames.kinds] } : {}), title: seen.title || p.toolCall?.title || 'not said', ...(typeof p.toolCall?.name === 'string' ? { name: p.toolCall.name } : {}), ...(external ? { 'MCP tool': mcpTool ?? 'not named', ...(frames && [...frames.ids].some((i) => i !== mcpTool) ? { 'MCP tools it said': [...frames.ids] } : {}) } : {}) },
       ...(command ? { command, 'runs in': runsIn } : kind === 'execute' && !external ? { 'runs in': runsIn } : {}),
       arguments: input,
+      ...(allDiffs.length ? { diffs: allDiffs } : {}),
+      ...(otherContent.length ? { content: otherContent } : {}),
       ...(earlier.length ? { 'said earlier': earlier } : {}),
       ...(spelled.length ? { 'files it names': [...new Set(spelled)] } : {}),
     });
+    const fullData = shellCard ? undefined : full();
     const shown: Record<string, unknown> = shellCard
       ? { command, ...given, ...(typeof input.variant === 'string' ? { variant: input.variant } : {}), cwd: where }
       : plainEdit
         ? { ...(kind !== 'edit' ? { action: kind } : {}), paths, ...(editFramesDiffer ? { 'what it writes': input } : {}) }
-        : full();
+        : fullData!;
+    // Auto's card reviewer only sees what is in wholeInput. Any call whose
+    // real action isn't shown whole here (an edit missing its content/diff,
+    // naming files absent from rawInput, or contradicted by content diffs; a
+    // binary/odd patch header; an empty command or unknown cwd; an unnamed or
+    // conflicting MCP tool; or contradictory frames) goes straight to Mike.
+    const rawPaths = edits && kind === 'edit' ? new Set(requestPaths({ rawInput: input }).map((f) => absolutePath(f, this.opts.cwd))) : undefined;
+    const opaque =
+      !consistent ||
+      Object.hasOwn(input, 'arguments as sent') ||
+      hasOddPatchHeader(input) ||
+      !diffsAgree ||
+      otherContent.length > 0 ||
+      (edits
+        ? paths.length === 0 ||
+          (kind === 'move' && paths.length < 2) ||
+          (kind === 'edit' && (!hasEditContent(input) || !paths.every((f) => rawPaths!.has(f)))) ||
+          (editFramesDiffer && !(frames?.inputs ?? []).every(isPlainEdit))
+        : external
+          ? !mcpTool || Boolean(frames && [...frames.ids].some((i) => i !== mcpTool))
+          : kind === 'execute'
+            ? !command.trim() || !placeKnown || unknownPlace || said.length > 1 || (named.length === 0 && !baseReal)
+            : paths.length === 0 && Object.keys(input).length === 0);
     const card = cardInput(shown, plainEdit ? ['paths'] : 'all');
     if (card.tooLong) {
       this.sink.output({ kind: 'event', event: { type: 'system.note', text: tooLongForCard(card.tooLong) } });
@@ -1157,7 +1212,8 @@ export class AcpSession implements AgentSession {
         name: shellCard ? 'shell' : edits ? 'apply_patch' : `mcp__acp__${external ? 'mcp' : (kind ?? 'tool')}`,
         title: code ? `${title} (${codeWriteNote(code)})` : outside ? `${title} (outside this thread's folder)` : title,
         input: card.input,
-        wholeInput: input,
+        wholeInput: shellCard ? shown : fullData!,
+        ...(opaque ? { noReview: true as const } : {}),
         canAlwaysAllow: !code && (editRule || Boolean(rule)),
         signal: pending.abort.signal,
       });
@@ -1171,7 +1227,7 @@ export class AcpSession implements AgentSession {
     const allow = a.decision === 'allow' || a.decision === 'allowAlways';
     // A link pointed somewhere else while the card waited: what was allowed
     // isn't where it would run now (Codex's second look, 10 Nov).
-    if (allow && !external && kind === 'execute' && named.length && JSON.stringify(resolve()) !== JSON.stringify(places)) {
+    if (allow && !external && kind === 'execute' && (named.length ? JSON.stringify(resolve()) !== JSON.stringify(places) : realFolder(this.opts.cwd) !== baseReal)) {
       this.sink.output({ kind: 'event', event: { type: 'system.note', text: `The folder for "${firstLineSafely(command, 80, '…')}" changed while it waited for an answer, so it wasn't run. The agent can ask again.` } });
       return this.answer(id, options, false, seen.id);
     }
@@ -1478,7 +1534,7 @@ export class AcpSession implements AgentSession {
 // The MCP tool a frame says it is, as <server>__<tool>.
 function mcpIdOf(u: Record<string, unknown>): string | undefined {
   const m = isPlainObject(u._meta) && isPlainObject(u._meta.mcp) ? u._meta.mcp : undefined;
-  return m && typeof m.server === 'string' && typeof m.tool === 'string' ? `${m.server}__${m.tool}` : undefined;
+  return m && typeof m.server === 'string' && typeof m.tool === 'string' && m.server.trim() && m.tool.trim() ? `${m.server}__${m.tool}` : undefined;
 }
 
 // Whether a tool call's frame says it's an MCP server's (Antigravity's _meta).

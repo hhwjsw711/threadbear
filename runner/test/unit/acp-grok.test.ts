@@ -532,3 +532,13 @@ test('Grok in Ask: an archive read puts up a card; in Full it goes ahead as ever
   await until(() => went.length === 1);
   assert.deepEqual(went[0], { outcome: { outcome: 'selected', optionId: 'once' } });
 });
+
+test('Grok UseTool with an empty tool_name is marked external and noReview', async () => {
+  const r = rig({ mode: 'ask', deny: true });
+  await r.turn('hello');
+  const res = grokRequest(r.s, { toolCallId: 'g-empty', kind: 'other', name: 'use_tool', rawInput: { variant: 'UseTool', tool_name: '', tool_input: { query: 'status' } } });
+  await until(() => res.length === 1);
+  assert.equal(r.cards.length, 1);
+  assert.equal(r.cards[0].name, 'mcp__acp__mcp');
+  assert.equal(r.cards[0].noReview, true);
+});

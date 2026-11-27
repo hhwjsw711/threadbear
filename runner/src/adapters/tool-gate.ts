@@ -50,7 +50,8 @@ export async function gateThreadbearTool(deps: ToolGateDeps, call: ToolGateCall)
     fullAllows: !alwaysAsk,
   });
   if (ans.decision !== 'allow' && ans.decision !== 'allowAlways') {
-    return { allowed: false, message: ans.message || (ans.decision === 'expired' ? 'The request expired before the user answered.' : 'The user denied this. Ask them how to proceed.') };
+    const base = ans.message || (ans.decision === 'expired' ? 'The request expired before the user answered.' : 'The user denied this. Ask them how to proceed.');
+    return { allowed: false, message: [base, ans.reviewer].filter(Boolean).join(' ') };
   }
   if (ans.decision === 'allowAlways' && !alwaysAsk) deps.addRules([fullName]);
   return { allowed: true };

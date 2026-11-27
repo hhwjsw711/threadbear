@@ -162,10 +162,9 @@ export const approvalsPart = {
       this.coordinators?.recordHelperQuestion(st.rec.id, [{ question: `Approval needed: ${req.title}`, header: 'Approval', options: [], multiSelect: false }]);
       return Promise.resolve({ decision: 'deny', message: HELPER_REPORT });
     }
-    // A plan is Mike's to approve, whatever the mode.
-    // Codex's file change card names the files but not the change (that
-    // comes as edit.diff), so the reviewer couldn't see what it allows.
-    if (req.name !== 'ExitPlanMode' && st.rec.provider === 'claude' && reviewsCards(this, st)) {
+    // A plan is Mike's to approve, whatever the mode. So is any card whose
+    // adapter marks it noReview (opaque patches/stdin, or lasting permissions).
+    if (req.name !== 'ExitPlanMode' && !req.noReview && reviewsCards(this, st)) {
       const title = approvalTitle(req.name, req.input, (q) => this.findThread(q)) ?? req.title;
       return this.reviewThenCard(st, gen, { name: req.name, title, input: req.wholeInput ?? req.input }, req.signal, () => this.approvalCard(st, req), Boolean(req.toolUseId));
     }
