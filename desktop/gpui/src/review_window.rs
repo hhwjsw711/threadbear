@@ -222,8 +222,11 @@ impl Threadbear {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (client, thread_id, review_id) =
-            (self.client.clone(), thread_id.to_owned(), review_id.to_owned());
+        let (client, thread_id, review_id) = (
+            self.client.clone(),
+            thread_id.to_owned(),
+            review_id.to_owned(),
+        );
         cx.spawn_in(window, async move |this, cx| {
             let found = call(
                 client,
@@ -232,14 +235,21 @@ impl Threadbear {
             )
             .await;
             this.update_in(cx, |t, window, cx| {
-                match found.as_ref().ok().and_then(|v| DesignReview::decode(&v["review"])) {
+                match found
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| DesignReview::decode(&v["review"]))
+                {
                     Some(review) => t.open_review_window(&thread_id, review, None, window, cx),
                     None => {
                         let why = match &found {
                             Err(e) => e.message.clone(),
                             Ok(_) => "the runner hasn't got it".into(),
                         };
-                        t.show_error(format!("Couldn't open that review ({review_id}): {why}."), cx)
+                        t.show_error(
+                            format!("Couldn't open that review ({review_id}): {why}."),
+                            cx,
+                        )
                     }
                 }
             })
