@@ -9,6 +9,7 @@ import {
   finishDrawing,
   fit,
   layout,
+  htmlLabelWidth,
   markCapacity,
   nextMarkNumber,
   optionLabel,
@@ -214,5 +215,23 @@ test('HTML sources fetch only the still and reserve a separate control band', ()
   assert.deepEqual(reviewSources(r), ['still']);
   const laid = layout(r, () => 4 / 3, measure);
   const shot = laid.options[0]!.shots[0]!;
-  assert.equal(shot.picture.y - (shot.caption.y + shot.caption.h), 144);
+  assert.equal(shot.picture.y - (shot.caption.y + shot.caption.h), 48);
+});
+
+
+test('compact HTML headers leave label space beside fixed pills only when their rows overlap', () => {
+  for (const scale of [0.25, 0.4, 0.6, 1, 1.4]) {
+    const r = review({options: [{id: 'A', title: 'A long HTML title', shots: [{src: 'one', kind: 'page'}, {src: 'two', kind: 'page', title: 'A long later caption'}]}]});
+    const laid = layout(r, () => 4 / 3, measure).options[0]!;
+    for (const shot of laid.shots) {
+      assert.equal(shot.picture.y - (shot.caption.y + shot.caption.h), 48);
+      for (const label of [laid.title, shot.caption]) {
+        const width = htmlLabelWidth(label, shot.picture, scale);
+        const top = shot.picture.y - 32 / scale;
+        if (shot.picture.w * scale >= 210 && label.y < top + 26 / scale && label.y + label.h > top) {
+          assert.ok((label.x + width) * scale <= (shot.picture.x + shot.picture.w) * scale - 220);
+        } else assert.equal(width, label.w);
+      }
+    }
+  }
 });

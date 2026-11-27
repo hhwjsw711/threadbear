@@ -19,9 +19,13 @@ use crate::review::aspect;
 /// A picture's width on the board.
 pub const PICTURE_WIDTH: f32 = 640.;
 /// HTML controls have their own band, clear of titles, captions and content.
-pub const HTML_HEADER: f32 = 144.;
+pub const HTML_HEADER: f32 = SHOT_GAP;
+/// Fixed screen space for Interact/Stop plus clearance beside a label.
+pub const HTML_PILL_WIDTH: f32 = 110.;
 /// Desktop CSS viewport used by HTML thumbnails; scale it with the card.
 pub const HTML_DESIGN_WIDTH: f64 = 1024.;
+/// CEF clamps native zoom to 25%; smaller live slots would reflow the page.
+pub const HTML_MIN_LIVE_WIDTH: f32 = 256.;
 
 pub fn html_zoom(width: f32) -> f64 {
     f64::from(width) / HTML_DESIGN_WIDTH
@@ -32,6 +36,18 @@ pub fn html_control_rect(picture: Rect) -> Option<Rect> {
     (picture.w >= 160. && picture.y >= 84.)
         .then(|| Rect::new(picture.x, picture.y - 32., picture.w, 26.))
 }
+/// Labels share the pill's row only at small scales. Reserve its screen
+/// width there; at larger scales titles and captions retain the full width.
+pub fn html_label_width(label: Rect, picture: Rect) -> f32 {
+    if html_control_rect(picture)
+        .is_some_and(|pill| label.y < pill.bottom() && label.bottom() > pill.y)
+    {
+        label.w.min((picture.w - HTML_PILL_WIDTH).max(0.))
+    } else {
+        label.w
+    }
+}
+
 /// Between an option's last picture and its words.
 pub const GAP: f32 = 22.;
 /// Between one of an option's pictures and the next one's caption.
@@ -1087,8 +1103,18 @@ mod tests {
                 assert_eq!(header.right(), picture.right());
                 assert_eq!(header.x, picture.x);
                 assert!(header.bottom() <= picture.y - 6.);
-                assert!(header.y >= cam.rect(&shot.caption).bottom());
-                assert!(header.y >= cam.rect(&laid.options[0].title).bottom());
+                assert_eq!(shot.picture.y - shot.caption.bottom(), SHOT_GAP);
+                for mut label in [cam.rect(&shot.caption), cam.rect(&laid.options[0].title)] {
+                    if label == cam.rect(&laid.options[0].title) {
+                        label.h = label.h.max(12. * 1.4);
+                    }
+                    let width = html_label_width(label, picture);
+                    if label.y < header.bottom() && label.bottom() > header.y {
+                        assert!(label.x + width <= header.right() - HTML_PILL_WIDTH);
+                    } else {
+                        assert_eq!(width, label.w);
+                    }
+                }
                 // The slot depends only on this card; stale window widths,
                 // first-frame defaults, and resize frames cannot move it.
                 assert_eq!(html_control_rect(picture), Some(header));
@@ -1487,7 +1513,7 @@ pub fn live_fits(r: Rect, view: (f32, f32)) -> bool {
         && r.y >= 86.
         && r.right() <= view.0
         && r.bottom() <= view.1
-        && r.w >= 160.
+        && r.w >= HTML_MIN_LIVE_WIDTH
         && r.h >= 64.
 }
 
@@ -1511,7 +1537,13 @@ mod playback_tests {
     fn live_bounds_reserve_tools_stop_and_band_and_reject_clipped_or_tiny_cards() {
         let fits = Rect::new(10., 100., 300., 200.);
         assert!(live_fits(fits, (800., 600.)));
+        assert!(live_fits(
+            Rect::new(10., 100., HTML_MIN_LIVE_WIDTH, 200.),
+            (800., 600.)
+        ));
         for r in [
+            Rect::new(10., 100., 255., 200.),
+            Rect::new(10., 100., 160., 200.),
             Rect::new(-1., 100., 300., 200.),
             Rect::new(10., 85., 300., 200.),
             Rect::new(501., 100., 300., 200.),

@@ -547,8 +547,16 @@ impl Scene {
                 }
             });
             if shot_laid.caption.h > 0. && !caption.is_empty() && self.text_on(17.) {
+                let label = cam.rect(&shot_laid.caption);
+                let width = if shot.page().is_some() {
+                    board::html_label_width(label, cam.rect(&shot_laid.picture))
+                } else {
+                    label.w
+                };
                 parts.push(
                     self.placed_width(&shot_laid.caption)
+                        .w(gpui_kit::px(width))
+                        .text_ellipsis()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_size(gpui_kit::px(17. * cam.s))
                         .text_color(self.secondary)
@@ -976,6 +984,22 @@ impl ReviewWindow {
         let starred = review.recommended.as_deref() == Some(option.id.as_str());
         let id = option.id.clone();
         let pick_id = option.id.clone();
+        let width = self
+            .canvas
+            .as_ref()
+            .and_then(|c| c.board.as_ref())
+            .and_then(|b| b.shot(index, 0))
+            .filter(|_| option.shot(0).page().is_some())
+            .map(|s| {
+                board::html_label_width(
+                    Rect {
+                        h: r.h.max(size * 1.4),
+                        ..r
+                    },
+                    scene.cam.rect(&s.picture),
+                )
+            })
+            .unwrap_or(r.w);
         h_flex()
             .id(("canvas-frame-label", index))
             .role(Role::Button)
@@ -983,7 +1007,9 @@ impl ReviewWindow {
             .absolute()
             .left(gpui_kit::px(r.x))
             .top(gpui_kit::px(r.y))
+            .w(gpui_kit::px(width))
             .h(gpui_kit::px(r.h.max(size * 1.4)))
+            .overflow_hidden()
             .gap(gpui_kit::px(size * 0.45))
             .items_center()
             .text_size(gpui_kit::px(size))
@@ -1011,7 +1037,13 @@ impl ReviewWindow {
                         })),
                 )
             })
-            .child(option.label())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .child(option.label()),
+            )
             .when(starred, |d| d.child(super::parts::recommended_mark(cx)))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if let Some(i) = this

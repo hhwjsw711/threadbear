@@ -22,6 +22,7 @@ import {
   finishDrawing,
   fit,
   isPending,
+  htmlLabelWidth,
   litDims,
   litOption,
   litShows,
@@ -742,10 +743,14 @@ function ReviewBoard({
         {board.options.map((laid) => {
           const option = review.options[laid.index]!;
           const picked = chosen.has(option.id);
+          const first = laid.shots[0];
+          const html = first && option.shots[0]?.kind === 'page';
+          const shrink = Math.min(26, Math.max(Math.min(12, 640 * camera.s / 18), 26 * camera.s)) / (26 * camera.s);
+          const labelWidth = html ? htmlLabelWidth({...laid.title, h: Math.max(laid.title.h, 26 * shrink * 1.4)}, first.picture, camera.s) : laid.title.w;
           return (
             <Fragment key={`c${laid.index}`}>
-              <div className="rb-title" style={place(laid.title)}>
-                <div className="rb-title-in">
+              <div className="rb-title" style={{...place(laid.title), ...(html ? {width: labelWidth, overflow: 'hidden'} : {})}}>
+                <div className="rb-title-in" style={html ? {width: labelWidth / shrink, minWidth: 0} : undefined}>
                   {!option.reference && pending ? (
                     <button
                       className={`rb-tick ${picked ? 'on' : ''}`}
@@ -759,7 +764,7 @@ function ReviewBoard({
                       {picked ? <Icon.Check /> : null}
                     </button>
                   ) : null}
-                  <button className="rb-name" onPointerDown={(e) => e.stopPropagation()} onClick={() => go(stopIndex(stops, laid.index, 0))} title="Show it on the board">
+                  <button className="rb-name" style={html ? {minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto'} : undefined} onPointerDown={(e) => e.stopPropagation()} onClick={() => go(stopIndex(stops, laid.index, 0))} title="Show it on the board">
                     {optionLabel(option)}
                   </button>
                   {review.recommended === option.id ? (
@@ -803,7 +808,7 @@ function ReviewBoard({
                       {playback.key === k && shot.kind === 'audio' ? <div className="rb-progress" style={{ width: `${playback.progress * 100}%` }} /> : null}
                     </div>
                     {s.caption.h > 0 ? (
-                      <div className="rb-caption" style={{ ...place(s.caption), opacity: dim(on) }}>
+                      <div className="rb-caption" style={{ ...place(s.caption), width: shot.kind === 'page' ? htmlLabelWidth(s.caption, s.picture, camera.s) : s.caption.w, opacity: dim(on) }}>
                         {shot.title ?? `${s.shot + 1} of ${option.shots.length}`}
                       </div>
                     ) : null}

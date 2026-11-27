@@ -179,3 +179,19 @@ Feature: The review as a canvas
     And I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
     And I press "Show the source, and don't ask again until Threadbear restarts" on the board
     Then nothing plays on the board
+
+
+  @review.canvas @review.media @swift-pending @web-runtime @windows-pending @linux-pending
+  Scenario: Initial HTML navigation preserves zoom without repainting the canvas
+    Given the web runtime is installed
+    And the agent shows options with several shots each
+    When I open that review
+    Then HTML initial load keeps its zoom without a GPUI repaint
+
+  @review.canvas @review.media @swift-pending @web-runtime @windows-pending @linux-pending
+  Scenario: HTML input shortcuts leave an existing reply draft untouched
+    Given the web runtime is installed
+    And the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "B", shot 2
+    Then a live HTML input cannot edit or submit the focused reply draft

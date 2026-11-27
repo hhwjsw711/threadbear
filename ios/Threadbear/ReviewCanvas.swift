@@ -34,6 +34,15 @@ nonisolated enum CanvasMetrics {
     /// The tour never zooms past this.
     static let stopZoom: CGFloat = 1.4
     static let flightSeconds: Double = 0.65
+
+    /// World width remaining beside a fixed screen-space HTML control.
+    static func htmlLabelWidth(_ label: CGRect, picture: CGRect, scale: CGFloat) -> CGFloat {
+        let top = picture.minY - 32 / scale
+        if picture.width * scale >= 160, label.minY < top + 26 / scale, label.maxY > top {
+            return min(label.width, max(0, picture.width - 110 / scale))
+        }
+        return label.width
+    }
 }
 
 nonisolated extension CGRect {
@@ -137,7 +146,7 @@ nonisolated struct BoardLayout: Equatable {
             let captionH = i > 0 || shot.title != nil ? CanvasMetrics.captionHeight : 0
             let caption = CGRect(x: x, y: y, width: w, height: captionH)
             let h = w / max(0.05, aspect(shot))
-            let picture = CGRect(x: x, y: caption.maxY + (shot.kind == "page" ? 144 : 0), width: w, height: h)
+            let picture = CGRect(x: x, y: caption.maxY + (shot.kind == "page" ? CanvasMetrics.shotGap : 0), width: w, height: h)
             y = picture.maxY + CanvasMetrics.shotGap
             shots.append(BoardShotLayout(option: index, shot: i, picture: picture, caption: caption,
                                          notes: placeNotes(picture, shot.marks ?? [], measure: measure)))

@@ -1552,6 +1552,11 @@ impl Render for ReviewWindow {
             self.reply_to_draft(window, cx);
         }
         self.sync_reply_box(window, cx);
+        // CEF keeps AppKit's keys; remove the reply's GPUI key context so
+        // command/control shortcuts cannot edit or submit a hidden draft.
+        if self.page_has_keys() && self.reply_focused(window, cx) {
+            window.focus(&self.focus, cx);
+        }
         // A page's view goes once its shot isn't the one on show.
         let page_shown = self.session.mode == ReviewMode::Single
             && self
@@ -1629,7 +1634,7 @@ impl Render for ReviewWindow {
             .on_key_up(cx.listener(Self::key_up))
             // ⌘Return in the reply box sends rather than making a new line.
             .capture_action(cx.listener(|this, action: &Enter, _, cx| {
-                if action.secondary {
+                if action.secondary && !this.page_has_keys() {
                     this.submit(cx);
                     cx.stop_propagation();
                 }
@@ -1951,6 +1956,11 @@ pub(crate) async fn automation(
             "that review isn't open".into()
         });
     };
+    // This probe deliberately owns a separate hidden page that GPUI never
+    // places or repaints. Only CEF's load callbacks can restore its zoom.
+    if let Some(width) = cmd["canvasLoadZoomProbe"].as_f64() {
+        return load_zoom_probe(&view, width as f32, cx).await;
+    }
     // `refresh`, as the Swift command awaits it.
     let (thread, review, client) = view.read_with(cx, |v, _| {
         (
@@ -2159,6 +2169,64 @@ pub(crate) async fn automation(
     }
     let state = state_with_keys(cmd, &view, handle, cx)?;
     Ok(json!(format!("ok {state}")))
+}
+
+#[cfg(feature = "automation")]
+async fn load_zoom_probe(
+    view: &Entity<ReviewWindow>,
+    width: f32,
+    cx: &mut AsyncApp,
+) -> Result<Value, String> {
+    let (handle, source) = view.read_with(cx, |v, _| {
+        (
+            v.handle,
+            v.session
+                .review()
+                .options
+                .iter()
+                .flat_map(|o| o.all_shots())
+                .find_map(|s| s.page().map(str::to_owned)),
+        )
+    });
+    let source = source.ok_or("no HTML source for the load probe")?;
+    let (real, digest) = crate::live_pages::prepare(&source)?;
+    let site = threadbear_core::local_preview::Site::page_only(std::path::Path::new(&real), digest)
+        .ok_or("the probe page couldn't be sealed")?;
+    let preview = threadbear_web::PreviewSite::live(Arc::new(site));
+    let page = cx
+        .update_window(handle, |_, window, _| {
+            let parent =
+                crate::web_panels::native_view(window).ok_or("no native view for probe")?;
+            let (page, _events) = threadbear_web::PanelPage::open(
+                parent,
+                &preview.page_url(),
+                threadbear_web::PanelKind::Preview(preview),
+            )?;
+            page.set_hidden(true);
+            page.set_bounds(
+                0.,
+                0.,
+                width,
+                300.,
+                f32::from(window.viewport_size().height),
+            );
+            page.set_zoom_factor(threadbear_core::review_canvas::html_zoom(width));
+            Ok::<_, String>(page)
+        })
+        .map_err(|e| e.to_string())??;
+    for _ in 0..100 {
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+        let result = page.devtools("Runtime.evaluate", json!({"expression": "({ready:location.hostname.endsWith('.preview.threadbear.invalid') && document.readyState === 'complete', width:innerWidth})", "returnByValue":true})).await;
+        if let Ok(Ok(answer)) = result {
+            let value = &answer["result"]["value"];
+            if value["ready"] == true {
+                return Ok(json!(format!("ok {}", value["width"])));
+            }
+        }
+    }
+    Err("the HTML load probe never committed".into())
 }
 
 /// After a `pressReplyLow`, the window's state, and whether the reply box

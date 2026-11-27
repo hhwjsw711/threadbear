@@ -356,6 +356,14 @@ export function optionLabel(o: ReviewOption): string {
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Point = { x: number; y: number };
 
+/** Label width in world units, reserving the fixed screen-space HTML pill
+ * only when its row overlaps this title/caption. */
+export function htmlLabelWidth(label: Rect, picture: Rect, scale: number): number {
+  const top = picture.y - 32 / scale;
+  return picture.w * scale >= 210 && label.y < top + 26 / scale && label.y + label.h > top
+    ? Math.min(label.w, Math.max(0, picture.w - 220 / scale)) : label.w;
+}
+
 export const M = {
   pictureWidth: 640,
   gap: 22,
@@ -503,7 +511,7 @@ function layOption(index: number, option: ReviewOption, x: number, top: number, 
     const captionH = i > 0 || shot.title ? M.captionHeight : 0;
     const caption = { x, y, w, h: captionH };
     const h = w / Math.max(0.05, aspect(shot));
-    const picture = { x, y: maxY(caption) + (shot.kind === 'page' ? 144 : 0), w, h };
+    const picture = { x, y: maxY(caption) + (shot.kind === 'page' ? M.shotGap : 0), w, h };
     y = maxY(picture) + M.shotGap;
     shots.push({ option: index, shot: i, picture, caption, notes: placeNotes(picture, shot.marks ?? [], measure) });
   });

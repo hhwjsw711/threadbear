@@ -351,6 +351,8 @@ struct ReviewBoard: View {
         // for that, when names would run into the next column's.
         let floor = min(12, CanvasMetrics.pictureWidth * s / 18)
         let shrink = min(size, max(floor, size * s)) / (size * s)
+        let label = CGRect(x: laid.title.minX, y: laid.title.minY, width: laid.title.width, height: max(laid.title.height, size * shrink * 1.4))
+        let width = option.shots.first?.kind == "page" ? laid.shots.first.map { CanvasMetrics.htmlLabelWidth(label, picture: $0.picture, scale: s) } ?? label.width : label.width
         return HStack(spacing: size * 0.45) {
             if option.reference != true && pending {
                 Button { draft.pick(option.id, selected: !picked) } label: {
@@ -389,9 +391,10 @@ struct ReviewBoard: View {
                 Text("Reference").font(.system(size: 17)).foregroundStyle(.white.opacity(0.55))
             }
         }
-        .fixedSize()
+        .frame(width: width / shrink, alignment: .leading)
         .scaleEffect(shrink, anchor: .leading)
-        .frame(width: laid.title.width, height: laid.title.height, alignment: .leading)
+        .frame(width: width, height: label.height, alignment: .leading)
+        .clipped()
         .offset(x: laid.title.minX, y: laid.title.minY)
     }
 
@@ -439,7 +442,7 @@ struct ReviewBoard: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.55))
                 .lineLimit(1)
-                .frame(width: laid.caption.width, height: laid.caption.height, alignment: .topLeading)
+                .frame(width: shot.kind == "page" ? CanvasMetrics.htmlLabelWidth(laid.caption, picture: laid.picture, scale: s) : laid.caption.width, height: laid.caption.height, alignment: .topLeading)
                 .offset(x: laid.caption.minX, y: laid.caption.minY)
                 .opacity(alpha(on))
                 .allowsHitTesting(false)

@@ -10,8 +10,8 @@ import { okValue, sleep } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 import { reviewId } from './review.steps.ts';
 
-type CanvasState = { on: boolean; stop: number; stops: number; lit: string; notesOn: boolean; agentMarks: number; tool: string; marks: string[]; mediaNotice?: string | null; playing?: string | null };
-type WithCanvas = { reply: string; error?: string; replyKeys?: boolean; pageKeys?: boolean; nativeKeyboard?: string; canvas?: CanvasState | null };
+type CanvasState = { camera?: number[]; pageBounds?: number[]; on: boolean; stop: number; stops: number; lit: string; notesOn: boolean; agentMarks: number; tool: string; marks: string[]; mediaNotice?: string | null; playing?: string | null };
+type WithCanvas = { status?: string; reply: string; error?: string; replyKeys?: boolean; pageKeys?: boolean; nativeKeyboard?: string; canvas?: CanvasState | null };
 
 async function board(world: ThreadbearWorld, cmd: Record<string, unknown> = {}): Promise<WithCanvas> {
   return JSON.parse(okValue(await world.app.do({ cmd: 'review', id: reviewId(world), open: false, ...cmd }, 30))) as WithCanvas;
@@ -198,4 +198,54 @@ Then('changing the HTML leaves a persistent dismissible media notice', async fun
     await board(this);
     fs.rmSync(dir, {recursive: true, force: true});
   }
+});
+
+
+Then('HTML initial load keeps its zoom without a GPUI repaint', async function (this: ThreadbearWorld) {
+  await this.app.do({cmd: 'webRuntime', do: 'start', wait: 60}, 90);
+  // The probe page is hidden and never belongs to GPUI's stage. It sets
+  // bounds/zoom once before LoadLater commits, then only polls DevTools.
+  // CEF has a 25% zoom floor: 256pt is the smallest 1024px viewport.
+  for (const width of [256, 384, 640]) {
+    const viewport = JSON.parse(okValue(await this.app.do({cmd: 'review', id: reviewId(this), open: false, canvasLoadZoomProbe: width}, 30))) as number;
+    if (Math.abs(viewport - 1024) > 16) throw new Error(`Initial commit reset zoom: card=${width}, viewport=${viewport}`);
+  }
+  // Static cards may be smaller. Interact must fit one to a supported native
+  // width before mounting Chromium, rather than silently reflowing its UI.
+  await board(this, {canvasGo: 'B', canvasShot: 1});
+  await sleep(750);
+  const scale = (await board(this)).canvas?.camera?.[0];
+  if (!scale) throw new Error('No canvas camera');
+  await board(this, {canvasZoom: 200 / (640 * scale), canvasPan: [100, 200]});
+  await this.app.do({cmd: 'click', review: reviewId(this), tip: 'Interact with B. One picker, shot 2 here, sealed and offline'});
+  await untilBoard(this, 'the small card fitted before interaction', (s) => s.canvas?.playing === 'page' && (s.canvas.pageBounds?.[2] ?? 0) >= 256);
+  const width = JSON.parse(okValue(await this.app.do({cmd: 'review', id: reviewId(this), open: false, canvasPageJs: 'innerWidth'}))) as number;
+  if (Math.abs(width - 1024) > 16) throw new Error(`Small-card activation reflowed the page: ${width}`);
+});
+
+Then('a live HTML input cannot edit or submit the focused reply draft', async function (this: ThreadbearWorld) {
+  const js = async (expression: string) => JSON.parse(okValue(await this.app.do({cmd: 'review', id: reviewId(this), open: false, canvasPageJs: expression})));
+  const key = async (key: string, modifiers = ['cmd']) => this.app.do({cmd: 'menu-key', review: reviewId(this), key, modifiers});
+  await board(this, {reply: 'Keep this draft', focusReply: true});
+  await this.app.do({cmd: 'click', review: reviewId(this), tip: 'Interact with B. One picker, shot 2 here, sealed and offline'});
+  await untilBoard(this, 'the HTML running', (s) => s.canvas?.playing === 'page');
+  await js(`(() => {const input=document.createElement('input');input.id='reply-guard-test';input.value='HTML input';document.body.prepend(input);input.focus();return true})()`);
+  await board(this, {canvasFocusPage: true});
+  await untilBoard(this, 'CEF keeps native keys and reply loses GPUI keys', (s) => s.pageKeys === true && s.replyKeys === false);
+  await key('enter');
+  await key('backspace');
+  await key('left');
+  await key('right');
+  await key('k', ['ctrl']);
+  const guarded = await board(this);
+  if (guarded.status !== 'pending' || guarded.reply !== 'Keep this draft') throw new Error(`HTML shortcut changed the review: ${JSON.stringify(guarded)}`);
+  await board(this, {focusReply: true});
+  await untilBoard(this, 'reply editing restored', (s) => s.replyKeys === true && s.nativeKeyboard === 'app');
+  const clipboard = JSON.parse(okValue(await this.app.do({cmd: 'clipboard'}))) as string;
+  try {
+    await this.app.do({cmd: 'clipboard', set: 'Edited back in the reply'});
+    await key('a');
+    await key('v');
+    await untilBoard(this, 'normal reply editing after clicking back', (s) => s.reply === 'Edited back in the reply');
+  } finally { await this.app.do({cmd: 'clipboard', set: clipboard}); }
 });
