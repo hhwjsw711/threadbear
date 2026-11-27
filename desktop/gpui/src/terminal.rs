@@ -136,12 +136,10 @@ pub(crate) fn toggle(app: &mut Threadbear, window: &mut Window, cx: &mut Context
             .update(cx, |m, cx| m.close(crate::shell::TERMINAL, cx));
         // The shell keeps running, but a hidden shell's keyboard is outside
         // key dispatch, so the next ⌘J went nowhere (#112). The keyboard goes
-        // back to the message box, as VS Code's goes back to the editor.
+        // back to the app itself, which is always drawn: the open thread's
+        // message box isn't when a project or home page has its place.
         if had_keyboard {
-            match app.composer(cx) {
-                Some(composer) => composer.update(cx, |c, cx| c.focus(window, cx)),
-                None => window.focus(&app.root_focus, cx),
-            }
+            window.focus(&app.root_focus, cx);
             crate::web_panels::keyboard_to_app(window);
         }
         return;
