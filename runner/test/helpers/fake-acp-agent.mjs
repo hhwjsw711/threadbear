@@ -317,6 +317,66 @@ async function prompt(id, p) {
   if (AGY) return agyPrompt(id, p, s, word, rest);
   if (word === 'write') await runTool(p.sessionId, s.cwd, 'edit', { filePath: rest[0], content: rest.slice(1).join(' ') }, [{ path: rest[0] }], () => fs.writeFileSync(rest[0], rest.slice(1).join(' ')));
   else if (word === 'exec') await runTool(p.sessionId, s.cwd, 'execute', { command: rest.join(' ') }, [], () => log({ ran: rest.join(' ') }));
+  else if (word === 'bg_shell') {
+    const spec = JSON.parse(rest.join(' '));
+    const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
+    const command = spec.command ?? 'sleep 60';
+    const description = spec.description;
+    const shellId = spec.shellId ?? 'sh_bg1';
+    const pid = spec.pid;
+    update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, kind: 'execute', title: command, status: 'in_progress', rawInput: { command, ...(description ? { description } : {}) } });
+    const lines = [
+      `Command moved to the background (shell ID: ${shellId}).`,
+      ...(pid !== undefined ? [`PID: ${pid}`] : []),
+      `Output is streaming to: /tmp/${shellId}.out`,
+    ];
+    const meta = { shellID: shellId, status: spec.status ?? 'running', truncated: false, ...(pid !== undefined ? { pid } : {}) };
+    update(p.sessionId, {
+      sessionUpdate: 'tool_call_update',
+      toolCallId,
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: lines.join('\n') } }],
+      ...(spec.omitRawOutput ? {} : { rawOutput: { metadata: meta } }),
+    });
+    if (spec.reply !== false) {
+      update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: spec.reply ?? 'Command is running in the background.' } });
+    }
+    if (spec.sameChunkWake) {
+      const w = spec.sameChunkWake;
+      const linesOut = [
+        JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } }),
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: p.sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: w.toolId ?? 'wake-same-chunk-tool',
+              kind: 'execute',
+              title: w.command ?? 'check output',
+              status: 'in_progress',
+              rawInput: { command: w.command ?? 'check output' },
+            },
+          },
+        }),
+      ];
+      process.stdout.write(linesOut.join('\n') + '\n');
+      if (w.finishAfterMs) {
+        setTimeout(() => {
+          update(p.sessionId, {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: w.toolId ?? 'wake-same-chunk-tool',
+            status: 'completed',
+            content: [{ type: 'content', content: { type: 'text', text: w.output ?? 'wake output ok' } }],
+          });
+          if (w.text) update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'bg-same-chunk-m1', content: { type: 'text', text: w.text } });
+        }, w.finishAfterMs);
+      }
+      return;
+    }
+    return send({ id, result: { stopReason: 'end_turn' } });
+  }
   else if (word === 'codemode_end_turn' || word === 'codemode_end_turn_retry' || word === 'direct_end_turn') {
     const server = (s.mcpServers ?? []).find((m) => m.name === 'threadbear' && m.type === 'http');
     const calls = word === 'codemode_end_turn_retry' ? rest.join(' ').split(' || ').map((x) => JSON.parse(x)) : [JSON.parse(rest.join(' '))];
@@ -622,7 +682,7 @@ const handlers = {
     (clientForms = Boolean(p?.clientCapabilities?.elicitation?.form)),
     {
     ...(env.FAKE_ACP_VERSION === 'none' ? {} : { protocolVersion: env.FAKE_ACP_VERSION ? Number(env.FAKE_ACP_VERSION) : 1 }),
-    agentCapabilities: { loadSession: true, mcpCapabilities: { http: true }, promptCapabilities: { image: true }, sessionCapabilities: { resume: {}, close: {} } },
+    agentCapabilities: { loadSession: true, mcpCapabilities: { http: true }, promptCapabilities: { image: true }, sessionCapabilities: env.FAKE_ACP_NO_RESUME ? { close: {} } : { resume: {}, close: {} } },
     ...(AGY
       ? { authMethods: [{ id: 'oauth-personal', name: 'Log in with Google' }], agentInfo: { name: 'antigravity-acp', title: 'Google Antigravity', version: '1.4.5' } }
       : GROK
@@ -641,6 +701,23 @@ const handlers = {
       return { sessionId, configOptions: configOptions(), models: agyModels(), _meta: { antigravity: { tier: { name: 'Google AI Ultra', id: 'g1-ultra-lite-tier' } } } };
     }
     return { sessionId, configOptions: configOptions(), ...(GROK ? { models: grokModels() } : {}) };
+  },
+  'session/load': (p) => {
+    sessions.set(p.sessionId, { cwd: p.cwd, dirs: p.additionalDirectories, mcpServers: p.mcpServers ?? [], steps: 0 });
+    openedSession(p.cwd);
+    log({ loaded: p.sessionId, cwd: p.cwd });
+    if (env.FAKE_ACP_LOAD_REPLAY_BG) {
+      const spec = JSON.parse(env.FAKE_ACP_LOAD_REPLAY_BG);
+      update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId: 'replay-bg', kind: 'execute', title: spec.command ?? 'old job', status: 'in_progress', rawInput: { command: spec.command ?? 'old job' } });
+      update(p.sessionId, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'replay-bg',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: `Command moved to the background (shell ID: ${spec.shellId}).\nPID: ${spec.pid}\nOutput is streaming to: /tmp/${spec.shellId}.out` } }],
+        rawOutput: { metadata: { shellID: spec.shellId, status: 'running', pid: spec.pid, truncated: false } },
+      });
+    }
+    return { configOptions: configOptions() };
   },
   'session/resume': (p) => {
     if (p.sessionId === 'gone') throw Object.assign(new Error('session not found'), { code: -32002 });
@@ -695,6 +772,67 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     pausedPrompts.delete(m.params.sessionId);
     return;
   }
+  if (m.method === '_test/wakeGate') {
+    const key = m.params?.key;
+    if (key) {
+      const fn = wakeGates.get(key);
+      if (fn) {
+        wakeGates.delete(key);
+        fn();
+      } else {
+        openedWakeGates.add(key);
+      }
+    }
+    return;
+  }
+  if (m.method === '_test/wake') {
+    const p = m.params ?? {};
+    const sid = p.sessionId;
+    const s = sessions.get(sid);
+    void (async () => {
+      if (p.thought) update(sid, { sessionUpdate: 'agent_thought_chunk', messageId: 'bg-t1', content: { type: 'text', text: p.thought } });
+      if (p.tool) {
+        const tcId = p.tool.id ?? `bg-tool-${Math.random().toString(36).slice(2)}`;
+        update(sid, { sessionUpdate: 'tool_call', toolCallId: tcId, kind: p.tool.kind ?? 'execute', title: p.tool.command ?? 'check', status: 'in_progress', rawInput: p.tool.rawInput ?? { command: p.tool.command ?? 'check' } });
+        if (p.tool.askPermission) {
+          const ans = await ask('session/request_permission', {
+            sessionId: sid,
+            toolCall: { toolCallId: tcId, kind: p.tool.kind ?? 'execute', title: p.tool.command ?? 'check', rawInput: p.tool.rawInput ?? { command: p.tool.command ?? 'check' } },
+            options: [
+              { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+              { optionId: 'no', kind: 'reject_once', name: 'Deny' },
+            ],
+          });
+          log({ wakeAnswered: ans });
+        }
+        if (p.tool.waitGate) await waitWakeGate(p.tool.waitGate);
+        if (!p.tool.leaveOpen) {
+          update(sid, {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: tcId,
+            status: p.tool.failed ? 'failed' : 'completed',
+            content: [{ type: 'content', content: { type: 'text', text: p.tool.output ?? 'ok' } }],
+            ...(p.tool.rawOutput !== undefined ? { rawOutput: p.tool.rawOutput } : {}),
+          });
+        }
+      }
+      if (p.text) update(sid, { sessionUpdate: 'agent_message_chunk', messageId: p.messageId ?? 'bg-m1', content: { type: 'text', text: p.text } });
+      if (p.endTurnGate) await waitWakeGate(p.endTurnGate);
+      if (p.endTurn) {
+        const server = (s?.mcpServers ?? []).find((srv) => srv.name === 'threadbear' && srv.type === 'http');
+        const tcId = `bg-end-${Math.random().toString(36).slice(2)}`;
+        update(sid, { sessionUpdate: 'tool_call', toolCallId: tcId, title: 'threadbear_end_turn', kind: 'other', status: 'in_progress', rawInput: p.endTurn });
+        const mcpRes = server ? await callHttpMcp(server, 'end_turn', p.endTurn) : undefined;
+        log({ wakeMcpRes: mcpRes });
+        update(sid, { sessionUpdate: 'tool_call_update', toolCallId: tcId, status: 'completed', kind: 'other', content: [{ type: 'content', content: { type: 'text', text: mcpRes?.result?.content?.[0]?.text ?? 'Noted.' } }] });
+      }
+      if (p.textAfterEndTurn) {
+        if (p.textAfterEndTurnGate) await waitWakeGate(p.textAfterEndTurnGate);
+        update(sid, { sessionUpdate: 'agent_message_chunk', messageId: p.messageId ?? 'bg-m2', content: { type: 'text', text: p.textAfterEndTurn } });
+      }
+    })();
+    return;
+  }
   if (m.method === 'session/prompt') {
     void prompt(m.id, m.params);
     if (m.params.prompt.some((b) => b.type === 'text' && b.text.trim().split('\n').at(-1) === 'hang')) hanging.push(m.id);
@@ -712,4 +850,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   }
 });
 const hanging = [];
+const wakeGates = new Map();
+const openedWakeGates = new Set();
+function waitWakeGate(key) {
+  if (openedWakeGates.delete(key)) return Promise.resolve();
+  return new Promise((resolve) => wakeGates.set(key, resolve));
+}
 process.on('SIGTERM', () => process.exit(0));

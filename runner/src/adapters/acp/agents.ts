@@ -111,6 +111,9 @@ export type AcpAgent = {
   // so models() switches through each model to discover its effortLevels even
   // when the initial model has none.
   probesModelEfforts?: boolean;
+  // Starts a turn of its own when a background shell finishes (OpenCode 2
+  // delivers <background-result> over its background ACP turn fiber).
+  wakesAfterTasks?: boolean;
 };
 
 function isExecutableFile(file: string): boolean {
@@ -482,6 +485,7 @@ export const ACP_AGENTS: Record<AcpProvider, AcpAgent> = {
     identifies: (init) => /opencode/i.test(init.agentInfo?.name ?? '') || Boolean(init.authMethods?.some((m) => m.id === 'opencode-login')),
     modeFor: (mode) => (mode === 'plan' ? 'plan' : 'build'),
     probesModelEfforts: true,
+    wakesAfterTasks: true,
   },
   cursor: {
     provider: 'cursor',

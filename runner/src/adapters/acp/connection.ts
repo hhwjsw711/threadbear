@@ -217,6 +217,9 @@ export class AcpProcess {
   private exited = true;
   private exitWaiters: (() => void)[] = [];
   private closing = false;
+  private queuedLines: Buffer[] = [];
+  private drainTimer?: NodeJS.Immediate;
+  private pendingExit?: () => void;
 
   constructor(opts: AcpProcessOptions) {
     this.opts = opts;
@@ -259,23 +262,31 @@ export class AcpProcess {
       });
       const reader = new LineReader(
         opts.maxLineBytes ?? MAX_LINE_BYTES,
-        (line) => this.onLine(line),
+        (line) => this.enqueueLine(line),
         (info: OversizedLine) => opts.log.warn('skipped a line from an ACP agent over the size guard', { threadId: opts.label, bytes: info.bytes, method: info.method }),
       );
       child.stdout?.on('data', (d: Buffer) => reader.push(d));
       child.once('exit', (code, signal) => {
-        const tail = this.stderrTail.slice(-5).join('\n');
-        this.markExited();
-        const what = `The agent exited (${signal ?? `code ${code}`})${tail ? `\n${tail}` : ''}`;
-        for (const p of this.pending.values()) {
-          if (p.timer) clearTimeout(p.timer);
-          p.reject(new AcpExitedError(what));
+        const finishExit = () => {
+          const tail = this.stderrTail.slice(-5).join('\n');
+          this.markExited();
+          const what = `The agent exited (${signal ?? `code ${code}`})${tail ? `\n${tail}` : ''}`;
+          for (const p of this.pending.values()) {
+            if (p.timer) clearTimeout(p.timer);
+            p.reject(new AcpExitedError(what));
+          }
+          this.pending.clear();
+          if (!settled) return fail(new AcpExitedError(what));
+          const onExit = this.onExit;
+          this.onExit = null;
+          onExit?.(this.closing ? undefined : new Error(what));
+        };
+        if (this.drainTimer || this.queuedLines.length) {
+          this.pendingExit = finishExit;
+          this.scheduleDrain();
+          return;
         }
-        this.pending.clear();
-        if (!settled) return fail(new AcpExitedError(what));
-        const onExit = this.onExit;
-        this.onExit = null;
-        onExit?.(this.closing ? undefined : new Error(what));
+        finishExit();
       });
       this.request<InitializeResult>('initialize', {
         protocolVersion: ACP_VERSION,
@@ -311,30 +322,66 @@ export class AcpProcess {
     this.opts.log.debug('acp stderr', { threadId: this.opts.label, line: line.slice(0, 500) });
   }
 
-  private onLine(line: Buffer): void {
+  // Defer lines arriving behind a JSON-RPC response until promise continuations
+  // for that response run (e.g. a session/prompt result followed in the same
+  // stdout chunk by an agent-initiated wake notification).
+  private enqueueLine(line: Buffer): void {
+    if (this.drainTimer) {
+      this.queuedLines.push(line);
+      return;
+    }
+    if (this.onLine(line)) this.scheduleDrain();
+  }
+
+  private scheduleDrain(): void {
+    if (this.drainTimer) return;
+    this.drainTimer = setImmediate(() => {
+      this.drainTimer = undefined;
+      if (this.exited) {
+        this.queuedLines.length = 0;
+        return;
+      }
+      while (this.queuedLines.length) {
+        const next = this.queuedLines.shift()!;
+        if (this.onLine(next)) {
+          this.scheduleDrain();
+          return;
+        }
+      }
+      if (this.pendingExit) {
+        const done = this.pendingExit;
+        this.pendingExit = undefined;
+        done();
+      }
+    });
+  }
+
+  private onLine(line: Buffer): boolean {
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(line.toString('utf8'));
     } catch {
       this.opts.log.warn('unparseable line from an ACP agent', { threadId: this.opts.label, bytes: line.length });
-      return;
+      return false;
     }
-    if (!msg || typeof msg !== 'object') return;
+    if (!msg || typeof msg !== 'object') return false;
     // An id can be 0: OpenCode numbers its requests from it.
     const hasId = typeof msg.id === 'number' || typeof msg.id === 'string';
     if (typeof msg.method === 'string') {
       if (hasId) this.dispatchRequest(msg.id as RequestId, msg.method, msg.params);
       else this.safely(msg.method, () => this.onNotification?.(msg.method as string, msg.params));
-      return;
+      return false;
     }
     if (hasId) {
       const p = this.pending.get(msg.id as RequestId);
-      if (!p) return;
+      if (!p) return false;
       this.pending.delete(msg.id as RequestId);
       if (p.timer) clearTimeout(p.timer);
       if (msg.error) p.reject(new AcpRpcError(p.method, msg.error as { code?: unknown; message?: unknown; data?: unknown }));
       else p.resolve(msg.result);
+      return true;
     }
+    return false;
   }
 
   // What the agent sends is its own to get wrong: a bad frame is logged, as

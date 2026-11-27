@@ -303,3 +303,74 @@ test('a proposed call never takes an allowed request\'s row, and an agent that k
   const c = other.handle({ sessionUpdate: 'tool_call', toolCallId: 'C', kind: 'edit', status: 'in_progress', locations: [{ path: f }], rawInput: { file_path: f } });
   assert.equal((c.find((o) => (o as { event: { type: string } }).event.type === 'tool.call') as { event: { itemId: string } }).event.itemId, 'C');
 });
+
+test('OpenCode background shell metadata is attached on tool.result and cleared on ended status', () => {
+  const n = new AcpNormalizer(ctx);
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'sh1', kind: 'execute', title: 'bash', rawInput: { command: 'npm run build', description: 'Run full build' }, status: 'in_progress' });
+  const running = n.handle({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'sh1',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: 'Command moved to the background (shell ID: sh_abc123).\nPID: 42424\nOutput is streaming to: /tmp/sh_abc123.out' } }],
+    rawOutput: { metadata: { shellID: 'sh_abc123', status: 'running', pid: 42424, truncated: false } },
+  });
+  const res = running.find((o) => o.kind === 'event' && o.event.type === 'tool.result');
+  assert.ok(res);
+  assert.deepEqual(res.backgroundShell, { id: 'sh_abc123', status: 'running', pid: 42424, description: 'Run full build' });
+
+  // Later tool result reporting the same shellID as exited/killed emits status ended.
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'sh1-stop', kind: 'execute', title: 'bash', rawInput: { command: 'stop' }, status: 'in_progress' });
+  const stopped = n.handle({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'sh1-stop',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: 'Cancelled' } }],
+    rawOutput: { metadata: { shellID: 'sh_abc123', status: 'killed' } },
+  });
+  const stopRes = stopped.find((o) => o.kind === 'event' && o.event.type === 'tool.result');
+  assert.ok(stopRes);
+  assert.deepEqual(stopRes.backgroundShell, { id: 'sh_abc123', status: 'ended' });
+});
+
+test('background shell detection requires structured execute metadata and ignores plain stdout or non-execute tools', () => {
+  const n = new AcpNormalizer(ctx);
+  const banner = 'Command moved to the background (shell ID: sh_txt1).\nPID: 51515\nOutput is streaming to: /tmp/sh_txt1.out';
+
+  // Plain execute stdout matching the banner without rawOutput metadata must not register a shell.
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c1', kind: 'execute', rawInput: { command: 'echo banner' }, status: 'in_progress' });
+  const plainOut = n.handle({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'c1',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: banner } }],
+  });
+  const plainRes = plainOut.find((o) => o.kind === 'event' && o.event.type === 'tool.result');
+  assert.ok(plainRes);
+  assert.equal(plainRes.backgroundShell, undefined);
+
+  // Non-execute tools (e.g. file read) must not register running shells even with matching metadata.
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c2', kind: 'read', rawInput: { filePath: '/tmp/log.txt' }, status: 'in_progress' });
+  const readOut = n.handle({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'c2',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: banner } }],
+    rawOutput: { metadata: { shellID: 'sh_read1', status: 'running', pid: 51515 } },
+  });
+  const readRes = readOut.find((o) => o.kind === 'event' && o.event.type === 'tool.result');
+  assert.ok(readRes);
+  assert.equal(readRes.backgroundShell, undefined);
+
+  // An execute call with exited metadata reports ended, not running.
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c3', kind: 'execute', rawInput: { command: 'echo banner' }, status: 'in_progress' });
+  const exitedOut = n.handle({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'c3',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: banner } }],
+    rawOutput: { metadata: { shellID: 'sh_exited', status: 'exited', pid: 51515 } },
+  });
+  const exitedRes = exitedOut.find((o) => o.kind === 'event' && o.event.type === 'tool.result');
+  assert.ok(exitedRes);
+  assert.deepEqual(exitedRes.backgroundShell, { id: 'sh_exited', status: 'ended' });
+});

@@ -12,7 +12,17 @@ import type { AdapterOutput } from '../types.ts';
 
 // The reason to show for a denied call. Keep the provider's result intact
 // in the adapter, which also reads it for executor and quota failures.
-export type AcpOutput = AdapterOutput & { toolRefusal?: string };
+// A background shell reported by an ACP shell tool result (OpenCode 2 moves
+// explicit or timed-out commands to the background with metadata { shellID,
+// status: "running", pid } and wakes the session when they exit).
+export type AcpBackgroundShell = {
+  id: string;
+  status: 'running' | 'ended';
+  pid?: number;
+  description?: string;
+};
+
+export type AcpOutput = AdapterOutput & { toolRefusal?: string; backgroundShell?: AcpBackgroundShell };
 
 export type AcpToolCall = {
   toolCallId?: string;
@@ -618,10 +628,13 @@ export class AcpNormalizer {
         }
       }
     }
+    const joined = texts.join('\n');
+    const backgroundShell = backgroundShellOf(t, ok, joined);
     out.push({
       kind: 'event',
-      event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images },
+      event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(joined, t.row, this.ctx), images },
       ...(!ok && t.refusal ? { toolRefusal: t.refusal } : {}),
+      ...(backgroundShell ? { backgroundShell } : {}),
     });
   }
 
@@ -679,6 +692,39 @@ function planEntries(raw: unknown[]): PlanEntry[] {
     text: typeof e.content === 'string' ? e.content : '',
     status: e.status === 'in_progress' || e.status === 'completed' ? e.status : 'pending',
   }));
+}
+
+
+const BACKGROUND_SHELL_PID = /^PID: (\d+)$/m;
+const ENDED_SHELL_STATUSES = new Set(['exited', 'completed', 'killed', 'timeout']);
+
+function positivePid(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
+}
+
+function shellDescription(t: Tool): string {
+  const desc = typeof t.input.description === 'string' ? t.input.description.trim() : '';
+  if (desc) return firstLine(desc);
+  const cmd = typeof t.input.command === 'string' ? t.input.command.trim() : '';
+  if (cmd) return firstLine(cmd);
+  return firstLine(t.title || t.name || 'shell');
+}
+
+function backgroundShellOf(t: Tool, ok: boolean, text: string): AcpBackgroundShell | undefined {
+  const raw = isPlainObject(t.rawOutput) ? t.rawOutput : undefined;
+  const meta = raw && isPlainObject(raw.metadata) ? raw.metadata : raw;
+  const metaShellId = typeof meta?.shellID === 'string' && meta.shellID.trim() ? meta.shellID.trim() : undefined;
+  const metaStatus = typeof meta?.status === 'string' ? meta.status : undefined;
+  if (!metaShellId) return undefined;
+  if (ok && t.acpKind === 'execute' && metaStatus === 'running') {
+    const fromText = BACKGROUND_SHELL_PID.exec(text);
+    const pid = positivePid(meta?.pid) ?? (fromText ? positivePid(Number(fromText[1])) : undefined);
+    return { id: metaShellId, status: 'running', ...(pid !== undefined ? { pid } : {}), description: shellDescription(t) };
+  }
+  if ((metaStatus && ENDED_SHELL_STATUSES.has(metaStatus)) || meta?.interrupted === true) {
+    return { id: metaShellId, status: 'ended' };
+  }
+  return undefined;
 }
 
 // Whether a path someone reported is inside the given folder, resolved.

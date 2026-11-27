@@ -1778,7 +1778,11 @@ export function buildThreadbearTools(
   // events by now: a sub-agent's never is, and asking for it would use up
   // the refusal its parent's call needs (from Codex's review).
   const refuseUnread = async (): Promise<void> => {
-    if (codex || !control.unreadMessage) return;
+    if (!control.unreadMessage) return;
+    if (codex) {
+      if (control.unreadMessage(selfId)) throw new Error(unreadMessageRefusal());
+      return;
+    }
     if ((await replied()).landed && control.unreadMessage(selfId)) throw new Error(unreadMessageRefusal());
   };
 

@@ -14,7 +14,7 @@ import type { Logger } from '../../log.ts';
 import type { ProcessRegistry } from '../../proc.ts';
 import { cardInput, displayPath, tooLongForCard, truncateInput } from '../../tools.ts';
 import { codeWriteNote, runsAsCodeByName, type CodeWrite } from '../../code-writes.ts';
-import { END_TURN_FULL_NAME, END_TURN_TOOL } from '../../needs.ts';
+import { END_TURN_FULL_NAME, END_TURN_TOOL, endTurnWantsReply } from '../../needs.ts';
 import { placePictures } from '../../pictures.ts';
 import { providerInfo, providerName } from '../../providers.ts';
 import { firstLineSafely } from '../../safe-cut.ts';
@@ -25,12 +25,12 @@ import { toolGuidance, type ToolDefinition } from '../codex/tools.ts';
 import { fileContext, truncateResultText, type NormalizerContext } from '../context.ts';
 import { formContent, formQuestions, type FormSchema } from '../elicitation.ts';
 import { acpCoordinatorTool, archiveReadTool, isHelperQuestionTool } from '../../coordinator-policy.ts';
-import type { AdapterOutput, AgentAdapter, AgentSession, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
+import type { AdapterOutput, AgentAdapter, AgentSession, BackgroundTask, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
 import { SessionNotFoundError, SessionUsageLimitError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
 import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, failureNote, genericRpcMessage, isFatalExecutionError, laterFailure, outOfUsage, textFromUpdate, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
 import { AcpMcpServer } from './mcp-http.ts';
-import { AcpNormalizer, absolutePath, diffsAgreeWithInput, hasEditContent, hasOddPatchHeader, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpOutput, type AcpToolCall } from './normalize.ts';
+import { AcpNormalizer, absolutePath, diffsAgreeWithInput, hasEditContent, hasOddPatchHeader, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpBackgroundShell, type AcpOutput, type AcpToolCall } from './normalize.ts';
 
 // Where an execute call can say it runs (OpenCode's bash tool: workdir).
 const FOLDER_KEYS = ['workdir', 'cwd', 'workingDirectory', 'directory', 'dir'];
@@ -62,6 +62,10 @@ export type AcpAdapterDeps = {
   // Extra MCP servers for every session, for an agent that takes them
   // (AcpAgent.takesMcpServers): Agent Archive, read at each session's start.
   mcpServers?: () => Record<string, { command: string; args: string[] }>;
+  // Test overrides for background shell liveness polling and unsolicited turn settle windows.
+  shellPidAlive?: (pid: number) => boolean;
+  backgroundShellPollMs?: number;
+  unsolicitedSettleMs?: { endTurn?: number; endTurnWaitText?: number; text?: number; idle?: number; toolStall?: number };
 };
 
 // How often a login whose turns don't report its limits is read (an agent
@@ -194,7 +198,7 @@ export const LIMITS_EVERY_MS = 5 * 60_000;
 export class AcpAdapter implements AgentAdapter {
   readonly provider;
   readonly settingsApplyNextTurn = true;
-  readonly wakesAfterTasks = false;
+  readonly wakesAfterTasks: boolean;
   // Only for an agent that can say (AcpAgent.limits): limit-recheck.ts
   // takes any adapter with one as able to read. null when the agent said
   // nothing that reads (or didn't list its usage command): never a reason
@@ -208,6 +212,7 @@ export class AcpAdapter implements AgentAdapter {
   constructor(deps: AcpAdapterDeps) {
     this.deps = deps;
     this.provider = deps.agent.provider;
+    this.wakesAfterTasks = deps.agent.wakesAfterTasks === true;
     const limits = deps.agent.limits;
     if (limits && 'method' in limits) this.readLimits = (account) => this.limitsNow(account, limits);
     else if (limits) {
@@ -407,6 +412,18 @@ export const ANTIGRAVITY_QUOTA_GRACE_MS = 30_000;
 // Give a tool that was already running time to finish, with a ceiling if
 // the executor died and will never send another update for it.
 export const ANTIGRAVITY_QUOTA_TOOL_GRACE_MS = 30 * 60_000;
+// How often background shells reported by OpenCode are probed for liveness.
+export const BACKGROUND_SHELL_POLL_MS = 1_000;
+// OpenCode's background turn fiber streams normal session/update events with
+// no session/prompt in flight and sends no end-of-turn notification when the
+// woken turn finishes. Settle once all tools, cards and MCP calls are clear.
+export const UNSOLICITED_END_TURN_SETTLE_MS = 5_000;
+export const UNSOLICITED_END_TURN_WAIT_TEXT_MS = 15_000;
+export const UNSOLICITED_TEXT_SETTLE_MS = 30_000;
+export const UNSOLICITED_IDLE_SETTLE_MS = 60_000;
+export const UNSOLICITED_TOOL_STALL_MS = 10 * 60_000;
+const TURN_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan']);
+
 // The executor can send its banner in one chunk and its HTTP error in the next.
 export const EXECUTOR_DIAGNOSTIC_GRACE_MS = 5_000;
 const EXECUTOR_BANNER = /^Agent execution terminated due to error/i;
@@ -427,6 +444,13 @@ type Turn = {
   executorDiagnosticTimer?: NodeJS.Timeout;
   dispatched?: boolean;
   quota?: { message: string; earlierTools: ReadonlySet<string>; deadline?: { kind: 'idle' | 'tools'; timer: NodeJS.Timeout } };
+  // Opened for an agent-initiated turn (OpenCode waking for a background shell)
+  // that has no session/prompt request in flight.
+  unsolicited?: boolean;
+  settleTimer?: NodeJS.Timeout;
+  endTurnAccepted?: boolean;
+  sawText?: boolean;
+  lastActivity?: 'text' | 'other';
 };
 // cancelled: what a cancelled turn answers it with (a form's differs).
 type Pending = { abort: AbortController; options: PermissionOption[]; cancelled?: unknown };
@@ -499,6 +523,12 @@ export class AcpSession implements AgentSession {
   private mcpOwnsEndTurn = false;
   private openMcpCalls = new Map<string, Turn>();
   private suppressedToolIds = new Set<string>();
+  // Live background shells reported by OpenCode (shellID -> pid + label),
+  // polled until they exit so the thread stays Running and the CLI is kept live.
+  private backgroundShells = new Map<string, { id: string; pid: number; description: string }>();
+  private announcedDeadShells = new Set<string>();
+  private shellPollTimer?: NodeJS.Timeout;
+  private isShellPidAlive: (pid: number) => boolean;
   private exitPromise: Promise<void>;
   private resolveExit!: () => void;
 
@@ -507,6 +537,7 @@ export class AcpSession implements AgentSession {
     this.sink = sink;
     this.deps = deps;
     this.now = deps.now ?? Date.now;
+    this.isShellPidAlive = deps.shellPidAlive ?? ownPidAlive;
     this.mode = opts.permissionMode;
     this.model = opts.model;
     this.effort = opts.effort;
@@ -774,7 +805,24 @@ export class AcpSession implements AgentSession {
       if (update.sessionUpdate === 'available_commands_update' && Array.isArray(update.availableCommands)) this.noteCommands(update.availableCommands);
     }
     const outputs = this.normalizer.handle(update);
+    const updateKind = isPlainObject(update) && typeof update.sessionUpdate === 'string' ? update.sessionUpdate : undefined;
+    if (!this.turn && this.state === 'ready' && this.deps.agent.wakesAfterTasks && updateKind && TURN_UPDATES.has(updateKind) && outputs.length > 0) {
+      this.openUnsolicitedTurn();
+    }
     this.emit(outputs);
+    if (this.turn?.unsolicited) {
+      if (outputs.some((o) => o.kind === 'event' && o.event.type === 'tool.call' && o.event.name !== END_TURN_FULL_NAME)) {
+        this.turn.endTurnAccepted = false;
+        this.turn.sawText = false;
+        this.turn.lastActivity = 'other';
+      } else if (updateKind === 'agent_message_chunk' && outputs.some((o) => o.kind === 'delta' && o.delta.type === 'assistant.text.delta')) {
+        this.turn.sawText = true;
+        this.turn.lastActivity = 'text';
+      } else if (outputs.some((o) => o.kind === 'delta' || o.kind === 'event')) {
+        this.turn.lastActivity = 'other';
+      }
+      this.syncUnsolicitedSettle();
+    }
     if (this.turn && this.deps.agent.provider === 'antigravity' && this.antigravityUpdate(this.turn, update, outputs)) {
       this.chunkBuffer = '';
       return;
@@ -875,6 +923,7 @@ export class AcpSession implements AgentSession {
   private failFatal(detail: string, quotaTimedOut = false): void {
     if (this.state === 'closed' || this.state === 'closing') return;
     this.state = 'closing';
+    this.stopShellPoll();
     this.held = [];
     const fail = this.turn ? this.failureFor(this.turn, new Error(detail)) : { error: detail };
     const errorText = fail.error ?? detail;
@@ -1061,10 +1110,15 @@ export class AcpSession implements AgentSession {
           continue;
         }
       }
-      if (o.kind === 'event' && o.event.type === 'tool.result' && o.toolRefusal) {
+      if (o.kind === 'event' && o.event.type === 'tool.result' && (o.toolRefusal || o.backgroundShell)) {
         const { itemId, images } = o.event;
-        this.sink.output({ kind: 'event', event: { type: 'tool.result', itemId, ok: false, text: o.toolRefusal, truncated: false, images } });
+        if (o.toolRefusal) {
+          this.sink.output({ kind: 'event', event: { type: 'tool.result', itemId, ok: false, text: o.toolRefusal, truncated: false, images } });
+        } else {
+          this.sink.output({ kind: 'event', event: o.event });
+        }
       } else this.sink.output(o);
+      if (o.backgroundShell) this.noteBackgroundShell(o.backgroundShell);
     }
   }
 
@@ -1072,9 +1126,14 @@ export class AcpSession implements AgentSession {
     if (!this.mcpOwnsEndTurn || toolName !== END_TURN_TOOL) return undefined;
     const turn = this.turn;
     if (!turn || this.state !== 'turn') return undefined;
+    // Before session/prompt is sent (e.g. awaiting model/effort/mode setup),
+    // any end_turn belongs to a superseded background turn and must not attach
+    // to the user's pending turn.
+    if (!turn.unsolicited && !turn.dispatched) return undefined;
     this.emit(this.normalizer.flush());
     const itemId = `mcp-end-turn-${crypto.randomUUID()}`;
     this.openMcpCalls.set(itemId, turn);
+    if (turn.unsolicited) this.syncUnsolicitedSettle();
     this.sink.output({
       kind: 'event',
       event: { type: 'tool.call', itemId, name: END_TURN_FULL_NAME, kind: 'mcp', title: END_TURN_TOOL, input: truncateInput(args) },
@@ -1093,6 +1152,15 @@ export class AcpSession implements AgentSession {
       kind: 'event',
       event: { type: 'tool.result', itemId, ok, ...truncateResultText(text, itemId, this.ctx), images: [] },
     });
+    if (turn.unsolicited) {
+      if (ok) {
+        turn.endTurnAccepted = true;
+        // One-reply end_turn asks for the final message after acceptance; any
+        // progress text written beforehand must not shorten that wait window.
+        if (endTurnWantsReply({ ok, text })) turn.sawText = false;
+      } else turn.lastActivity = 'other';
+      this.syncUnsolicitedSettle();
+    }
   }
 
   private closeOpenMcpCalls(reason: string): void {
@@ -1107,6 +1175,7 @@ export class AcpSession implements AgentSession {
 
   private request(id: RequestId, method: string, params: unknown): void {
     if (method === 'session/request_permission' && !this.replaying) {
+      if (!this.turn && this.state === 'ready' && this.deps.agent.wakesAfterTasks) this.openUnsolicitedTurn();
       const p = (isPlainObject(params) ? params : {}) as { toolCall?: AcpToolCall; options?: PermissionOption[]; _meta?: unknown };
       // Its own frame counts in the call's history too, as sent.
       this.noteFrame(p.toolCall);
@@ -1117,15 +1186,18 @@ export class AcpSession implements AgentSession {
         this.pending.delete(id);
         this.proc.respond(id, { outcome: { outcome: 'cancelled' } });
         this.syncQuotaDeadline();
+        this.syncUnsolicitedSettle();
       });
       return;
     }
     if (method === 'elicitation/create' && !this.replaying) {
+      if (!this.turn && this.state === 'ready' && this.deps.agent.wakesAfterTasks) this.openUnsolicitedTurn();
       this.form(id, isPlainObject(params) ? params : {}).catch((e: unknown) => {
         this.deps.log.error('acp form handler threw', { threadId: this.opts.threadId, error: String(e) });
         this.pending.delete(id);
         this.proc.respond(id, { action: 'cancel' });
         this.syncQuotaDeadline();
+        this.syncUnsolicitedSettle();
       });
       return;
     }
@@ -1441,6 +1513,7 @@ export class AcpSession implements AgentSession {
     const pending: Pending = { abort: new AbortController(), options };
     this.pending.set(id, pending);
     this.syncQuotaDeadline();
+    this.syncUnsolicitedSettle();
     let a: ToolApprovalAnswer;
     try {
       a = await this.sink.requestApproval({
@@ -1464,6 +1537,7 @@ export class AcpSession implements AgentSession {
     // Already answered as cancelled: an interrupt, or the session ending.
     if (!this.pending.delete(id)) return;
     this.syncQuotaDeadline();
+    this.syncUnsolicitedSettle();
     if (a.decision === 'expired') return void this.proc.respond(id, { outcome: { outcome: 'cancelled' } });
     const allow = a.decision === 'allow' || a.decision === 'allowAlways';
     if (allow && ((frames && frameState(frames) !== asked) || (paths.length && placesNow() !== placed))) {
@@ -1502,6 +1576,7 @@ export class AcpSession implements AgentSession {
     const pending: Pending = { abort: new AbortController(), options: [], cancelled: { action: 'cancel' } };
     this.pending.set(id, pending);
     this.syncQuotaDeadline();
+    this.syncUnsolicitedSettle();
     let a: QuestionAnswer;
     try {
       a = await this.sink.requestQuestion({ toolUseId: typeof p.toolCallId === 'string' ? p.toolCallId : undefined, questions, signal: pending.abort.signal });
@@ -1512,6 +1587,7 @@ export class AcpSession implements AgentSession {
     // Already answered as cancelled: an interrupt, or the session ending.
     if (!this.pending.delete(id)) return;
     this.syncQuotaDeadline();
+    this.syncUnsolicitedSettle();
     if (!a.answers) return void this.proc.respond(id, { action: 'decline' });
     if (!built) return void this.proc.respond(id, a.answers[questions[0].question] === 'Accept' ? { action: 'accept', content: {} } : { action: 'decline' });
     const content = formContent(built, a.answers);
@@ -1542,7 +1618,18 @@ export class AcpSession implements AgentSession {
     }
     // ACP has no way to add to a running turn: it's the next one.
     this.held.push(input);
+    // OpenCode's session/prompt cancels any running background turn fiber, so
+    // close an unsolicited turn immediately and dispatch the user's message.
+    if (this.turn?.unsolicited) {
+      this.cancelPending(true);
+      this.finishUnsolicitedTurn(this.turn, 'completed');
+      return;
+    }
     this.next();
+  }
+
+  unreadMessage(): boolean {
+    return this.held.length > 0 || Boolean(this.turn && !this.turn.unsolicited && !this.turn.dispatched);
   }
 
   private next(): void {
@@ -1590,6 +1677,7 @@ export class AcpSession implements AgentSession {
       if (turn.interrupted) throw new Error('Stopped');
       this.guardSeen = false;
       dispatched = true;
+      turn.dispatched = true;
       const r = await this.proc.request<{ stopReason?: string }>('session/prompt', { sessionId: this.sessionId, prompt: this.promptBlocks(input) }, null);
       this.closeOpenMcpCalls('Stopped');
       this.emit(this.normalizer.closeOpen('Stopped'));
@@ -1618,6 +1706,7 @@ export class AcpSession implements AgentSession {
       if (text) this.sink.output({ kind: 'planProposed', itemId: `${turn.id ?? 'plan'}-plan`, text });
     }
     if (result.errorKind === 'usageLimit') this.held = [];
+    this.reconcileBackgroundShells();
     this.sendResult(turn, result);
     // After the result, not before it: the runner records a reading under
     // the login this CLI runs on (sessionAccountId), wherever the result
@@ -1629,6 +1718,144 @@ export class AcpSession implements AgentSession {
   private sendResult(turn: Turn, result: TurnResult): void {
     const answered = [...(turn.id ? [turn.id] : []), ...turn.dropped];
     this.sink.output({ kind: 'result', result: { ...result, ...(turn.id ? { answers: turn.id } : {}), answered, unreceived: [...(!turn.dispatched && turn.id ? [turn.id] : []), ...turn.dropped], queuedTurns: this.held.length, ...(this.normalizer.costUsd !== undefined ? { totalCostUsd: this.normalizer.costUsd } : {}) } });
+  }
+
+  // ---- Background shells & agent-initiated background turns (OpenCode 2)
+
+  private noteBackgroundShell(shell: AcpBackgroundShell): void {
+    if (!this.deps.agent.wakesAfterTasks || this.state === 'closing' || this.state === 'closed') return;
+    if (shell.status === 'ended') {
+      if (this.backgroundShells.delete(shell.id)) {
+        if (!this.backgroundShells.size) this.stopShellPoll();
+        this.emitBackgroundTasks();
+      }
+      return;
+    }
+    // Require a verifiable PID so a tracked shell can always be cleared when
+    // its process exits and never leaves a thread stuck in Running.
+    const pid = shell.pid;
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return;
+    if (!this.isShellPidAlive(pid)) {
+      if (this.backgroundShells.delete(shell.id)) {
+        if (!this.backgroundShells.size) this.stopShellPoll();
+        this.emitBackgroundTasks();
+        return;
+      }
+      // The shell exited before its tool_call_update reached Threadbear.
+      // OpenCode still wakes to deliver <background-result>, so report the
+      // finished task transition once so the runner arms wake grace and wokeBy.
+      if (!this.announcedDeadShells.has(shell.id)) {
+        this.announcedDeadShells.add(shell.id);
+        const task: BackgroundTask = { id: shell.id, type: 'opencode_shell', kind: 'shell', description: shell.description || 'shell' };
+        this.sink.output({ kind: 'tasks', tasks: [...this.currentBackgroundTasks(), task] });
+        this.emitBackgroundTasks();
+      }
+      return;
+    }
+    const prev = this.backgroundShells.get(shell.id);
+    const next = { id: shell.id, pid, description: shell.description || 'shell' };
+    this.backgroundShells.set(shell.id, next);
+    if (!prev || prev.pid !== next.pid || prev.description !== next.description) this.emitBackgroundTasks();
+    this.ensureShellPoll();
+  }
+
+  private ensureShellPoll(): void {
+    if (this.shellPollTimer || !this.backgroundShells.size || this.state === 'closing' || this.state === 'closed') return;
+    const ms = Math.max(10, this.deps.backgroundShellPollMs ?? BACKGROUND_SHELL_POLL_MS);
+    this.shellPollTimer = setInterval(() => this.reconcileBackgroundShells(), ms);
+    this.shellPollTimer.unref();
+  }
+
+  private stopShellPoll(): void {
+    if (!this.shellPollTimer) return;
+    clearInterval(this.shellPollTimer);
+    this.shellPollTimer = undefined;
+  }
+
+  private reconcileBackgroundShells(): void {
+    if (this.state === 'closing' || this.state === 'closed' || !this.backgroundShells.size) return;
+    let changed = false;
+    for (const [id, entry] of [...this.backgroundShells]) {
+      if (!this.isShellPidAlive(entry.pid)) {
+        this.backgroundShells.delete(id);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    if (!this.backgroundShells.size) this.stopShellPoll();
+    this.emitBackgroundTasks();
+  }
+
+  private currentBackgroundTasks(): BackgroundTask[] {
+    return [...this.backgroundShells.values()].map((s) => ({
+      id: s.id,
+      type: 'opencode_shell',
+      kind: 'shell',
+      description: s.description,
+    }));
+  }
+
+  private emitBackgroundTasks(): void {
+    this.sink.output({ kind: 'tasks', tasks: this.currentBackgroundTasks() });
+  }
+
+  private openUnsolicitedTurn(): void {
+    if (this.state !== 'ready' || this.turn || !this.deps.agent.wakesAfterTasks) return;
+    // Prune any shell whose exit triggered this wake before cliTurn so the
+    // runner attaches wokeBy and does not carry a finished shell as live.
+    this.reconcileBackgroundShells();
+    const turn: Turn = { startedAt: this.now(), interrupted: false, dropped: [], unsolicited: true, lastActivity: 'other' };
+    this.turn = turn;
+    this.chunkBuffer = '';
+    this.state = 'turn';
+    this.sink.output({ kind: 'cliTurn' });
+    this.syncUnsolicitedSettle();
+  }
+
+  private syncUnsolicitedSettle(): void {
+    const turn = this.turn;
+    if (!turn?.unsolicited) return;
+    clearTimeout(turn.settleTimer);
+    turn.settleTimer = undefined;
+    if (this.state !== 'turn') return;
+    if (this.pending.size > 0 || this.openMcpCalls.size > 0) return;
+    const cfg = this.deps.unsolicitedSettleMs;
+    const runningTools = this.normalizer.hasRunningTools();
+    const ms = runningTools
+      ? (cfg?.toolStall ?? UNSOLICITED_TOOL_STALL_MS)
+      : turn.endTurnAccepted
+      ? (turn.sawText ? (cfg?.endTurn ?? UNSOLICITED_END_TURN_SETTLE_MS) : (cfg?.endTurnWaitText ?? UNSOLICITED_END_TURN_WAIT_TEXT_MS))
+      : turn.lastActivity === 'text'
+      ? (cfg?.text ?? UNSOLICITED_TEXT_SETTLE_MS)
+      : (cfg?.idle ?? UNSOLICITED_IDLE_SETTLE_MS);
+    turn.settleTimer = setTimeout(() => {
+      if (this.turn === turn && this.state === 'turn' && !this.pending.size && !this.openMcpCalls.size && (runningTools || !this.normalizer.hasRunningTools())) {
+        this.finishUnsolicitedTurn(turn, 'completed');
+      }
+    }, ms);
+    turn.settleTimer.unref();
+  }
+
+  private finishUnsolicitedTurn(turn: Turn, outcome: 'completed' | 'interrupted'): void {
+    if (this.turn !== turn) return;
+    clearTimeout(turn.settleTimer);
+    turn.settleTimer = undefined;
+    clearTimeout(turn.quota?.deadline?.timer);
+    clearTimeout(turn.executorDiagnosticTimer);
+    this.closeOpenMcpCalls('Stopped');
+    this.emit(this.normalizer.closeOpen('Stopped'));
+    this.suppressedToolIds.clear();
+    this.reconcileBackgroundShells();
+    this.turn = undefined;
+    if (this.state === 'turn') this.state = 'ready';
+    const result: TurnResult = { outcome, own: true, durationMs: Math.max(0, this.now() - turn.startedAt) };
+    if (this.mode === 'plan' && result.outcome === 'completed') {
+      const text = this.normalizer.takeLastAssistantText();
+      if (text) this.sink.output({ kind: 'planProposed', itemId: 'plan', text });
+    }
+    this.sendResult(turn, result);
+    void this.limitsAfter(result);
+    this.next();
   }
 
   // What a failed turn says, and whether it failed because the login is out
@@ -1710,6 +1937,14 @@ export class AcpSession implements AgentSession {
     turn.dropped.push(...dropped);
     turn.interrupted = true;
     this.cancelPending(true);
+    if (turn.unsolicited) {
+      // OpenCode's session/cancel only stops an active session/prompt, not its
+      // background turn fiber. End the turn cleanly and stop the process so
+      // background execution halts immediately; the next message resumes it.
+      this.finishUnsolicitedTurn(turn, 'interrupted');
+      this.kill();
+      return;
+    }
     this.proc.notify('session/cancel', { sessionId: this.sessionId });
     this.syncQuotaDeadline();
   }
@@ -1761,6 +1996,7 @@ export class AcpSession implements AgentSession {
   async end(opts: { hard?: boolean } = {}): Promise<void> {
     if (this.state === 'closed') return this.exitPromise;
     this.state = 'closing';
+    this.stopShellPoll();
     if (opts.hard) this.proc.kill();
     await this.finish();
   }
@@ -1768,6 +2004,7 @@ export class AcpSession implements AgentSession {
   kill(): void {
     if (this.state === 'closed') return;
     this.state = 'closing';
+    this.stopShellPoll();
     this.proc.kill();
     this.exited();
   }
@@ -1783,6 +2020,9 @@ export class AcpSession implements AgentSession {
     if (this.exitedCalled) return;
     this.exitedCalled = true;
     this.state = 'closed';
+    this.stopShellPoll();
+    this.backgroundShells.clear();
+    this.announcedDeadShells.clear();
     this.held = [];
     this.cancelPending(false);
     this.proc.onRequest = null;
@@ -1790,6 +2030,7 @@ export class AcpSession implements AgentSession {
     this.closeOpenMcpCalls('Interrupted');
     this.emit(this.normalizer.closeOpen('Interrupted'));
     this.suppressedToolIds.clear();
+    clearTimeout(this.turn?.settleTimer);
     clearTimeout(this.turn?.quota?.deadline?.timer);
     clearTimeout(this.turn?.executorDiagnosticTimer);
     this.turn = undefined;
@@ -1853,6 +2094,17 @@ function pidAlive(pid: number): boolean {
     return true;
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+// Same-user liveness check for background shells spawned by our own OpenCode
+// process: EPERM means another user's process (e.g. a recycled PID), not ours.
+function ownPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 

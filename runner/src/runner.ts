@@ -2897,7 +2897,7 @@ export class Runner {
     let n = 0;
     for (const { rec, rt } of this.threads.values()) {
       if (rt.deleted) continue;
-      if (rt.turn || rt.tasks.length || rec.subagents?.some((a) => a.status === 'running')) n++;
+      if (rt.turn || rt.tasks.length || rt.wakeTimer || rec.subagents?.some((a) => a.status === 'running')) n++;
     }
     return n;
   }
@@ -2906,7 +2906,7 @@ export class Runner {
     const live = [...this.threads.values()].filter((t) => t !== starting && runningSession(t.rt));
     if (live.length < this.cfg.maxLive) return;
     const idle = live
-      .filter((t) => !t.rt.turn && t.rt.approvals.size === 0 && t.rec.queue.length === 0 && t.rt.tasks.length === 0 && !t.rt.helperPending)
+      .filter((t) => !t.rt.turn && t.rt.approvals.size === 0 && t.rec.queue.length === 0 && t.rt.tasks.length === 0 && !t.rt.wakeTimer && !t.rt.helperPending)
       .sort((a, b) => a.rt.activeAt - b.rt.activeAt);
     for (const t of idle.slice(0, live.length - this.cfg.maxLive + 1)) {
       this.log.info('releasing the longest-idle CLI to stay under the cap', { threadId: t.rec.id, maxLive: this.cfg.maxLive });
@@ -3339,6 +3339,9 @@ export class Runner {
         if (turn.messages.length && !turn.interruptRequested && r.errorKind !== 'usageLimit') {
           this.flushDeltas(st);
           rt.inProgress.clear();
+          // Any end_turn taken by the CLI turn that just finished happened
+          // before the queued message(s) ran, so clear it for the next turn.
+          this.reply(st, { kind: 'message' });
           if (r.outcome === 'failed' && r.error) this.emit(st, { type: 'error', message: r.error }, turn.turnId);
           break;
         }
@@ -3365,8 +3368,9 @@ export class Runner {
       // counts as ended in that turn, and the grace starts again at its end
       // (Codex's review, 22 Nov 2026).
       else rt.taskEndedInTurn = true;
-      // A version move or a fresh CLI was waiting for the grace to end.
-      if ((rt.versionMove || rt.releaseWhenIdle || this.queueHeld(st)) && !rt.turn) this.scheduleIdle(st);
+      // A version move, a fresh CLI, or an idle countdown that fired during
+      // wake grace was waiting for the grace to end.
+      if ((rt.versionMove || rt.releaseWhenIdle || this.queueHeld(st) || !rt.idleTimer) && !rt.turn) this.scheduleIdle(st);
     }, WAKE_GRACE_MS);
   }
 
