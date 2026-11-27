@@ -1420,9 +1420,7 @@ pub fn thread_honey<Tz: TimeZone>(
         pool,
         providers,
     };
-    let scoped_accounts: Vec<_> = scope.accounts().into_iter().cloned().collect();
-    let mut tip =
-        icon_tooltip_with_sign_ins(std::slice::from_ref(&scope), &scoped_accounts, now, zone);
+    let mut tip = icon_tooltip_with_sign_ins(std::slice::from_ref(&scope), accounts, now, zone);
     if scope.providers.is_empty() {
         tip.push_str("\nUsage not available");
     }
@@ -2648,6 +2646,37 @@ mod tests {
             icon.tip
         );
         assert!(icon.tip.contains("Grok (backup): 87% left"), "{}", icon.tip);
+    }
+
+    #[test]
+    fn honey_tooltip_includes_sign_in_and_reset_notices_across_pools() {
+        let accounts = vec![
+            login("c1", "claude", None, 50., false, None),
+            Account {
+                id: "codex-main".into(),
+                provider: "codex".into(),
+                title: "Codex · alex@example.com".into(),
+                email: Some("alex@example.com".into()),
+                reset_hint: Some(crate::logins::ResetHint {
+                    why: "out".into(),
+                    available: 2,
+                    next_expires_at: Some(iso_time(at(13, 0) + 12 * DAY)),
+                }),
+                usage: Some(json!({
+                    "windows": [{"kind": "weekly", "remainingPercent": 0.}],
+                    "blocked": true,
+                })),
+                ..Default::default()
+            },
+        ];
+        let pools = [pool("claude", "Claude", &["c1"])];
+        let icon = thread_honey(&pools, &accounts, Some("claude"), "c1", at(13, 0), &zone());
+        assert!(
+            icon.tip
+                .contains("codex-main (alex@example.com): out of room, 2 resets left"),
+            "tooltip should include resets from accounts outside the current pool: {}",
+            icon.tip
+        );
     }
 
     #[test]
