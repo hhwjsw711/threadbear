@@ -1838,6 +1838,13 @@ model takes over from your next message, as nothing runs until then.
 The first time a pool has a second login, a card by the composer says
 what pools do.
 
+Your pools stay in the order you put them in: drag a pool's row (it has
+three bars at its end) onto another's in Settings > Pools and it takes
+that place, the rest shifting along, saved as soon as you let go. Let it
+go back on its own row, or clear of every row, and the order stays as it
+was. Usage shows its pool cards in that same order, so the pool you lean
+on most is at the top of both.
+
 With more than one machine, they all share the same pools, so you set them
 up once from Settings > Pools on any of them. A pool knows its logins by
 email, and each machine uses the ones it's signed in to: a pool of three
