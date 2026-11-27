@@ -968,16 +968,29 @@ pub fn scan(path: &Path) -> Option<(bool, String)> {
     Some((has_scripts(&data), digest(&data)))
 }
 
+/// The largest HTML file that can be uploaded as a hosted artifact (10 MiB).
+pub const MAX_PUBLISH_BYTES: u64 = 10 * 1024 * 1024;
+
 /// Publish exactly the bytes the preview read, within the hosted size limit.
-pub fn read_for_publish(path: &Path, preview_digest: &str) -> Result<String, &'static str> {
-    let data = read_page(path, 64 * 1024).ok_or("Choose an HTML file up to 64 KiB.")?;
+pub fn read_for_publish(path: &Path, preview_digest: &str) -> Result<String, String> {
+    let data = read_page(path, MAX_PUBLISH_BYTES).ok_or_else(|| {
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.is_file() && meta.len() > MAX_PUBLISH_BYTES {
+                let mb = meta.len() as f64 / (1024.0 * 1024.0);
+                return format!(
+                    "This file is {mb:.1} MB. Web links support HTML files up to 10 MB."
+                );
+            }
+        }
+        "Choose an HTML file up to 10 MB.".to_owned()
+    })?;
     if digest(&data) != preview_digest {
-        return Err("The file changed. Reopen its preview to publish it.");
+        return Err("The file changed. Reopen its preview to publish it.".to_owned());
     }
-    let html =
-        String::from_utf8(data).map_err(|_| "Save this file as UTF-8 before publishing it.")?;
+    let html = String::from_utf8(data)
+        .map_err(|_| "Save this file as UTF-8 before publishing it.".to_owned())?;
     if html.trim().is_empty() {
-        return Err("This HTML file is empty.");
+        return Err("This HTML file is empty.".to_owned());
     }
     Ok(html)
 }

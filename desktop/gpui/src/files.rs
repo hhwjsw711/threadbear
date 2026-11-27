@@ -237,22 +237,66 @@ pub(crate) struct LocalPage {
     publication: Publication,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Visibility {
+    Private,
+    Public,
+}
+
+impl Visibility {
+    fn from_wire(value: Option<&str>) -> Self {
+        match value {
+            Some("public") => Self::Public,
+            _ => Self::Private,
+        }
+    }
+
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Private => "private",
+            Self::Public => "public",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Private => "Private",
+            Self::Public => "Anyone with link",
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::Private => "lock",
+            Self::Public => "globe",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Publication {
-    Checking,
+    Syncing {
+        url: Option<String>,
+        visibility: Visibility,
+    },
     Unavailable,
     Ready {
         url: Option<String>,
+        visibility: Visibility,
         error: Option<String>,
         copied: bool,
     },
-    Working,
+    Working {
+        url: Option<String>,
+        visibility: Visibility,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PublishAction {
-    Status,
+    Sync,
     Publish,
+    SetVisibility(Visibility),
     Unpublish,
 }
 
@@ -398,6 +442,78 @@ pub(crate) fn plain_markdown(text: &str) -> String {
     threadbear_core::sidebar::preview_plain(text)
 }
 
+/// Trigger for the hosted HTML visibility menu (`[lock] Private ▾` or `[globe] Anyone with link ▾`).
+#[derive(IntoElement)]
+struct VisibilityLabel {
+    inner: Stateful<Div>,
+}
+
+impl VisibilityLabel {
+    fn new(id: &'static str, visibility: Visibility, working: bool, cx: &App) -> Self {
+        let dark = cx.theme().is_dark();
+        let label = style::label_text(cx);
+        let ink = if dark { 1. } else { 0. };
+        let mut inner = div()
+            .id(id)
+            .flex_none()
+            .h(px(26.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .rounded(px(6.))
+            .bg(hsla(0., 0., ink, 0.08))
+            .text_size(px(style::size::LABEL))
+            .font_weight(FontWeight::MEDIUM)
+            .whitespace_nowrap()
+            .text_color(label);
+        if working {
+            inner = inner
+                .opacity(0.65)
+                .child(Spinner::new().color(label).with_size(px(11.)));
+        } else {
+            inner = inner
+                .cursor_pointer()
+                .hover(move |s| s.bg(hsla(0., 0., ink, 0.13)))
+                .active(move |s| s.bg(hsla(0., 0., ink, 0.18)))
+                .child(icons::symbol(visibility.symbol()).with_size(px(12.)));
+        }
+        inner = inner
+            .child(visibility.label())
+            .child(icons::symbol("chevron.down").with_size(px(style::size::SMALL - 2.)));
+        VisibilityLabel { inner }
+    }
+}
+
+impl RenderOnce for VisibilityLabel {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        self.inner
+    }
+}
+
+impl Styled for VisibilityLabel {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.inner.style()
+    }
+}
+
+impl InteractiveElement for VisibilityLabel {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.inner.interactivity()
+    }
+}
+
+impl Selectable for VisibilityLabel {
+    fn selected(self, _: bool) -> Self {
+        self
+    }
+    fn is_selected(&self) -> bool {
+        false
+    }
+}
+
+impl DropdownMenu for VisibilityLabel {}
+
 /// The label of the bar's Preview/Markdown menu (`MarkdownViewMenu`): its
 /// pick and a small chevron, grey until the pointer's on it, then a rounded
 /// fill behind.
@@ -530,19 +646,23 @@ impl SidePane {
         };
         let real_text = real.to_string_lossy().into_owned();
         if live {
-            // Nothing to scan: the card's Run already checked it and holds
-            // the digest it runs for.
+            // The card's Run already checked it for scripts; still auto-sync it
+            // for a web link when the experiment is on.
             let page = LocalPage {
                 real: real_text,
                 scan: Some((false, String::new())),
                 allowed: false,
                 live: true,
-                publication: Publication::Unavailable,
+                publication: Publication::Syncing {
+                    url: None,
+                    visibility: Visibility::Private,
+                },
             };
             self.files.open.insert(
                 thread.id.clone(),
                 OpenFile::new(path.to_owned(), opened, FileBody::Page(page)),
             );
+            self.change_publication(&thread.id, opened, PublishAction::Sync, cx);
             cx.notify();
             return;
         }
@@ -551,7 +671,10 @@ impl SidePane {
             scan: None,
             allowed: false,
             live: false,
-            publication: Publication::Checking,
+            publication: Publication::Syncing {
+                url: None,
+                visibility: Visibility::Private,
+            },
         };
         self.files.open.insert(
             thread.id.clone(),
@@ -583,7 +706,9 @@ impl SidePane {
                     });
                     page.scan = found;
                     if page.scan.is_some() {
-                        pane.change_publication(&thread_id, opened, PublishAction::Status, cx);
+                        pane.change_publication(&thread_id, opened, PublishAction::Sync, cx);
+                    } else {
+                        page.publication = Publication::Unavailable;
                     }
                 }
                 cx.notify();
@@ -618,84 +743,217 @@ impl SidePane {
         let FileBody::Page(page) = &mut open.body else {
             return;
         };
-        let Some((_, digest)) = page.scan.clone() else {
+        if page.scan.is_none() {
             return;
-        };
-        let previous = match (&page.publication, action) {
-            (Publication::Checking, PublishAction::Status) => None,
-            (Publication::Ready { url, .. }, PublishAction::Publish) => url.clone(),
-            (Publication::Ready { url: Some(url), .. }, PublishAction::Unpublish) => {
-                Some(url.clone())
+        }
+        let (previous_url, previous_visibility) = match (&page.publication, action) {
+            (Publication::Syncing { url, visibility }, PublishAction::Sync) => {
+                (url.clone(), *visibility)
             }
+            (
+                Publication::Ready {
+                    url, visibility, ..
+                },
+                PublishAction::Sync,
+            ) => (url.clone(), *visibility),
+            (
+                Publication::Ready {
+                    url, visibility, ..
+                },
+                PublishAction::Publish,
+            ) => (url.clone(), *visibility),
+            (
+                Publication::Ready {
+                    url: Some(url),
+                    visibility,
+                    ..
+                },
+                PublishAction::SetVisibility(_),
+            ) => (Some(url.clone()), *visibility),
+            (
+                Publication::Ready {
+                    url: Some(url),
+                    visibility,
+                    ..
+                },
+                PublishAction::Unpublish,
+            ) => (Some(url.clone()), *visibility),
             _ => return,
         };
-        if action != PublishAction::Status {
-            page.publication = Publication::Working;
-        }
+        page.publication = match action {
+            PublishAction::Sync if previous_url.is_none() => Publication::Syncing {
+                url: None,
+                visibility: previous_visibility,
+            },
+            PublishAction::SetVisibility(next) => Publication::Working {
+                url: previous_url.clone(),
+                visibility: next,
+            },
+            _ => Publication::Working {
+                url: previous_url.clone(),
+                visibility: previous_visibility,
+            },
+        };
         let (client, thread_id, real) =
             (self.client.clone(), thread_id.to_owned(), page.real.clone());
         cx.notify();
         cx.spawn(async move |this, cx| {
             let params = match action {
-                PublishAction::Status => Ok(json!({ "action": "status", "path": real })),
-                PublishAction::Unpublish => Ok(json!({ "action": "unpublish", "path": real, "expected": previous })),
-                PublishAction::Publish => {
-                    let path = real.clone();
-                    cx.background_executor().spawn(async move {
-                        threadbear_core::local_preview::read_for_publish(Path::new(&path), &digest)
-                    }).await.map(|html| json!({ "action": "publish", "path": real, "html": html, "expected": previous }))
-                    .map_err(str::to_owned)
-                }
+                PublishAction::Sync => match &previous_url {
+                    Some(url) => json!({ "action": "sync", "path": real, "expected": url }),
+                    None => json!({ "action": "sync", "path": real }),
+                },
+                PublishAction::Publish => json!({
+                    "action": "publish",
+                    "path": real,
+                    "expected": previous_url,
+                }),
+                PublishAction::SetVisibility(visibility) => json!({
+                    "action": "setVisibility",
+                    "path": real,
+                    "visibility": visibility.wire(),
+                    "expected": previous_url,
+                }),
+                PublishAction::Unpublish => json!({
+                    "action": "unpublish",
+                    "path": real,
+                    "expected": previous_url,
+                }),
             };
-            let result = match params {
-                Ok(params) => call(client, "artifacts.manage", params).await.map_err(|error| error.message),
-                Err(error) => Err(error),
-            };
+            let result = call(client, "artifacts.manage", params)
+                .await
+                .map_err(|error| error.message);
             this.update(cx, |this, cx| {
-                if !this.previews.get(&thread_id).is_some_and(|preview| preview.opened == opened) {
+                if !this
+                    .previews
+                    .get(&thread_id)
+                    .is_some_and(|preview| preview.opened == opened)
+                {
                     return;
                 }
-                let Some(open) = this.files.open.get_mut(&thread_id).filter(|file| file.opened == opened) else { return };
-                let FileBody::Page(page) = &mut open.body else { return };
+                let Some(open) = this
+                    .files
+                    .open
+                    .get_mut(&thread_id)
+                    .filter(|file| file.opened == opened)
+                else {
+                    return;
+                };
+                let FileBody::Page(page) = &mut open.body else {
+                    return;
+                };
                 page.publication = match result {
-                    Ok(answer) if answer["available"] == true => Publication::Ready {
-                        url: answer["url"].as_str().map(str::to_owned),
-                        error: (action != PublishAction::Status && answer["changed"] != true)
-                            .then(|| "The published link changed. Check it and try again.".into()),
+                    Ok(answer) if answer["available"] == true => {
+                        let url = answer["url"].as_str().map(str::to_owned);
+                        let visibility = Visibility::from_wire(answer["visibility"].as_str());
+                        let conflict = matches!(
+                            action,
+                            PublishAction::Unpublish | PublishAction::SetVisibility(_)
+                        ) && answer["changed"] != true;
+                        Publication::Ready {
+                            url,
+                            visibility,
+                            error: conflict.then(|| {
+                                "The web copy changed elsewhere. Check it and try again.".into()
+                            }),
+                            copied: false,
+                        }
+                    }
+                    Ok(_) => Publication::Unavailable,
+                    Err(message) => Publication::Ready {
+                        url: previous_url,
+                        visibility: previous_visibility,
+                        error: Some(message),
                         copied: false,
                     },
-                    Err(message) if action != PublishAction::Status => Publication::Ready { url: previous, error: Some(message), copied: false },
-                    _ => Publication::Unavailable,
                 };
                 cx.notify();
-            }).ok();
-        }).detach();
-    }
-
-    fn confirm_publish(
-        &mut self,
-        thread_id: String,
-        opened: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let buttons = [PromptButton::cancel("Cancel"), PromptButton::new("Publish")];
-        let answer = window.prompt(
-            PromptLevel::Info,
-            "Publish this HTML file?",
-            Some("Anyone with the link can read the file and its source. Only this file is uploaded."),
-            &buttons,
-            cx,
-        );
-        cx.spawn(async move |this, cx| {
-            if let Ok(1) = answer.await {
-                this.update(cx, |this, cx| {
-                    this.change_publication(&thread_id, opened, PublishAction::Publish, cx)
-                })
-                .ok();
-            }
+            })
+            .ok();
         })
         .detach();
+    }
+
+    fn artifact_visibility_menu(
+        &self,
+        thread_id: &str,
+        opened: u64,
+        visibility: Visibility,
+        working: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let side = cx.entity().downgrade();
+        let menu_thread = thread_id.to_owned();
+        let holder = crate::highlights::tipped_as(
+            div().id("hl-page-visibility").flex_none(),
+            "Change who can open this link",
+            gpui_kit::Role::GenericContainer,
+        );
+        let trigger = VisibilityLabel::new("hl-page-visibility-label", visibility, working, cx);
+        if working {
+            return holder.child(trigger).into_any_element();
+        }
+        holder
+            .child(trigger.dropdown_menu(move |menu: PopupMenu, _, _| {
+                let (s1, t1) = (side.clone(), menu_thread.clone());
+                let (s2, t2) = (side.clone(), menu_thread.clone());
+                let (s3, t3) = (side.clone(), menu_thread.clone());
+                let (s4, t4) = (side.clone(), menu_thread.clone());
+                menu.item(
+                    PopupMenuItem::new("Private")
+                        .checked(visibility == Visibility::Private)
+                        .icon(icons::symbol("lock"))
+                        .on_click(move |_, _, cx| {
+                            s1.update(cx, |this, cx| {
+                                this.change_publication(
+                                    &t1,
+                                    opened,
+                                    PublishAction::SetVisibility(Visibility::Private),
+                                    cx,
+                                );
+                            })
+                            .ok();
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Anyone with link")
+                        .checked(visibility == Visibility::Public)
+                        .icon(icons::symbol("globe"))
+                        .on_click(move |_, _, cx| {
+                            s2.update(cx, |this, cx| {
+                                this.change_publication(
+                                    &t2,
+                                    opened,
+                                    PublishAction::SetVisibility(Visibility::Public),
+                                    cx,
+                                );
+                            })
+                            .ok();
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Update web copy")
+                        .icon(icons::symbol("arrow.clockwise"))
+                        .on_click(move |_, _, cx| {
+                            s3.update(cx, |this, cx| {
+                                this.change_publication(&t3, opened, PublishAction::Sync, cx);
+                            })
+                            .ok();
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Remove web copy")
+                        .icon(icons::symbol("trash"))
+                        .on_click(move |_, _, cx| {
+                            s4.update(cx, |this, cx| {
+                                this.change_publication(&t4, opened, PublishAction::Unpublish, cx);
+                            })
+                            .ok();
+                        }),
+                )
+            }))
+            .into_any_element()
     }
 
     fn publish_bar(
@@ -707,101 +965,138 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         use crate::push_button::PushButton;
-        let (has_url, error, copied, working) = match &page.publication {
-            Publication::Ready { url, error, copied } => {
-                (url.is_some(), error.clone(), *copied, false)
+        let (url, visibility, error, copied, working, initial_sync) = match &page.publication {
+            Publication::Unavailable => return None,
+            Publication::Syncing { url, visibility } => {
+                (url.clone(), *visibility, None, false, true, url.is_none())
             }
-            Publication::Working => (false, None, false, true),
-            _ => return None,
+            Publication::Working { url, visibility } => {
+                (url.clone(), *visibility, None, false, true, false)
+            }
+            Publication::Ready {
+                url,
+                visibility,
+                error,
+                copied,
+            } => (
+                url.clone(),
+                *visibility,
+                error.clone(),
+                *copied,
+                false,
+                false,
+            ),
         };
-        let publish_thread = thread_id.to_owned();
-        let unpublish_thread = thread_id.to_owned();
-        let label = if working {
-            "Working…"
-        } else if has_url {
-            "Publish update"
-        } else {
-            "Publish"
-        };
-        let publish = PushButton::new(
-            "hl-page-publish",
-            label,
-            "Publish this file to a link anyone can open",
-        )
-        .busy(working)
-        .render(
-            cx,
-            cx.listener(move |this, _, window, cx| {
-                this.confirm_publish(publish_thread.clone(), opened, window, cx)
-            }),
-        );
-        let mut row = h_flex()
-            .flex_wrap()
-            .gap(px(6.))
-            .items_center()
-            .child(publish);
-        if has_url {
-            let copy_thread = thread_id.to_owned();
+        if initial_sync {
+            return Some(
+                h_flex()
+                    .flex_none()
+                    .w_full()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .gap(px(6.))
+                    .items_center()
+                    .child(Spinner::new().color(p.secondary).with_size(px(11.)))
+                    .child(
+                        div()
+                            .text_size(px(style::size::SMALL))
+                            .text_color(p.secondary)
+                            .child("Uploading web copy…"),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let mut row = h_flex().flex_wrap().gap(px(6.)).items_center();
+        if let Some(open_link) = url {
+            let open_button = crate::highlights::tipped(
+                div()
+                    .id("hl-page-open-web")
+                    .flex_none()
+                    .h(px(26.))
+                    .px(px(11.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .bg(p.accent)
+                    .text_size(px(style::size::LABEL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .whitespace_nowrap()
+                    .text_color(gpui::white())
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.9))
+                    .active(|s| s.opacity(0.8))
+                    .child(icons::symbol("arrow.up.right").with_size(px(12.)))
+                    .child("Open on web"),
+                "Open this page on the web",
+            )
+            .on_click(move |_, _, cx| open_web(&open_link, cx));
             row = row
-                .child(
-                    PushButton::new(
-                        "hl-page-copy-link",
-                        if copied { "Copied" } else { "Copy link" },
-                        "Copy the link to the published page",
-                    )
-                    .render(
-                        cx,
-                        cx.listener(move |this, _, _, cx| {
-                            if !this
-                                .previews
-                                .get(&copy_thread)
-                                .is_some_and(|preview| preview.opened == opened)
-                            {
-                                return;
-                            }
-                            let Some(open) = this
-                                .files
-                                .open
-                                .get_mut(&copy_thread)
-                                .filter(|file| file.opened == opened)
-                            else {
-                                return;
-                            };
-                            let FileBody::Page(page) = &mut open.body else {
-                                return;
-                            };
-                            let Publication::Ready {
-                                url: Some(url),
-                                copied,
-                                ..
-                            } = &mut page.publication
-                            else {
-                                return;
-                            };
-                            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                            *copied = true;
-                            cx.notify();
-                        }),
-                    ),
+                .child(open_button)
+                .child(self.artifact_visibility_menu(thread_id, opened, visibility, working, cx));
+
+            let copy_thread = thread_id.to_owned();
+            row = row.child(
+                PushButton::new(
+                    "hl-page-copy-link",
+                    if copied { "Copied" } else { "Copy link" },
+                    "Copy the link to this page",
                 )
-                .child(
-                    PushButton::new(
-                        "hl-page-unpublish",
-                        "Unpublish",
-                        "Take down the published page",
-                    )
-                    .render(
-                        cx,
-                        cx.listener(move |this, _, _, cx| {
-                            this.change_publication(
-                                &unpublish_thread,
-                                opened,
-                                PublishAction::Unpublish,
-                                cx,
-                            )
-                        }),
-                    ),
-                );
+                .render(
+                    cx,
+                    cx.listener(move |this, _, _, cx| {
+                        if !this
+                            .previews
+                            .get(&copy_thread)
+                            .is_some_and(|preview| preview.opened == opened)
+                        {
+                            return;
+                        }
+                        let Some(open) = this
+                            .files
+                            .open
+                            .get_mut(&copy_thread)
+                            .filter(|file| file.opened == opened)
+                        else {
+                            return;
+                        };
+                        let FileBody::Page(page) = &mut open.body else {
+                            return;
+                        };
+                        let Publication::Ready {
+                            url: Some(url),
+                            copied,
+                            ..
+                        } = &mut page.publication
+                        else {
+                            return;
+                        };
+                        cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                        *copied = true;
+                        cx.notify();
+                    }),
+                ),
+            );
+        } else {
+            let sync_thread = thread_id.to_owned();
+            row = row.child(
+                PushButton::new(
+                    "hl-page-upload",
+                    if working {
+                        "Uploading…"
+                    } else {
+                        "Upload to web"
+                    },
+                    "Upload this file for a web link",
+                )
+                .busy(working)
+                .render(
+                    cx,
+                    cx.listener(move |this, _, _, cx| {
+                        this.change_publication(&sync_thread, opened, PublishAction::Sync, cx)
+                    }),
+                ),
+            );
         }
         Some(
             v_flex()
@@ -2209,9 +2504,16 @@ impl SidePane {
                     FileBody::Page(page) => {
                         pane.insert("previewKind".into(), json!("web"));
                         pane.insert("previewText".into(), json!(path));
-                        if let Publication::Ready { url, .. } = &page.publication {
+                        if let Publication::Ready {
+                            url, visibility, ..
+                        } = &page.publication
+                        {
                             pane.insert("artifactReady".into(), json!(true));
                             pane.insert("artifactUrl".into(), json!(url));
+                            pane.insert(
+                                "artifactVisibility".into(),
+                                json!(url.as_ref().map(|_| visibility.wire())),
+                            );
                         }
                         pane.insert(
                             "previewScripts".into(),
@@ -2398,10 +2700,43 @@ pub(crate) fn preview_command(
     }
     let id = thread.id.clone();
     if let Some(action) = cmd["artifact"].as_str() {
+        if action == "open" {
+            let url = side
+                .read(cx)
+                .files
+                .open
+                .get(&id)
+                .and_then(|o| match &o.body {
+                    FileBody::Page(page) => match &page.publication {
+                        Publication::Ready { url: Some(url), .. } => Some(url.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .ok_or("no web link is ready")?;
+            open_web(&url, cx);
+            return Ok(json!("ok opened artifact"));
+        }
+        let has_url = side.read(cx).files.open.get(&id).is_some_and(|o| {
+            matches!(
+                &o.body,
+                FileBody::Page(page)
+                    if matches!(&page.publication, Publication::Ready { url: Some(_), .. })
+            )
+        });
         let action = match action {
-            "publish" => PublishAction::Publish,
+            "sync" => PublishAction::Sync,
+            "public" => PublishAction::SetVisibility(Visibility::Public),
+            "private" => PublishAction::SetVisibility(Visibility::Private),
+            "publish" => {
+                if has_url {
+                    PublishAction::SetVisibility(Visibility::Public)
+                } else {
+                    PublishAction::Publish
+                }
+            }
             "unpublish" => PublishAction::Unpublish,
-            _ => return Err("choose publish or unpublish".into()),
+            _ => return Err("choose sync, publish, public, private, unpublish or open".into()),
         };
         let opened = side
             .read(cx)

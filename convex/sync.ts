@@ -24,21 +24,55 @@ import { pushFailing, pushOff } from './pushHealth';
 import { archiveSoon } from './boxHooks';
 import { UPLOAD_CLAIM_MS, newClaim } from './uploads';
 import { issueToken as makeToken, issuePairingCode as makePairingCode, listTokens as allTokens, revokeToken as revokeOne, tokenInfo, tokenKind, MAX_DAYS } from './tokens';
-import { artifactChange, manageArtifact as manageHostedArtifact, readPublished as readPublishedArtifact } from './artifacts';
+import {
+  artifactChange,
+  artifactManageResult,
+  artifactVisibility,
+  consumeViewTicket,
+  issueViewTicket,
+  manageArtifact as manageHostedArtifact,
+  readPublished as readPublishedArtifact,
+} from './artifacts';
 
 export const manageArtifact = mutation({
   args: { key: v.string(), source: v.string(), change: artifactChange },
-  returns: v.object({ url: v.union(v.string(), v.null()), changed: v.boolean() }),
+  returns: artifactManageResult,
   handler: async (ctx, { key, source, change }) => {
-    await runnerAuth(ctx, key, 'manageArtifact');
-    return manageHostedArtifact(ctx, source, change);
+    const caller = await runnerAuth(ctx, key, 'manageArtifact');
+    return manageHostedArtifact(ctx, source, change, {
+      attachStorage: (storageId) => mustMayUseStorage(ctx, caller, storageId),
+      freeStorage: (storageId) => freeStorage(ctx, caller, storageId),
+    });
   },
 });
 
 export const hostedArtifact = internalQuery({
   args: { slug: v.string() },
-  returns: v.union(v.null(), v.object({ title: v.string(), html: v.string() })),
+  returns: v.union(
+    v.null(),
+    v.object({
+      title: v.string(),
+      html: v.optional(v.string()),
+      storageId: v.optional(v.id('_storage')),
+      visibility: artifactVisibility,
+    }),
+  ),
   handler: (ctx, { slug }) => readPublishedArtifact(ctx, slug),
+});
+
+export const issueArtifactView = internalMutation({
+  args: { token: v.string(), slug: v.string() },
+  returns: v.union(
+    v.object({ ok: v.literal(true), ticket: v.string() }),
+    v.object({ ok: v.literal(false), status: v.union(v.literal(401), v.literal(404)) }),
+  ),
+  handler: (ctx, { token, slug }) => issueViewTicket(ctx, token, slug),
+});
+
+export const consumeArtifactView = internalMutation({
+  args: { ticket: v.string(), slug: v.string() },
+  returns: v.boolean(),
+  handler: (ctx, { ticket, slug }) => consumeViewTicket(ctx, ticket, slug),
 });
 
 // The second pass on anything a runner sends (docs/convex-backend.md, "Secret
@@ -231,7 +265,7 @@ export const PICTURE_TABLES = ['shareImages', 'replyImages', 'projectIcons', 'he
 // A commandFiles row lasts only while its command waits or is taken (it goes
 // in endCommandFiles), so one is enough, and no command is read.
 export async function storageInUse(ctx: QueryCtx | MutationCtx, storageId: Id<'_storage'>): Promise<boolean> {
-  for (const table of [...PICTURE_TABLES, 'commandFiles'] as const) {
+  for (const table of [...PICTURE_TABLES, 'commandFiles', 'artifacts'] as const) {
     if (await ctx.db.query(table).withIndex('by_storageId', (q) => q.eq('storageId', storageId)).first()) return true;
   }
   // A box's save of its thread (boxes.ts boxSaved).
@@ -4009,6 +4043,10 @@ export const pruneOld = machines.internalMutation({
     // anything in a day (iconUploadUrl): one still named somewhere (a row
     // the owner wrote) is marked attached instead.
     for (const t of await ctx.db.query('uploadTickets').withIndex('by_issued', (q) => q.lt('issuedAt', cutoff)).take(Math.max(0, left))) {
+      await ctx.db.delete(t._id);
+      left--;
+    }
+    for (const t of await ctx.db.query('artifactViews').withIndex('by_expiresAt', (q) => q.lt('expiresAt', Date.now())).take(Math.max(0, left))) {
       await ctx.db.delete(t._id);
       left--;
     }

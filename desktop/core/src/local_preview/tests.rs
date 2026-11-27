@@ -21,11 +21,11 @@ fn publishing_reads_only_the_utf8_bytes_that_were_previewed() {
     assert!(read_for_publish(&file, &invalid)
         .unwrap_err()
         .contains("UTF-8"));
-    fs::write(&file, vec![b'x'; 64 * 1024 + 1]).unwrap();
+    fs::write(&file, vec![b'x'; MAX_PUBLISH_BYTES as usize + 1]).unwrap();
     let (_, large) = scan(&file).unwrap();
     assert!(read_for_publish(&file, &large)
         .unwrap_err()
-        .contains("64 KiB"));
+        .contains("10 MB"));
 }
 
 struct Folder {

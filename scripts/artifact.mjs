@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ARTIFACT_SLUG, MAX_ARTIFACT_BYTES } from '../convex/artifactPage.ts';
+import { ARTIFACT_SLUG } from '../convex/artifactPage.ts';
 
 const usage = `Usage:
   node scripts/artifact.mjs publish <file.html> <title>
@@ -10,8 +10,8 @@ const usage = `Usage:
 
 function readHtml(file) {
   const stat = statSync(file);
-  if (!stat.isFile() || !/\.html?$/i.test(file) || stat.size > MAX_ARTIFACT_BYTES) {
-    throw new Error('Use an HTML file up to 64 KiB.');
+  if (!stat.isFile() || !/\.html?$/i.test(file) || stat.size > 512 * 1024) {
+    throw new Error('Use an HTML file up to 512 KiB for the CLI helper (or up to 10 MB from the Threadbear app).');
   }
   return new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(file));
 }

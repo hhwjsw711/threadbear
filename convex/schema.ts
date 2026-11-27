@@ -262,13 +262,32 @@ export const moveStates = ['asking', 'ready', 'packing', 'unpacking', 'claimed',
 // Named as well as the default, so the state machines (machines.ts) can be
 // defined against it.
 export const appSchema = defineSchema({
-  // One current version of each explicitly published HTML file.
+  // One current version of each uploaded HTML artifact (API 109, file storage +
+  // private/public visibility since API 110). Legacy rows keep inline `html`
+  // and default to public; new rows store bytes in `_storage`.
   artifacts: defineTable({
     slug: v.string(),
     title: v.string(),
-    html: v.string(),
+    html: v.optional(v.string()),
+    storageId: v.optional(v.id('_storage')),
+    bytes: v.optional(v.number()),
+    digest: v.optional(v.string()),
+    visibility: v.optional(v.union(v.literal('private'), v.literal('public'))),
     source: v.optional(v.string()),
-  }).index('by_slug', ['slug']).index('by_source', ['source']),
+    updatedAt: v.optional(v.number()),
+  })
+    .index('by_slug', ['slug'])
+    .index('by_source', ['source'])
+    .index('by_storageId', ['storageId']),
+  // One-use 30 s view tickets minted by POST /a/auth so a browser signed in to
+  // Threadbear can load a private artifact at its clean /a/<slug> URL.
+  artifactViews: defineTable({
+    ticketHash: v.string(),
+    slug: v.string(),
+    expiresAt: v.number(),
+  })
+    .index('by_ticketHash', ['ticketHash'])
+    .index('by_expiresAt', ['expiresAt']),
   // One row per runner (the Mac, Tinker Desk later), written every minute.
   // A phone treats one not seen for 3 minutes as offline.
   runners: defineTable({

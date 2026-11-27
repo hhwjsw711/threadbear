@@ -17,6 +17,7 @@ export type Pane = {
   previewText?: string | null;
   artifactReady?: boolean;
   artifactUrl?: string | null;
+  artifactVisibility?: 'private' | 'public' | null;
   /** The find bar's words and where the picked match is: "the: 2 of 8", "the: not found". */
   previewFind?: string | null;
   /** The line over a text file: the conflict bar's words, or the grey note. */

@@ -174,7 +174,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 109;
+export const BACKEND_API_VERSION = 110;
 const ARTIFACTS_API_VERSION = 109;
 export const INDEX_POOL_API_VERSION = 101;
 export const COORDINATORS_API_VERSION = 102;
@@ -2086,13 +2086,162 @@ export class ConvexSync {
     return this.off;
   }
 
+  private rewriteArtifactUrl(url: string | null): string | null {
+    const site = this.site();
+    if (!url || !site) return url;
+    try {
+      const parsed = new URL(url);
+      return new URL(parsed.pathname + parsed.search + parsed.hash, site).href;
+    } catch {
+      return url;
+    }
+  }
+
+  private artifactSlugFromUrl(url: string | null): string | null {
+    if (!url) return null;
+    try {
+      const m = /^\/a\/([a-f0-9]{32})$/.exec(new URL(url).pathname);
+      return m?.[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private expectedArtifactMatches(expected: string | null | undefined, currentUrl: string | null): boolean {
+    if (expected === undefined) return true;
+    if (expected === null) return currentUrl === null;
+    const want = this.artifactSlugFromUrl(expected);
+    return want !== null && want === this.artifactSlugFromUrl(currentUrl);
+  }
+
   async manageArtifact(source: string, change: Record<string, unknown>): Promise<unknown> {
     const key = this.deps.key;
     if (this.off || !key || !this.ownerKey() || (this.backendHeard && (this.backendApiVersion ?? 0) < ARTIFACTS_API_VERSION)) return { available: false };
     // Before the first heartbeat, ask the deployment directly. A preview
     // restored at launch can find its link without waiting for sync to wake.
-    const result = await this.backend('mutation', 'sync:manageArtifact', { key, source, change });
-    return { available: true, ...(result as { url: string | null; changed: boolean }) };
+    const result = (await this.backend('mutation', 'sync:manageArtifact', { key, source, change })) as {
+      url: string | null;
+      visibility?: 'private' | 'public' | null;
+      digest?: string | null;
+      changed: boolean;
+      error?: string;
+    };
+    if (result.error) throw new Error(result.error);
+    return {
+      available: true,
+      ...result,
+      url: this.rewriteArtifactUrl(result.url),
+      visibility: result.visibility ?? (result.url ? 'public' : null),
+    };
+  }
+
+  async syncArtifact(
+    source: string,
+    opts: { title: string; bytes: Buffer; digest: string; visibility?: 'private' | 'public'; expected?: string | null },
+  ): Promise<unknown> {
+    const key = this.deps.key;
+    if (this.off || !key || !this.ownerKey() || (this.backendHeard && (this.backendApiVersion ?? 0) < ARTIFACTS_API_VERSION)) {
+      return { available: false };
+    }
+    // Check current state first: proves whether the backend speaks API 110
+    // (returns `visibility`) before uploading any bytes, skips re-uploading
+    // unchanged digests, and anchors `expected` so a delayed sync never
+    // recreates a web copy that was removed meanwhile.
+    const current = (await this.backend('mutation', 'sync:manageArtifact', {
+      key,
+      source,
+      change: { action: 'status' },
+    })) as {
+      url: string | null;
+      visibility?: 'private' | 'public' | null;
+      digest?: string | null;
+      changed: boolean;
+      error?: string;
+    };
+    if (current.error) throw new Error(current.error);
+
+    const supportsStorage = 'visibility' in current;
+    if (!supportsStorage) {
+      // Never auto-upload as public on an older API 109 backend that lacks
+      // private visibility. Only explicit public publish <= 64 KiB falls back.
+      if (opts.visibility !== 'public') return { available: false };
+      if (opts.bytes.length > 64 * 1024) {
+        throw new Error('Update the Threadbear backend to publish HTML files over 64 KiB.');
+      }
+      const html = opts.bytes.toString('utf8');
+      const result = (await this.backend('mutation', 'sync:manageArtifact', {
+        key,
+        source,
+        change: { action: 'publish', expected: opts.expected ?? null, title: opts.title, html },
+      })) as { url: string | null; changed: boolean };
+      return {
+        available: true,
+        url: this.rewriteArtifactUrl(result.url),
+        visibility: result.url ? 'public' : null,
+        digest: opts.digest,
+        changed: result.changed,
+      };
+    }
+
+    if (!this.expectedArtifactMatches(opts.expected, current.url)) {
+      return {
+        available: true,
+        url: this.rewriteArtifactUrl(current.url),
+        visibility: current.visibility ?? null,
+        digest: current.digest ?? null,
+        changed: false,
+      };
+    }
+
+    const expected = opts.expected !== undefined ? opts.expected : current.url;
+
+    if (current.url && current.digest === opts.digest) {
+      if (opts.visibility && (current.visibility ?? 'public') !== opts.visibility) {
+        const updated = (await this.backend('mutation', 'sync:manageArtifact', {
+          key,
+          source,
+          change: { action: 'setVisibility', visibility: opts.visibility, expected },
+        })) as { url: string | null; visibility?: 'private' | 'public' | null; digest?: string | null; changed: boolean; error?: string };
+        if (updated.error) throw new Error(updated.error);
+        return {
+          available: true,
+          url: this.rewriteArtifactUrl(updated.url),
+          visibility: updated.visibility ?? null,
+          digest: updated.digest ?? opts.digest,
+          changed: updated.changed,
+        };
+      }
+      return {
+        available: true,
+        url: this.rewriteArtifactUrl(current.url),
+        visibility: current.visibility ?? 'public',
+        digest: current.digest ?? opts.digest,
+        changed: false,
+      };
+    }
+
+    const uploadUrl = (await this.backend('mutation', 'sync:iconUploadUrl', { key })) as string;
+    const storageId = await this.upload(uploadUrl, opts.bytes, 'application/octet-stream');
+    const result = (await this.backend('mutation', 'sync:manageArtifact', {
+      key,
+      source,
+      change: {
+        action: 'sync',
+        title: opts.title,
+        storageId,
+        digest: opts.digest,
+        expected,
+        ...(opts.visibility ? { visibility: opts.visibility } : {}),
+      },
+    })) as { url: string | null; visibility?: 'private' | 'public' | null; digest?: string | null; changed: boolean; error?: string };
+    if (result.error) throw new Error(result.error);
+    return {
+      available: true,
+      url: this.rewriteArtifactUrl(result.url),
+      visibility: result.visibility ?? (result.url ? 'private' : null),
+      digest: result.digest ?? opts.digest,
+      changed: result.changed,
+    };
   }
 
   /**

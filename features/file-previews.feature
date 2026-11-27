@@ -198,14 +198,15 @@ Feature: Files opened in the side pane
     Then the local page in the pane is titled "named 200, unnamed 404, dotfile 404, away blocked, frame guarded yes, webrtc none"
 
   @file.publish @web-runtime @swift-pending
-  Scenario: Publish, update and take down an HTML preview
+  Scenario: Auto-upload an HTML preview, change visibility, open on web, and remove it
     Given the web runtime is installed
     And the owner runner can publish HTML
     When I open the thread "Rebuild the three landing pages"
     And I open "mockups/drawn.html" in the thread's folder in the pane
-    And I choose to publish the preview
+    Then the preview has a private link
+    When I choose to public the preview
     Then the preview has a public link
-    When I choose to publish the preview
-    Then the preview has a public link
+    When I choose to private the preview
+    Then the preview has a private link
     When I choose to unpublish the preview
-    Then the preview has no public link
+    Then the preview has no web link

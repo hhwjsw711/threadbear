@@ -16,16 +16,75 @@ import { takeUpload } from './uploads';
 import { safeDecode, withCard } from './shareCard';
 import { promoteRoute } from './boxImage';
 import { cappedJson } from './httpJson';
-import { ARTIFACT_PATH, artifactPage, artifactSlug } from './artifactPage';
+import {
+  ARTIFACT_AUTH_PATH,
+  ARTIFACT_PATH,
+  ARTIFACT_SLUG,
+  artifactPage,
+  artifactSlug,
+  artifactTicketCookie,
+  clearArtifactTicketCookie,
+  privateArtifactGate,
+  readArtifactTicket,
+} from './artifactPage';
 
 const http = httpRouter();
+
+function isSecureRequest(request: Request, url: URL): boolean {
+  return url.protocol === 'https:' || request.headers.get('x-forwarded-proto') === 'https';
+}
+
+http.route({
+  path: ARTIFACT_AUTH_PATH,
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const auth = request.headers.get('authorization') ?? '';
+    const match = /^Bearer\s+(.+)$/i.exec(auth.trim());
+    const token = match?.[1]?.trim();
+    const deny = (status: number) =>
+      new Response(null, { status, headers: { 'Cache-Control': 'no-store' } });
+    if (!token) return deny(401);
+    const body = await cappedJson(request, 1024);
+    if (body === 'tooBig') return deny(413);
+    const slug = typeof body?.slug === 'string' && ARTIFACT_SLUG.test(body.slug) ? body.slug : null;
+    if (!slug) return deny(400);
+    const issued = await ctx.runMutation(internal.sync.issueArtifactView, { token, slug });
+    if (!issued.ok) return deny(issued.status);
+    const url = new URL(request.url);
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Cache-Control': 'no-store',
+        'Set-Cookie': artifactTicketCookie(slug, issued.ticket, isSecureRequest(request, url)),
+      },
+    });
+  }),
+});
 
 http.route({
   pathPrefix: ARTIFACT_PATH,
   method: 'GET',
   handler: httpAction(async (ctx, request) => {
-    const slug = artifactSlug(new URL(request.url).pathname);
-    return artifactPage(slug ? await ctx.runQuery(internal.sync.hostedArtifact, { slug }) : null);
+    const url = new URL(request.url);
+    const slug = artifactSlug(url.pathname);
+    if (!slug) return artifactPage(null);
+    const artifact = await ctx.runQuery(internal.sync.hostedArtifact, { slug });
+    if (!artifact) return artifactPage(null);
+
+    const ticket = readArtifactTicket(request.headers.get('cookie'));
+    const clearHeader = ticket
+      ? { 'Set-Cookie': clearArtifactTicketCookie(slug, isSecureRequest(request, url)) }
+      : undefined;
+
+    if (artifact.visibility === 'private') {
+      const allowed = ticket ? await ctx.runMutation(internal.sync.consumeArtifactView, { ticket, slug }) : false;
+      if (!allowed) return privateArtifactGate(slug, clearHeader);
+    }
+
+    const body = artifact.storageId
+      ? await ctx.storage.get(artifact.storageId)
+      : artifact.html ?? null;
+    return artifactPage(body, clearHeader);
   }),
 });
 

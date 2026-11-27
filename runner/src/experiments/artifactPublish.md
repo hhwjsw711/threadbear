@@ -9,7 +9,7 @@ reminder: b5405759
 
 ## What it does
 
-Open a local HTML file in the desktop app and choose **Publish**. The main runner uploads that one file to your Threadbear Convex deployment and gives you a link anyone can open. **Publish update** uses the same link. **Unpublish** takes it down. Inline styles and embedded images work. The published page runs with scripts and external requests blocked.
+Opening a local HTML file in the desktop app uploads it automatically to Convex file storage (up to 10 MB) as a **Private** link you can open with **Open on web** when signed in to Threadbear in your browser. Use the visibility menu to switch between **Private** and **Anyone with link**, update the web copy after local edits, or remove it. Inline styles, embedded media and inline scripts run inside an opaque sandbox isolated from Threadbear's sign-in, with background requests, subresources and forms blocked.
 
 ## Lives in
 

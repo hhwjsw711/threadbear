@@ -483,13 +483,16 @@ browser to see it with everything. The GPUI app shows these pages with its
 web runtime: until that's installed, the pane asks for it where the page
 would be.
 
-With the **Publish HTML previews** experiment on, choose **Publish** over a
-local HTML preview to put that one file on your Threadbear deployment. The
-file can be up to 64 KiB and must be UTF-8. The published page keeps inline
-styles and embedded images. Scripts stay off and files beside the page
-stay on your Mac. **Copy link** gives you an address anyone can open.
-**Publish update** replaces the page at that same address, and
-**Unpublish** takes the link down.
+With the **Publish HTML previews** experiment on, opening a local HTML preview
+uploads it automatically to your Threadbear deployment's file storage (UTF-8, up
+to 10 MB) as a **Private** link that only you can open when signed in to
+Threadbear in your browser. Choose **Open on web** to open it in your browser,
+**Copy link** to copy the address, or switch the visibility menu between
+**Private** and **Anyone with link** when you want to share it. The menu also
+lets you **Update web copy** after local edits or **Remove web copy** to take
+the link down. The hosted page keeps inline styles, embedded media and inline
+scripts inside a sandbox isolated from your Threadbear sign-in, with background
+requests, subresources and forms blocked. Files beside the page stay on your Mac.
 
 To share a file somewhere else, drag it out of the app: a file link in a
 reply, a picture in the transcript, a file in Highlights, a row in a folder

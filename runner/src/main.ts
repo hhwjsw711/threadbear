@@ -1397,21 +1397,89 @@ async function main(): Promise<void> {
     else if (n.method === 'thread.deleted') updates.threadChanged(n.params.threadId);
   });
   const methods = { ...restartMethods(restarter), ...scheduleMethods(scheduler), ...projectMethods(projects), ...coordinatorMethods(coordinators), ...drainProjectMethods(projects), ...librarianMethods(librarian), ...connectorsMethods(connectors), ...recipeMethods(recipes), ...settingsMethods(settings), ...instructionsMethods(instructions), ...modelMethods(models), ...devicesMethods(sync), ...usageStatsMethods({ tally, history: usageHistory, clock: realClock }), ...archiveMethods(agentArchive) };
+  const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
+  const readArtifactFile = (filePath: string, expectedDigest?: string): { bytes: Buffer; digest: string } => {
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0);
+    let fd: number;
+    try {
+      fd = fs.openSync(filePath, flags);
+    } catch {
+      throw new RpcError(ErrorCode.badParams, 'Could not read that HTML file.');
+    }
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile()) throw new RpcError(ErrorCode.badParams, 'Choose a local HTML file.');
+      if (stat.size === 0) throw new RpcError(ErrorCode.badParams, 'This HTML file is empty.');
+      if (stat.size > MAX_ARTIFACT_BYTES) {
+        const mb = (stat.size / (1024 * 1024)).toFixed(1);
+        throw new RpcError(ErrorCode.badParams, `This file is ${mb} MB. Web links support HTML files up to 10 MB.`);
+      }
+      const chunks: Buffer[] = [];
+      let total = 0;
+      const buf = Buffer.allocUnsafe(64 * 1024);
+      for (;;) {
+        const n = fs.readSync(fd, buf, 0, buf.length, null);
+        if (n === 0) break;
+        total += n;
+        if (total > MAX_ARTIFACT_BYTES) {
+          throw new RpcError(ErrorCode.badParams, 'Web links support HTML files up to 10 MB.');
+        }
+        chunks.push(Buffer.from(buf.subarray(0, n)));
+      }
+      const bytes = Buffer.concat(chunks, total);
+      let text: string;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      } catch {
+        throw new RpcError(ErrorCode.badParams, 'Save this file as UTF-8 before uploading it.');
+      }
+      if (!text.trim()) throw new RpcError(ErrorCode.badParams, 'This HTML file is empty.');
+      const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+      if (expectedDigest && digest !== expectedDigest) {
+        throw new RpcError(ErrorCode.badParams, 'The file changed. Reopen its preview to sync it.');
+      }
+      return { bytes, digest };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
   methods['artifacts.manage'] = (p) => {
     if (!experimentOn(cfg.home, 'artifactPublish')) return { available: false };
     if (typeof p.path !== 'string' || !path.isAbsolute(p.path) || !/\.html?$/i.test(p.path) || p.path.length > 4096) {
       throw new RpcError(ErrorCode.badParams, 'Choose a local HTML file.');
     }
     const source = crypto.createHash('sha256').update(p.path).digest('hex');
+    const title = Array.from(path.basename(p.path, path.extname(p.path))).slice(0, 60).join('').trim() || 'HTML page';
+    const visibility = p.visibility === 'private' || p.visibility === 'public' ? p.visibility : undefined;
     if (p.action === 'status') return sync.manageArtifact(source, { action: 'status' });
     if (p.action === 'unpublish' && typeof p.expected === 'string') {
-      return sync.manageArtifact(source, { action: p.action, expected: p.expected });
+      return sync.manageArtifact(source, { action: 'unpublish', expected: p.expected });
     }
-    if (p.action === 'publish' && (p.expected === null || typeof p.expected === 'string') && typeof p.html === 'string' && Buffer.byteLength(p.html) <= 64 * 1024) {
-      const title = Array.from(path.basename(p.path, path.extname(p.path))).slice(0, 60).join('').trim() || 'HTML page';
-      return sync.manageArtifact(source, { action: p.action, expected: p.expected, title, html: p.html });
+    if (p.action === 'setVisibility' && visibility) {
+      const expected = typeof p.expected === 'string' ? p.expected : undefined;
+      return sync.manageArtifact(source, { action: 'setVisibility', visibility, ...(expected ? { expected } : {}) });
     }
-    throw new RpcError(ErrorCode.badParams, 'Choose a UTF-8 HTML file up to 64 KiB.');
+    if (p.action === 'sync') {
+      const expectedDigest = typeof p.digest === 'string' && /^[0-9a-f]{64}$/.test(p.digest) ? p.digest : undefined;
+      const expected = p.expected === null || typeof p.expected === 'string' ? p.expected : undefined;
+      const { bytes, digest } = readArtifactFile(p.path, expectedDigest);
+      return sync.syncArtifact(source, { title, bytes, digest, ...(visibility ? { visibility } : {}), ...(expected !== undefined ? { expected } : {}) });
+    }
+    if (p.action === 'publish' && (p.expected === null || typeof p.expected === 'string')) {
+      if (typeof p.html === 'string') {
+        const bytes = Buffer.from(p.html, 'utf8');
+        if (bytes.length === 0) throw new RpcError(ErrorCode.badParams, 'This HTML file is empty.');
+        if (bytes.length > MAX_ARTIFACT_BYTES) {
+          throw new RpcError(ErrorCode.badParams, 'Web links support HTML files up to 10 MB.');
+        }
+        const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+        return sync.syncArtifact(source, { title, bytes, digest, visibility: 'public', expected: p.expected });
+      }
+      const expectedDigest = typeof p.digest === 'string' && /^[0-9a-f]{64}$/.test(p.digest) ? p.digest : undefined;
+      const { bytes, digest } = readArtifactFile(p.path, expectedDigest);
+      return sync.syncArtifact(source, { title, bytes, digest, visibility: 'public', expected: p.expected });
+    }
+    throw new RpcError(ErrorCode.badParams, 'Choose a UTF-8 HTML file up to 10 MB.');
   };
   // runner.status carries the CLI statuses too (protocol, "runner.status").
   const restartStatus = methods['runner.status'];

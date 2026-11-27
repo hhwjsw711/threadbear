@@ -1015,16 +1015,43 @@ async function dispatch(client, method, p) {
       return {};
     case 'artifacts.manage': {
       if (!mockArtifacts) return { available: false };
-      let url = mockArtifacts.get(p.path) ?? null;
-      if (p.action === 'status' || p.expected !== url) return { available: true, url, changed: false };
-      if (p.action === 'publish') {
-        url ??= 'https://example.test/a/mock-artifact';
-        mockArtifacts.set(p.path, url);
-      } else {
-        mockArtifacts.delete(p.path);
-        url = null;
+      let entry = mockArtifacts.get(p.path) ?? null;
+      if (p.action === 'status') {
+        return {
+          available: true,
+          url: entry?.url ?? null,
+          visibility: entry?.visibility ?? null,
+          changed: false,
+        };
       }
-      return { available: true, url, changed: true };
+      if (p.action === 'sync') {
+        const visibility = p.visibility === 'public' || p.visibility === 'private'
+          ? p.visibility
+          : entry?.visibility ?? 'private';
+        const url = entry?.url ?? 'https://example.test/a/mock-artifact';
+        entry = { url, visibility };
+        mockArtifacts.set(p.path, entry);
+        return { available: true, url: entry.url, visibility: entry.visibility, changed: true };
+      }
+      if (p.action === 'setVisibility') {
+        if (!entry || (typeof p.expected === 'string' && p.expected !== entry.url)) {
+          return { available: true, url: entry?.url ?? null, visibility: entry?.visibility ?? null, changed: false };
+        }
+        entry = { ...entry, visibility: p.visibility === 'public' ? 'public' : 'private' };
+        mockArtifacts.set(p.path, entry);
+        return { available: true, url: entry.url, visibility: entry.visibility, changed: true };
+      }
+      if (p.expected !== (entry?.url ?? null)) {
+        return { available: true, url: entry?.url ?? null, visibility: entry?.visibility ?? null, changed: false };
+      }
+      if (p.action === 'publish') {
+        const url = entry?.url ?? 'https://example.test/a/mock-artifact';
+        entry = { url, visibility: 'public' };
+        mockArtifacts.set(p.path, entry);
+        return { available: true, url: entry.url, visibility: entry.visibility, changed: true };
+      }
+      mockArtifacts.delete(p.path);
+      return { available: true, url: null, visibility: null, changed: true };
     }
     case 'hello':
       // The Mac mini has two logins of its own and no pools, as the real one does,

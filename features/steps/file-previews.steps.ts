@@ -201,12 +201,15 @@ When('I choose to {word} the preview', async function (this: ThreadbearWorld, ar
   await this.app.do({ cmd: 'preview', artifact });
 });
 
-Then('the preview has a public link', async function (this: ThreadbearWorld) {
-  await this.until('the preview to show its share link', (d) => pane(d)?.artifactUrl === 'https://example.test/a/mock-artifact');
+Then('the preview has a {word} link', async function (this: ThreadbearWorld, visibility: string) {
+  await this.until(
+    `the preview to show its ${visibility} link`,
+    (d) => pane(d)?.artifactUrl === 'https://example.test/a/mock-artifact' && pane(d)?.artifactVisibility === visibility,
+  );
 });
 
-Then('the preview has no public link', async function (this: ThreadbearWorld) {
-  await this.until('the preview to have no public link', (d) => pane(d)?.artifactReady === true && pane(d)?.artifactUrl === null);
+Then('the preview has no web link', async function (this: ThreadbearWorld) {
+  await this.until('the preview to have no web link', (d) => pane(d)?.artifactReady === true && pane(d)?.artifactUrl === null);
 });
 
 // A note in place of the file (one that only opens in its app, or one waiting

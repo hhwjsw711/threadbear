@@ -1,282 +1,86 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { runInNewContext } from 'node:vm';
-import { artifactPage, artifactSlug, MAX_ARTIFACT_BYTES } from '../../../convex/artifactPage.ts';
+import {
+  ARTIFACT_CSP,
+  ARTIFACT_TICKET_COOKIE,
+  MAX_ARTIFACT_BYTES,
+  artifactPage,
+  artifactSlug,
+  artifactTicketCookie,
+  clearArtifactTicketCookie,
+  privateArtifactGate,
+  readArtifactTicket,
+  slugFromUrl,
+} from '../../../convex/artifactPage.ts';
 
 const slug = '8fd09e30f5903a93471048c1c6c32d33';
+const ticket = 'a'.repeat(48);
 
 test('the public route takes exactly one artifact slug', () => {
   assert.equal(artifactSlug(`/a/${slug}`), slug);
-  for (const path of ['/a/', '/s/' + slug, `/a/${slug}/more`, `/a/${slug}/`, '/a/%ff', '/a/Trip']) {
+  assert.equal(slugFromUrl(`https://threadbear.example/a/${slug}#cost`), slug);
+  assert.equal(slugFromUrl('not-a-url'), null);
+  for (const path of ['/a/', '/a/auth', '/s/' + slug, `/a/${slug}/more`, `/a/${slug}/`, '/a/%ff', '/a/Trip']) {
     assert.equal(artifactSlug(path), null, path);
   }
 });
 
-test('the artifact content and title are isolated from the wrapper markup', async () => {
-  const response = artifactPage({
-    title: '</title><h1>Outside?</h1>',
-    html: '<p title="A &amp; B">C</p>',
-  });
-  const page = await response.text();
-  assert.match(page, /<title>&lt;\/title&gt;&lt;h1&gt;Outside\?&lt;\/h1&gt;<\/title>/);
-  assert.match(page, /<iframe sandbox="allow-scripts" title="/);
-  assert.match(page, /srcdoc="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;script nonce=&quot;[^"]+&quot;&gt;[^]*&lt;\/script&gt;&lt;p title=&quot;A &amp;amp; B&quot;&gt;C&lt;\/p&gt;"/);
+test('artifacts allow up to 10 MiB and run authored scripts inside an opaque offline sandbox', async () => {
+  assert.equal(MAX_ARTIFACT_BYTES, 10 * 1024 * 1024);
+  const html = '<!doctype html><title>Interactive</title><script>window.ok = true;</script><p>Hi</p>';
+  const response = artifactPage(html);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), html);
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  assert.match(response.headers.get('content-security-policy') ?? '', /default-src 'none'/);
-  assert.match(response.headers.get('content-security-policy') ?? '', /base-uri about:/);
-  assert.match(response.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
-  assert.equal(MAX_ARTIFACT_BYTES, 64 * 1024);
-});
-
-test('the fragment base follows the opening tags of a full document', async () => {
-  const page = await artifactPage({
-    title: 'Artifact',
-    html: '\uFEFF<?xml version="1.0"?><!doctype html><!-- <head> --><html lang="fr"><head data-label="a > b"><title>Page</title>',
-  }).text();
-  assert.ok(page.includes(
-    'srcdoc="&lt;?xml version=&quot;1.0&quot;?&gt;&lt;!doctype html&gt;&lt;!-- &lt;head&gt; --&gt;&lt;html lang=&quot;fr&quot;&gt;' +
-    '&lt;head data-label=&quot;a &gt; b&quot;&gt;&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;script nonce=',
-  ));
-  assert.ok(page.includes('&lt;/script&gt;&lt;title&gt;Page'));
-});
-
-test('the browser permits only the two trusted viewer scripts', async () => {
-  const artifact = { title: 'Artifact', html: '<script>console.log("Not trusted");</script>' };
-  const response = artifactPage(artifact);
-  const html = await response.text();
-  const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"' };
-  const srcdoc = html.match(/srcdoc="([^"]*)"/)?.[1].replace(/&(amp|lt|gt|quot);/g, (_, name: string) => entities[name]);
+  assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
   const policy = response.headers.get('content-security-policy') ?? '';
-  const nonce = policy.match(/(?:^|; )script-src 'nonce-([+/a-zA-Z0-9=]+)'(?=;|$)/)?.[1];
-  assert.ok(nonce);
-  assert.equal(Buffer.from(nonce, 'base64').length, 16);
-  assert.notEqual(artifactPage(artifact).headers.get('content-security-policy'), policy);
-  assert.deepEqual([...(srcdoc ?? '').matchAll(/<script(?: nonce="([^"]*)")?>/g)].map(([, token]) => token), [nonce, undefined]);
-  assert.deepEqual([...html.matchAll(/<script nonce="([^"]*)">/g)].map(([, token]) => token), [nonce]);
-  assert.match(policy, /(?:^|; )sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox(?:;|$)/);
-  assert.match(policy, /(?:^|; )script-src-attr 'none'(?:;|$)/);
+  assert.equal(policy, ARTIFACT_CSP);
+  assert.match(policy, /(?:^|; )sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads(?:;|$)/);
+  assert.doesNotMatch(policy, /allow-same-origin/);
+  assert.match(policy, /(?:^|; )default-src 'none'(?:;|$)/);
+  assert.match(policy, /(?:^|; )connect-src 'none'(?:;|$)/);
+  assert.match(policy, /(?:^|; )form-action 'none'(?:;|$)/);
+  assert.match(policy, /(?:^|; )frame-ancestors 'none'(?:;|$)/);
+  assert.match(policy, /(?:^|; )script-src 'unsafe-inline' 'unsafe-eval' blob: data:(?:;|$)/);
+  assert.match(policy, /(?:^|; )media-src data: blob:(?:;|$)/);
 });
 
-type HistoryEntry = { artifactEntry: string };
-type FragmentMessage = { artifactFragment: string; entry: string; offset?: number[]; restart: boolean };
-let nextEntry = 0;
-
-async function viewer(navigation = 'navigate', name = '', hash = '#cost', pathname = '/a/demo') {
-  const html = await artifactPage({ title: 'Artifact', html: '<h2 id="cost">Cost</h2>' }).text();
-  const viewerScript = html.match(/<script nonce="[^"]+">([^]*?)<\/script>/)?.[1];
-  assert.ok(viewerScript);
-
-  const events = new EventTarget();
-  const location = { pathname, hash, get href() { return this.pathname + this.hash; } };
-  const history = {
-    state: null as HistoryEntry | null,
-    replaceState(state: HistoryEntry) { history.state = state; },
-  };
-  const messages: FragmentMessage[] = [];
-  const frame = { postMessage(data: FragmentMessage, origin: string) {
-    assert.equal(origin, '*'); // A sandboxed srcdoc has an opaque origin.
-    messages.push(structuredClone(data));
-  } };
-  const replacement = Object.assign(new EventTarget(), { contentWindow: frame });
-  const iframe = Object.assign(new EventTarget(), {
-    contentWindow: navigation === 'back_forward' ? { postMessage() { assert.fail('sent to the old frame'); } } : frame,
-    cloneNode: () => replacement,
-    replaceWith(node: EventTarget) { assert.equal(node, replacement); },
-  });
-  const window = { location, name, addEventListener: events.addEventListener.bind(events) };
-  runInNewContext(viewerScript, {
-    window,
-    history,
-    document: { querySelector: () => iframe },
-    crypto: { getRandomValues: () => [++nextEntry] },
-    performance: { getEntriesByType: () => [{ type: navigation }] },
-  });
-
-  const fire = (type: string) => events.dispatchEvent(new Event(type));
-  const change = (hash: string, state: HistoryEntry | null = null) => {
-    location.hash = hash;
-    history.state = state;
-    fire('popstate');
-    fire('hashchange');
-  };
-  const receive = (data: object) => {
-    const event = Object.assign(new Event('message'), { source: frame, origin: 'null', data });
-    events.dispatchEvent(event);
-  };
-  const report = (offset: (number | number[])[], entry = history.state?.artifactEntry) =>
-    receive({ entry, artifactPosition: offset });
-
-  fire('load');
-  return { history, window, messages, replacement, change, report, receive };
-}
-
-test('the wrapper forwards same-fragment history entries and only sends each entry once', async () => {
-  const { history, change, messages } = await viewer();
-  const firstCostEntry = history.state;
-  change('#details');
-  const detailsEntry = history.state;
-  change('#cost');
-  const secondCostEntry = history.state;
-  assert.notEqual(firstCostEntry?.artifactEntry, secondCostEntry?.artifactEntry);
-  // Back two entries changes history.state while the URL stays the same.
-  change('#cost', firstCostEntry);
-  assert.deepEqual(messages.map(({ artifactFragment, entry }) => [artifactFragment, entry]), [
-    ['#cost', firstCostEntry?.artifactEntry],
-    ['#details', detailsEntry?.artifactEntry],
-    ['#cost', secondCostEntry?.artifactEntry],
-    ['#cost', firstCostEntry?.artifactEntry],
-  ]);
+test('artifactPage streams Blob bodies directly from file storage', async () => {
+  const blob = new Blob(['<h1>Stored</h1>'], { type: 'application/octet-stream' });
+  const response = artifactPage(blob, { 'Set-Cookie': clearArtifactTicketCookie(slug, true) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(await response.text(), '<h1>Stored</h1>');
+  assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/);
 });
 
-test('reloading restores the current entry and keeps earlier offsets for Back', async () => {
-  const first = await viewer('navigate', '', '#intro');
-  const intro = first.history.state;
-  assert.ok(intro);
-  first.report([0, 600]);
-  first.change('#cost');
-  const cost = first.history.state;
-  first.report([0, 1000]);
-  first.report([0, 625], intro.artifactEntry); // The frame's last snapshot before leaving.
-
-  const reloaded = await viewer('reload', first.window.name, '#cost');
-  assert.equal(reloaded.history.state?.artifactEntry, cost?.artifactEntry);
-  assert.deepEqual(reloaded.messages[0]?.offset, [0, 1000]);
-  reloaded.change('#intro', intro);
-  assert.deepEqual(reloaded.messages[1]?.offset, [0, 625]);
+test('private artifact gate uses a fresh nonce CSP and never embeds authored HTML', async () => {
+  const a = privateArtifactGate(slug);
+  const b = privateArtifactGate(slug);
+  assert.equal(a.status, 200);
+  assert.equal(a.headers.get('cache-control'), 'no-store');
+  const policyA = a.headers.get('content-security-policy') ?? '';
+  const policyB = b.headers.get('content-security-policy') ?? '';
+  const nonceA = policyA.match(/script-src 'nonce-([+/a-zA-Z0-9=]+)'/)?.[1];
+  assert.ok(nonceA);
+  assert.equal(Buffer.from(nonceA, 'base64').length, 16);
+  assert.notEqual(policyA, policyB);
+  assert.match(policyA, /(?:^|; )connect-src 'self'(?:;|$)/);
+  assert.match(policyA, /(?:^|; )frame-ancestors 'none'(?:;|$)/);
+  const html = await a.text();
+  assert.ok(html.includes(`<script nonce="${nonceA}">`));
+  assert.ok(html.includes("localStorage.getItem('threadbear.token')"));
+  assert.ok(html.includes('"/a/auth"'));
 });
 
-test('history changes during a cold frame reload are sent to the new frame only', async () => {
-  const { change, replacement, messages } = await viewer('back_forward');
-  change('#details');
-  assert.deepEqual(messages, []);
-  replacement.dispatchEvent(new Event('load'));
-  assert.deepEqual(messages.map(({ artifactFragment }) => artifactFragment), ['#details']);
-});
-
-test('a fresh artifact keeps the tab bookmarks without inheriting an earlier offset', async () => {
-  const first = await viewer('navigate', '', '#cost', '/a/first');
-  first.report([0, 800]);
-
-  const second = await viewer('navigate', first.window.name, '#cost', '/a/second');
-  assert.equal(second.messages[0]?.offset, undefined);
-  second.report([0, 300]);
-
-  const back = await viewer('back_forward', second.window.name, '#cost', '/a/first');
-  back.history.state = first.history.state;
-  back.replacement.dispatchEvent(new Event('load'));
-  assert.deepEqual(back.messages[0]?.offset, [0, 800]);
-});
-
-test('a new entry for the same fragment during frame load cannot reuse the initial bookmark', async () => {
-  const first = await viewer();
-  const cost = first.history.state;
-  assert.ok(cost);
-  first.report([0, 1000]);
-
-  const back = await viewer('back_forward', first.window.name);
-  back.history.state = cost;
-  back.change('#details');
-  back.receive({ artifactFragmentLink: '#cost' }); // Load can precede this click's history events.
-  back.replacement.dispatchEvent(new Event('load'));
-  assert.equal(back.messages[0]?.artifactFragment, '#cost');
-  assert.notEqual(back.messages[0]?.entry, cost.artifactEntry);
-  assert.equal(back.messages[0]?.offset, undefined);
-
-  back.change('#cost', cost);
-  assert.deepEqual(back.messages[1]?.offset, [0, 1000]);
-});
-
-test('the viewer honors in-page links clicked before the replacement frame finishes loading', async () => {
-  const loading = await viewer('back_forward');
-  loading.receive({ artifactFragmentLink: '#details' });
-  assert.equal(loading.window.location.hash, '#details');
-  assert.deepEqual(loading.messages, []);
-  loading.replacement.dispatchEvent(new Event('load'));
-  assert.deepEqual(loading.messages.map(({ artifactFragment }) => artifactFragment), ['#details']);
-
-  const sameFragment = await viewer('back_forward');
-  sameFragment.receive({ artifactFragmentLink: '#cost' });
-  sameFragment.replacement.dispatchEvent(new Event('load'));
-  assert.equal(sameFragment.messages[0]?.restart, true);
-});
-
-test('the viewer drops older bookmarks before exceeding the reload storage budget', async () => {
-  const prefix = 'threadbear-artifact-scroll:';
-  const maxChars = 64 * 1024;
-  const seed = await viewer();
-  const [, key] = JSON.parse(seed.window.name.slice(prefix.length));
-  const number = -0.0000012345678901234567;
-  const offset = [number, number, ...Array.from({ length: 32 }, () => [1.2345678901234567e+300, number, number])];
-  const id = (index: number) => String(index).padEnd(48, '\0');
-  const old = Array.from({ length: 22 }, (_, index) => [id(index), key, offset]);
-  const current = id(22);
-  const encode = (entries: unknown[]) => prefix + JSON.stringify([current, key, entries]);
-  const initial = encode(old);
-  assert.ok(initial.length <= maxChars);
-  assert.ok(encode([...old, [current, key, offset]]).length > maxChars);
-
-  const reloaded = await viewer('reload', initial);
-  reloaded.report(offset);
-  assert.ok(reloaded.window.name.length <= maxChars);
-  const [, , remaining] = JSON.parse(reloaded.window.name.slice(prefix.length));
-  assert.equal(remaining[0][0], id(1));
-  assert.equal(remaining.at(-1)[0], current);
-});
-
-test('a second history change cannot save the anchor position before restoration', async () => {
-  const body = await artifactPage({ title: 'Artifact', html: '<h2 id="cost">Cost</h2>' }).text();
-  const encoded = body.match(/srcdoc="([^"]*)"/)?.[1];
-  const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"' };
-  const script = encoded?.replace(/&(amp|lt|gt|quot);/g, (_, name: string) => entities[name])
-    .match(/<script nonce="[^"]+">([^]*?)<\/script>/)?.[1];
-  assert.ok(script);
-
-  class Element extends EventTarget {
-    get scrollLeft() { return 0; }
-    get scrollTop() { return 0; }
-  }
-  class Document extends EventTarget {
-    get scrollingElement() { return null; }
-    querySelectorAll() { return []; }
-  }
-  const document = new Document();
-  const frames: (() => void)[] = [];
-  const positions: { entry: string; artifactPosition: number[] }[] = [];
-  const parent = { postMessage(info: typeof positions[number]) { positions.push(structuredClone(info)); } };
-  const location = {
-    hash: '',
-    replace(url: string) { location.hash = new URL(url).hash; window.scrollY = 500; },
-  };
-  const window = Object.assign(new EventTarget(), {
-    parent, location, scrollX: 0, scrollY: 0,
-    scrollTo({ top }: { top: number }) { window.scrollY = top; },
-  });
-  runInNewContext(script, {
-    document, window, EventTarget, Document, Element,
-    requestAnimationFrame: (callback: () => void) => frames.push(callback),
-  });
-  const visit = (entry: string, artifactFragment: string, offset?: number[]) => {
-    const event = Object.assign(new Event('message'), { source: parent, data: { entry, artifactFragment, offset } });
-    window.dispatchEvent(event);
-  };
-
-  visit('cost', '#cost', [0, 2000]);
-  frames.shift()?.();
-  positions.length = 0;
-  visit('details', '#details');
-  frames.shift()?.();
-  positions.length = 0;
-  visit('cost', '#cost');
-  document.dispatchEvent(new Event('scroll'));
-  visit('details', '#details');
-  visit('cost', '#cost');
-  for (const paint of frames) paint();
-
-  assert.equal(window.scrollY, 2000);
-  assert.deepEqual(positions, [
-    { entry: 'details', artifactPosition: [0, 500] },
-    { entry: 'cost', artifactPosition: [0, 2000] },
-  ]);
+test('ticket cookie helpers format, parse, skip malformed values, and clear cleanly', () => {
+  const cookie = artifactTicketCookie(slug, ticket, true);
+  assert.match(cookie, new RegExp(`^${ARTIFACT_TICKET_COOKIE}=${ticket}; Path=/a/${slug}; HttpOnly; SameSite=Lax; Max-Age=30; Secure$`));
+  assert.equal(readArtifactTicket(`other=1; ${ARTIFACT_TICKET_COOKIE}=bad; ${ARTIFACT_TICKET_COOKIE}=${ticket}`), ticket);
+  assert.equal(readArtifactTicket(`${ARTIFACT_TICKET_COOKIE}=not-hex`), null);
+  assert.equal(readArtifactTicket(null), null);
+  assert.match(clearArtifactTicketCookie(slug, false), new RegExp(`^${ARTIFACT_TICKET_COOKIE}=; Path=/a/${slug}; HttpOnly; SameSite=Lax; Max-Age=0$`));
 });
 
 test('missing and unpublished links return an uncached 404', async () => {

@@ -88,7 +88,7 @@ const fakes: Record<string, Record<string, unknown>> = {
       return { routes, route: (r: { path: string; method: string; handler: unknown }) => void routes.push(r) };
     },
   },
-  './_generated/server': { mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x, httpAction: (x: unknown) => x },
+  './_generated/server': { env: new Proxy({}, { get: (_, k) => process.env[String(k)] }), mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x, httpAction: (x: unknown) => x },
   './_generated/api': { internal: fnRef(['internal']), api: fnRef(['api']), components: fnRef(['components']) },
   '@convex-dev/state-machines': stateMachines,
   '@convex-dev/static-hosting': { registerStaticRoutes: () => undefined },
@@ -141,6 +141,7 @@ export function memoryBackend(root = CONVEX) {
   const { indexes, tableFields } = loadSchema(root);
   const tables: Record<string, Row[]> = {};
   const files = new Set<string>();
+  const fileSizes = new Map<string, number>();
   const deleted: string[] = [];
   let next = 0;
   const all = (t: string) => (tables[t] ??= []);
@@ -304,7 +305,11 @@ export function memoryBackend(root = CONVEX) {
     },
     // (id) for a stored file, or (table, id) as the state machines library asks for its timers' jobs.
     system: {
-      get: async (a: string, b?: string) => (b === undefined ? (files.has(a) ? { _id: a } : null) : a === '_scheduled_functions' ? (jobs.get(b) ?? null) : files.has(b) ? { _id: b } : null),
+      get: async (a: string, b?: string) => {
+        if (b === undefined) return files.has(a) ? { _id: a, size: fileSizes.get(a) ?? 1024 } : null;
+        if (a === '_scheduled_functions') return jobs.get(b) ?? null;
+        return files.has(b) ? { _id: b, size: fileSizes.get(b) ?? 1024 } : null;
+      },
       query: (table: string) => {
         if (table !== '_scheduled_functions') throw new Error(`convex-memory: no system table ${table}`);
         // Each job counts as a read, as Convex's 4,096 a function count them.
@@ -346,9 +351,10 @@ export function memoryBackend(root = CONVEX) {
       files.delete(id);
     },
     // An HTTP action's store (convex/uploads.ts takeUpload).
-    async store(_blob: Blob) {
+    async store(blob: Blob) {
       const id = `stored${++next}`;
       files.add(id);
+      fileSizes.set(id, blob.size);
       return id;
     },
   };
@@ -397,7 +403,7 @@ export function memoryBackend(root = CONVEX) {
   return {
     ctx,
     rows: (t: string) => all(t),
-    file: (id: string) => (files.add(id), id),
+    file: (id: string, size = 1024) => (files.add(id), fileSizes.set(id, size), id),
     hasFile: (id: string) => files.has(id),
     deleted,
     scheduled,

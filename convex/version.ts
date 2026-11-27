@@ -522,4 +522,6 @@
 // 108: a runner request's claim requires a completed requests.confirmStart
 //    command from the runner that still held its approval card.
 // 109: the owner runner can publish, look up and remove hosted HTML artifacts.
-export const API_VERSION = 109;
+// 110: hosted HTML artifacts use file storage up to 10 MiB, allow inline
+//    scripts in an opaque offline sandbox, and support private/public visibility.
+export const API_VERSION = 110;

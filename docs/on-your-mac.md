@@ -32,11 +32,16 @@ No new external source is polled by this experiment. Coordinator identity is
 mirrored through the existing Convex sync; its private work registry stays on
 the owning runner.
 
-With **Publish HTML previews** on, the desktop app checks the bytes of the
-one file you choose to publish and passes them to the local owner runner.
-It posts that HTML, a title and a hash of the file's path to your own Convex
-deployment. No files beside the HTML are uploaded. Visiting the public link
-serves only the uploaded file in a sandbox. Unpublish deletes that copy.
+With **Publish HTML previews** on, opening a local HTML preview in the desktop
+app asks the local owner runner to upload that one file (UTF-8, up to 10 MB)
+to your own Convex deployment's file storage, along with its title, SHA-256
+digest, and a hash of its path (never the path itself). New uploads start as
+**Private** so only a browser signed in to Threadbear can open them (using a
+one-use HttpOnly ticket cookie via `POST /a/auth`); switching to **Anyone with
+link** makes the URL public. No files beside the HTML are uploaded. Visiting
+the link serves only the uploaded file in an opaque sandbox isolated from
+Threadbear's sign-in, with background requests, subresources and forms blocked.
+Removing the web copy deletes the row and its stored file.
 
 ## What setup and install add
 

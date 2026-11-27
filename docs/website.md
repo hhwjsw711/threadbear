@@ -81,14 +81,20 @@ and title to Convex through the signed-in Convex CLI. Opening or editing the
 local file leaves the published version alone. Update keeps the link, and
 unpublish takes it down. The slug is the last part of the published URL.
 
-The prototype takes one UTF-8 HTML file up to 64 KiB. Inline styles and
-embedded images work. The browser runs the page in a sandbox that blocks
-its scripts, forms and external resources. Readers can follow absolute
-HTTP and HTTPS links. The public route is
-`GET /a/<slug>`; it returns 404 for an unknown or unpublished link and
-its responses are never cached. There is no Threadbear sign-in on that
-page. Only the owner runner and deployment admins can publish, update or
-unpublish.
+Hosted artifacts take one UTF-8 HTML file up to 10 MB, stored in Convex file
+storage (`_storage`). Opening a local HTML preview in the desktop app uploads
+it automatically as **Private** (viewable only when signed in to Threadbear in
+that browser via a one-use HttpOnly ticket cookie) and shows **Open on web**,
+a visibility menu (**Private** / **Anyone with link**), and **Copy link**.
+Inline styles, embedded media and inline scripts run inside an opaque sandbox
+(`sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads`,
+`default-src 'none'`, `connect-src 'none'`, `form-action 'none'`, no
+`allow-same-origin`), isolating Threadbear's origin/sign-in and blocking
+background requests, subresources and forms. The public
+route is `GET /a/<slug>`; it returns 404 for an unknown or removed link, a
+sign-in gate for private links, and its responses are never cached. Only the
+owner runner and deployment admins can upload, change visibility or remove
+artifacts.
 
 ## Sharing
 
