@@ -503,6 +503,19 @@ impl TranscriptModel {
         }
         self.background = tasks;
         self.tail_dirty = true;
+        // And on the done cards, which hold Done and Archive meanwhile.
+        let cards: Vec<String> = self.asks_row_for_seq.values().cloned().collect();
+        for card_id in cards {
+            let stale = matches!(self.item(&card_id).map(|r| &r.content), Some(RowContent::Asks(card)) if card.is_done() && card.running != self.background);
+            if stale {
+                let tasks = self.background.clone();
+                self.update(&card_id, |content| {
+                    if let RowContent::Asks(card) = content {
+                        card.running = tasks;
+                    }
+                });
+            }
+        }
         self.refresh_rows()
     }
 
@@ -1805,6 +1818,7 @@ impl TranscriptModel {
                             .as_ref()
                             .filter(|l| l.seq == seq)
                             .map(|l| l.ends.clone());
+                        card.running = self.background.clone();
                         self.append(Row::new(&card_id, seq, row_turn, RowContent::Asks(card)));
                         self.asks_row_for_seq.insert(seq, card_id.clone());
                         self.open_asks_row = Some(card_id);

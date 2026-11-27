@@ -812,6 +812,7 @@ impl Composer {
 
     fn done_card_empty(&self, card: &AsksCard, cx: &App) -> bool {
         card.is_done()
+            && !card.still_running()
             && card.next.is_empty()
             && card.loose_ends.as_ref().is_none_or(|ends| ends.is_empty())
             && self.done_heading_dropped(cx)
@@ -854,6 +855,10 @@ impl Composer {
     ) -> AnyElement {
         let mut column = v_flex().w_full();
         let this = cx.entity().downgrade();
+        // Background work still going (a land, a build, sub-agents): not done
+        // yet, whatever the agent said, so no Done and no Archive until it's
+        // over (Ville, 12 Nov). What's running is the transcript's last line.
+        column = column.when(card.still_running(), |c| c.child(still_running_heading(cx)));
         // Arriving, its tick draws itself on; then it's the tick as ever.
         let green = style::tick_green(cx);
         let tick = match drawing.filter(|at| at.elapsed() < threadbear_core::juice::TICK_DRAW_END) {
@@ -871,7 +876,7 @@ impl Composer {
         // from, or the app restarting onto what it landed): what for, with a
         // spinner, as it hasn't finished (19 Nov: one waiting to land read
         // Done and was archived with nothing landed).
-        if !self.done_heading_dropped(cx) {
+        if !card.still_running() && !self.done_heading_dropped(cx) {
             let heading = self.done_heading(tick, cx);
             column = column.child(
                 h_flex()
@@ -2489,7 +2494,9 @@ impl Composer {
             return None;
         }
         if card.is_done() {
-            if !self.done_heading_dropped(cx) {
+            if card.still_running() {
+                lines.push("Still running".to_owned());
+            } else if !self.done_heading_dropped(cx) {
                 lines.push(
                     self.waiting_on_work(cx)
                         .map(|(words, _)| words)
@@ -2666,6 +2673,20 @@ pub(crate) mod metrics {
     /// (rowInset), its words past the circle.
     pub const ROW_INSET: f32 = 8.;
     pub const ROW_WORDS: f32 = 34.;
+}
+
+/// The done card's heading while background work goes on: an hourglass and
+/// "Still running", with no Archive.
+fn still_running_heading(cx: &App) -> AnyElement {
+    let mark = crate::icons::symbol("hourglass")
+        .with_size(px(15.))
+        .text_color(style::secondary_text(cx))
+        .into_any_element();
+    h_flex()
+        .w_full()
+        .h(px(metrics::PAGED_HEADING))
+        .child(card_title(mark, 3., "Still running", cx))
+        .into_any_element()
 }
 
 /// A card's title: its mark, then the words in the title font (14 pt medium),

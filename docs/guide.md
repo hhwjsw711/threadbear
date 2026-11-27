@@ -235,7 +235,10 @@ opens the draft you sent; the website and the phone show it that way
 too. The change is kept on your Mac, in the desktop app.
 
 A reply that needs nothing from you ends with a Done card at the top of
-the message box, with an Archive button to put the thread away. When something it talked about is
+the message box, with an Archive button to put the thread away. While a
+job or sub-agent it started is still going in the background, the card
+says Still running instead, with no Archive, and turns into Done when the
+work is over. When something it talked about is
 still worth doing (a piece it didn't get to, a check that's due), the
 card lists them under "Or carry on". Click any of them to tick them
 (click again to untick), add anything you like in the message box, and
@@ -1215,7 +1218,10 @@ open the pin in the panel beside the thread: straight away if you're
 looking at that thread, or else when you next open it. Files it
 writes and links it mentions show up by themselves, so pins are for the
 few things that matter most. To have something pinned, ask the thread
-("pin the mockup for me").
+("pin the mockup for me"). Pinned shows the five newest pins; the
+others wait behind Show all, as in Links and Changes, and Show fewer
+folds them away again. Pinning the same file or link again moves it to
+the top, not into a second row.
 
 ## Projects
 <!-- slug: projects -->

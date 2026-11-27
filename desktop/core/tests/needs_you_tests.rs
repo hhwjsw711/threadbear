@@ -410,6 +410,28 @@ fn testLooseEndsGoOnTheirOwnDoneCard() {
     );
 }
 
+/// The thread's background work rides on its done cards, the one that
+/// arrives while it runs included, and goes when it's over.
+#[test]
+fn testDoneCardsCarryTheBackgroundWork() {
+    let job = vec![BackgroundTask::new(BackgroundKind::Shell, "tb land", false)];
+    let mut model = from_events(vec![needs_nothing(1, "t1", json!([]))]);
+    assert_eq!(card(&model, "ak:1").map(|c| c.still_running()), Some(false));
+    assert!(!model.set_background(job.clone()).is_empty());
+    assert_eq!(
+        card(&model, "ak:1").map(|c| c.running.clone()),
+        Some(job.clone())
+    );
+    assert_eq!(card(&model, "ak:1").map(|c| c.still_running()), Some(true));
+    model.set_background(vec![]);
+    assert_eq!(card(&model, "ak:1").map(|c| c.still_running()), Some(false));
+    let mut later = TranscriptModel::new(None);
+    later.set_background(job.clone());
+    later.load(vec![needs_nothing(1, "t1", json!([]))], &[]);
+    assert_eq!(card(&later, "ak:1").map(|c| c.running.clone()), Some(job));
+    assert_eq!(card(&later, "ak:1").map(|c| c.still_running()), Some(true));
+}
+
 /// The check arrives on the thread's summary (`threads.list`,
 /// `thread.updated`), which the GPUI app's summary used to drop on the floor:
 /// the Swift app's done card said "Still open" and the GPUI one didn't (12

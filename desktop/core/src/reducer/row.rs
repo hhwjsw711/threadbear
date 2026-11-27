@@ -784,6 +784,11 @@ pub struct AsksCard {
     /// The done card's loose ends, as the runner checked them: None when
     /// it didn't, empty when nothing's left.
     pub loose_ends: Option<Vec<LooseEnd>>,
+    /// The thread's background work while a done card is up (sub-agents,
+    /// shell jobs, a result about to be read): the card holds Done and
+    /// Archive until it's all over, as the agent's "nothing needed" came
+    /// while a land or a build was still going (Ville, 12 Nov).
+    pub running: Vec<BackgroundTask>,
 }
 
 impl AsksCard {
@@ -803,7 +808,14 @@ impl AsksCard {
             explain_next: BTreeSet::new(),
             notes: BTreeMap::new(),
             loose_ends: None,
+            running: Vec::new(),
         }
+    }
+
+    /// An open done card with background work still going: it says Still
+    /// running, with no Archive, and turns into Done once that's over.
+    pub fn still_running(&self) -> bool {
+        self.is_done() && self.is_open && !self.running.is_empty()
     }
 
     pub fn next_pick_one(&self) -> bool {

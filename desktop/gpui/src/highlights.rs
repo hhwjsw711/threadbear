@@ -150,10 +150,28 @@ fn restored_preview(open: &crate::pane_store::Open, from: &str) -> PanePreview {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RowFlags {
     pub edited_open: bool,
+    pub all_pinned: bool,
     pub all_links: bool,
     pub all_commits: bool,
     pub all_subagents: bool,
     pub all_started: bool,
+}
+
+impl RowFlags {
+    /// The "Show all" flag of a long group, by the name its row goes by.
+    pub(crate) fn all(&mut self, which: &str) -> &mut bool {
+        match which {
+            "pinned" => &mut self.all_pinned,
+            "links" => &mut self.all_links,
+            "commits" => &mut self.all_commits,
+            "subagents" => &mut self.all_subagents,
+            _ => &mut self.all_started,
+        }
+    }
+
+    pub(crate) fn is_all(mut self, which: &str) -> bool {
+        *self.all(which)
+    }
 }
 
 /// A row's menu, open at a place in the window. `owner` is `Some(pr_url)` when
@@ -2457,7 +2475,7 @@ impl SidePane {
             ));
             if !folded {
                 let total = subagents.len();
-                let (shown, more) = HighlightSections::capped(
+                let (shown, _) = HighlightSections::capped(
                     &subagents,
                     core::SUBAGENT_LIMIT,
                     flags.all_subagents,
@@ -2493,7 +2511,7 @@ impl SidePane {
                     });
                     list = list.child(pr.render(p, cx));
                 }
-                if more > 0 {
+                if subagents.len() > core::SUBAGENT_LIMIT {
                     list =
                         list.child(self.show_all_row("subagents", total, thread.id.clone(), p, cx));
                 }
@@ -2517,7 +2535,7 @@ impl SidePane {
             ));
             if !folded {
                 let total = started.len();
-                let (shown, more) =
+                let (shown, _) =
                     HighlightSections::capped(&started, core::SUBAGENT_LIMIT, flags.all_started);
                 for row in shown {
                     let color = match row.state {
@@ -2560,7 +2578,7 @@ impl SidePane {
                         });
                     list = list.child(pr.render(p, cx));
                 }
-                if more > 0 {
+                if started.len() > core::SUBAGENT_LIMIT {
                     list =
                         list.child(self.show_all_row("started", total, thread.id.clone(), p, cx));
                 }
@@ -2582,11 +2600,22 @@ impl SidePane {
                 cx,
             ));
             if !folded {
-                for item in &sections.pinned {
+                let (shown, _) =
+                    HighlightSections::capped(&sections.pinned, core::PIN_LIMIT, flags.all_pinned);
+                for item in shown {
                     // A pinned file gets its preview too; a pinned link has none.
                     let thumb = self.file_thumb(item, thread, p, window, cx);
                     list =
                         list.child(self.highlight_row_with(item, thread, "pinned", thumb, p, cx));
+                }
+                if sections.pinned.len() > core::PIN_LIMIT {
+                    list = list.child(self.show_all_row(
+                        "pinned",
+                        sections.pinned.len(),
+                        thread.id.clone(),
+                        p,
+                        cx,
+                    ));
                 }
             }
         }
@@ -2628,12 +2657,12 @@ impl SidePane {
                 cx,
             ));
             if !folded {
-                let (shown, more) =
+                let (shown, _) =
                     HighlightSections::capped(&sections.links, core::LINK_LIMIT, flags.all_links);
                 for item in shown {
                     list = list.child(self.highlight_row(item, thread, "links", p, cx));
                 }
-                if more > 0 {
+                if sections.links.len() > core::LINK_LIMIT {
                     list = list.child(self.show_all_row(
                         "links",
                         sections.links.len(),
@@ -2661,7 +2690,7 @@ impl SidePane {
                 cx,
             ));
             if !folded {
-                let (shown, more) = HighlightSections::capped(
+                let (shown, _) = HighlightSections::capped(
                     &sections.commits,
                     core::COMMIT_LIMIT,
                     flags.all_commits,
@@ -2669,7 +2698,7 @@ impl SidePane {
                 for item in shown {
                     list = list.child(self.highlight_row(item, thread, "changes", p, cx));
                 }
-                if more > 0 {
+                if sections.commits.len() > core::COMMIT_LIMIT {
                     list = list.child(self.show_all_row(
                         "commits",
                         sections.commits.len(),
@@ -2803,17 +2832,18 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id: SharedString = format!("hl-showall-{which}").into();
-        PaneRow::new(id, format!("Show all {count}"))
-            .icon("ellipsis")
+        let open = self.flags.get(&thread_id).is_some_and(|f| f.is_all(which));
+        PaneRow::new(id, HighlightSections::show_all_label(count, open))
+            .icon(if open { "chevron.up" } else { "ellipsis" })
             .quiet()
+            .tip(if open {
+                "Show only the newest again"
+            } else {
+                "Show every one"
+            })
             .on_click(move |this, _window, cx| {
-                let flags = this.flags.entry(thread_id.clone()).or_default();
-                match which {
-                    "links" => flags.all_links = true,
-                    "commits" => flags.all_commits = true,
-                    "subagents" => flags.all_subagents = true,
-                    _ => flags.all_started = true,
-                }
+                let all = this.flags.entry(thread_id.clone()).or_default().all(which);
+                *all = !*all;
                 cx.notify();
             })
             .render(p, cx)
@@ -3456,7 +3486,7 @@ impl SidePane {
             );
         }
         if !subagents.is_empty() {
-            let (shown, more) =
+            let (shown, _) =
                 HighlightSections::capped(&subagents, core::SUBAGENT_LIMIT, flags.all_subagents);
             let mut rows: Vec<Value> = shown
                 .iter()
@@ -3470,8 +3500,8 @@ impl SidePane {
                     json!({ "title": side::subagent_title(s), "trailing": side::subagent_duration(s, now), "detail": side::subagent_detail(s), "symbol": symbol })
                 })
                 .collect();
-            if more > 0 {
-                rows.push(json!({ "title": format!("Show all {}", subagents.len()), "symbol": "ellipsis" }));
+            if subagents.len() > core::SUBAGENT_LIMIT {
+                rows.push(json!({ "title": HighlightSections::show_all_label(subagents.len(), flags.all_subagents), "symbol": "ellipsis" }));
             }
             add(
                 fold::SUBAGENTS,
@@ -3482,12 +3512,12 @@ impl SidePane {
             );
         }
         if !started.is_empty() {
-            let (shown, more) =
+            let (shown, _) =
                 HighlightSections::capped(&started, core::SUBAGENT_LIMIT, flags.all_started);
             let mut rows: Vec<Value> = shown.iter().map(|r| json!({ "title": r.thread.title, "detail": core::started_detail(r, &clock), "symbol": core::started_icon(r.state) })).collect();
-            if more > 0 {
+            if started.len() > core::SUBAGENT_LIMIT {
                 rows.push(
-                    json!({ "title": format!("Show all {}", started.len()), "symbol": "ellipsis" }),
+                    json!({ "title": HighlightSections::show_all_label(started.len(), flags.all_started), "symbol": "ellipsis" }),
                 );
             }
             add(
@@ -3522,11 +3552,17 @@ impl SidePane {
             json!({ "title": h.title, "lead": if is_commit { h.sha.clone() } else { None }, "trailing": how, "note": h.note, "detail": detail, "symbol": core::highlight_symbol(h) })
         };
         if !sections.pinned.is_empty() {
+            let (shown, _) =
+                HighlightSections::capped(&sections.pinned, core::PIN_LIMIT, flags.all_pinned);
+            let mut rows: Vec<Value> = shown.iter().map(&item_row).collect();
+            if sections.pinned.len() > core::PIN_LIMIT {
+                rows.push(json!({ "title": HighlightSections::show_all_label(sections.pinned.len(), flags.all_pinned), "symbol": "ellipsis" }));
+            }
             add(
                 fold::PINNED,
                 "Pinned",
                 sections.pinned.len(),
-                sections.pinned.iter().map(&item_row).collect(),
+                rows,
                 &mut out,
             );
         }
@@ -3540,20 +3576,20 @@ impl SidePane {
             );
         }
         if !sections.links.is_empty() {
-            let (shown, more) =
+            let (shown, _) =
                 HighlightSections::capped(&sections.links, core::LINK_LIMIT, flags.all_links);
             let mut rows: Vec<Value> = shown.iter().map(&item_row).collect();
-            if more > 0 {
-                rows.push(json!({ "title": format!("Show all {}", sections.links.len()), "symbol": "ellipsis" }));
+            if sections.links.len() > core::LINK_LIMIT {
+                rows.push(json!({ "title": HighlightSections::show_all_label(sections.links.len(), flags.all_links), "symbol": "ellipsis" }));
             }
             add(fold::LINKS, "Links", sections.links.len(), rows, &mut out);
         }
         if !sections.commits.is_empty() || !sections.edited.is_empty() {
-            let (shown, more) =
+            let (shown, _) =
                 HighlightSections::capped(&sections.commits, core::COMMIT_LIMIT, flags.all_commits);
             let mut rows: Vec<Value> = shown.iter().map(&item_row).collect();
-            if more > 0 {
-                rows.push(json!({ "title": format!("Show all {}", sections.commits.len()), "symbol": "ellipsis" }));
+            if sections.commits.len() > core::COMMIT_LIMIT {
+                rows.push(json!({ "title": HighlightSections::show_all_label(sections.commits.len(), flags.all_commits), "symbol": "ellipsis" }));
             }
             if !sections.edited.is_empty() {
                 rows.push(json!({ "title": core::text::edited_count(sections.edited.len()), "symbol": if flags.edited_open { "chevron.down" } else { "chevron.right" } }));
@@ -3660,14 +3696,9 @@ fn highlight_command(
     }
     if let Some(which) = cmd["showAll"].as_str() {
         side.update(cx, |pane, cx| {
-            let flags = pane.flags.entry(thread.id.clone()).or_default();
-            match which {
-                "links" => flags.all_links = true,
-                "commits" => flags.all_commits = true,
-                "subagents" => flags.all_subagents = true,
-                "started" => flags.all_started = true,
-                _ => {}
-            }
+            // `"open": false` folds it back, as "Show fewer" does.
+            let open = cmd["open"].as_bool().unwrap_or(true);
+            *pane.flags.entry(thread.id.clone()).or_default().all(which) = open;
             cx.notify();
         });
         return Ok(json!("ok"));
