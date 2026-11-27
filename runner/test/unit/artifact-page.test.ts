@@ -19,11 +19,23 @@ test('the artifact content and title are isolated from the wrapper markup', asyn
   const page = await response.text();
   assert.match(page, /<title>&lt;\/title&gt;&lt;h1&gt;Outside\?&lt;\/h1&gt;<\/title>/);
   assert.match(page, /<iframe sandbox title="/);
-  assert.match(page, /srcdoc="&lt;p title=&quot;A &amp;amp; B&quot;&gt;C&lt;\/p&gt;"/);
+  assert.match(page, /srcdoc="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;p title=&quot;A &amp;amp; B&quot;&gt;C&lt;\/p&gt;"/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.match(response.headers.get('content-security-policy') ?? '', /default-src 'none'/);
+  assert.match(response.headers.get('content-security-policy') ?? '', /base-uri about:/);
   assert.match(response.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
   assert.equal(MAX_ARTIFACT_BYTES, 64 * 1024);
+});
+
+test('the fragment base follows the opening tags of a full document', async () => {
+  const page = await artifactPage({
+    title: 'Artifact',
+    html: '\uFEFF<?xml version="1.0"?><!doctype html><!-- <head> --><html lang="fr"><head data-label="a > b"><title>Page</title>',
+  }).text();
+  assert.ok(page.includes(
+    'srcdoc="&lt;?xml version=&quot;1.0&quot;?&gt;&lt;!doctype html&gt;&lt;!-- &lt;head&gt; --&gt;&lt;html lang=&quot;fr&quot;&gt;' +
+    '&lt;head data-label=&quot;a &gt; b&quot;&gt;&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;title&gt;Page',
+  ));
 });
 
 test('missing and unpublished links return an uncached 404', async () => {
