@@ -467,6 +467,7 @@ export class AcpSession implements AgentSession {
   private exitedCalled = false;
   // The empty folder the agent's session opens in (AcpAgent.ownSessionFolder).
   private ownFolder?: string;
+  private chunkBuffer = '';
   private exitPromise: Promise<void>;
   private resolveExit!: () => void;
 
@@ -733,20 +734,35 @@ export class AcpSession implements AgentSession {
     }
     this.emit(this.normalizer.handle(update));
     if (isPlainObject(params.update)) {
-      const text = textFromUpdate(params.update);
-      if (text && (isFatalExecutionError(text) || outOfUsage({ message: text }))) {
-        const statusMatch = /(?:status|error)[:\s]+(\d{3})\b/i.exec(text);
-        const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
-        if (this.turn) {
-          this.turn.failure = laterFailure(this.turn.failure, { message: text, ...(httpStatus !== undefined ? { httpStatus } : {}) });
+      const u = params.update;
+      if (u.sessionUpdate === 'agent_message_chunk') {
+        const chunkText = isPlainObject(u.content) && typeof u.content.text === 'string' ? u.content.text : typeof u.text === 'string' ? u.text : '';
+        if (chunkText && this.chunkBuffer.length < 300) {
+          this.chunkBuffer += chunkText;
+          if (isFatalExecutionError(this.chunkBuffer)) {
+            const text = this.chunkBuffer;
+            if (this.turn) {
+              this.turn.failure = laterFailure(this.turn.failure, { message: text });
+            }
+            this.failFatal(text);
+            return;
+          }
         }
-        this.failFatal(text);
-        return;
+      } else if (u.sessionUpdate === 'tool_call_update' && u.status === 'failed') {
+        this.chunkBuffer = '';
+        const text = textFromUpdate(u);
+        if (text && isFatalExecutionError(text)) {
+          const statusMatch = /(?:status|error)[:\s]+(\d{3})\b/i.exec(text);
+          const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
+          if (this.turn) {
+            this.turn.failure = laterFailure(this.turn.failure, { message: text, ...(httpStatus !== undefined ? { httpStatus } : {}) });
+          }
+          this.failFatal(text);
+          return;
+        }
+      } else {
+        this.chunkBuffer = '';
       }
-    }
-    const fail = this.turn?.failure;
-    if (fail && (isFatalExecutionError(fail.message) || outOfUsage(fail))) {
-      this.failFatal(fail.message);
     }
   }
 
@@ -1384,6 +1400,7 @@ export class AcpSession implements AgentSession {
   private async runTurn(input: UserInput): Promise<void> {
     const turn: Turn = { id: input.id, startedAt: this.now(), interrupted: false, dropped: [] };
     this.turn = turn;
+    this.chunkBuffer = '';
     this.state = 'turn';
     let result: TurnResult;
     let dispatched = false;

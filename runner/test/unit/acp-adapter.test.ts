@@ -2023,6 +2023,26 @@ test('Antigravity: a harness crash (WS close code 1006) terminates the session w
   assert.match(err.message, /Harness process exited unexpectedly/i);
 });
 
+test('Antigravity: a chunked harness crash diagnostic across message chunks terminates without hanging', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  s.send({ id: 'turn-crash-chunked', text: 'crash_harness_chunked', images: [] });
+  await r.exited();
+  const err = r.exitError();
+  assert.ok(err, 'session must exit with error');
+  assert.match(err.message, /Harness process exited unexpectedly/i);
+});
+
+test('Antigravity: completed tool output with error words and assistant explanation of RESOURCE_EXHAUSTED do not kill session', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  await turn(r, s, 'tool_code_containing_error');
+  assert.equal(r.exitError(), null, 'session must not have exited');
+  const res = results(r.outputs);
+  assert.equal(res.length, 1);
+  assert.equal(res[0].outcome, 'completed');
+});
+
 test('Antigravity: individual quota reached (Error 429 RESOURCE_EXHAUSTED) terminates the session with usageLimit', async () => {
   const r = agy({ mode: 'full' });
   const s = r.start();

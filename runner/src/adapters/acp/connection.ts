@@ -62,19 +62,23 @@ export class AcpRpcError extends Error {
   }
 }
 
+// Transient rate limits (RPM/TPM, requests per minute, rate limit headers)
+// that pass in seconds and the agent retries with backoff.
+const RATE_LIMIT = /requests? per (?:minute|hour)|tokens? per (?:minute|hour)|\b(?:rpm|tpm)\b|rate[- ]limit|too many requests|retry in \d+\s*(?:s|sec|second)|slow down/i;
+
 // An agent's words for a login that has run out of what it pays with: a
 // balance, credits, a spending cap or a usage limit (Grok 1.0.92's own
-// strings for these, and its 402; Gemini/Google 429 quota exhaustion and
-// RESOURCE_EXHAUSTED). Not a rate limit, which passes by itself in seconds
-// and the agent retries.
-const OUT_OF_USAGE = /usage balance exhausted|out of credits|run out of credits|spending[- ]limit|usage limit reached|credit limit|insufficient (?:credits|balance)|payment required|free usage limit|individual quota reached|quota(?:[_\s]+limit)?[_\s]+reached|quota[_\s]+(?:exhausted|exceeded)|resource[_\s]+exhausted|upgrade your subscription/i;
+// strings for these, and its 402; Gemini/Google quota exhaustion for
+// individual quota or subscription tier). Not a rate limit, which passes
+// by itself in seconds and the agent retries.
+const OUT_OF_USAGE = /usage balance exhausted|out of credits|run out of credits|spending[- ]limit|usage limit reached|credit limit|insufficient (?:credits|balance)|payment required|free usage limit|individual quota reached|upgrade your subscription/i;
 
 // Fatal errors that abort the backend agent executor or harness process
 // unexpectedly, leaving the ACP bridge hanging without answering session/prompt.
-const FATAL_EXECUTION_ERROR = /harness (?:process )?exited unexpectedly|agent execution terminated due to error|agent executor error/i;
+const FATAL_EXECUTION_ERROR = /^(?:Agent execution error:\s*)?Harness process exited unexpectedly|^Agent execution terminated due to error/i;
 
 export function isFatalExecutionError(text: string): boolean {
-  return FATAL_EXECUTION_ERROR.test(text);
+  return FATAL_EXECUTION_ERROR.test(text.trim());
 }
 
 // Extracts readable text from an ACP update object (message/thought chunk,
@@ -140,7 +144,9 @@ export function laterFailure(was: { message: string; httpStatus?: number } | und
 // status (402 Payment Required) or its words.
 export function outOfUsage(o: { message?: string; httpStatus?: number }): boolean {
   if (o.httpStatus === 402) return true;
-  return !!o.message && OUT_OF_USAGE.test(o.message);
+  if (!o.message) return false;
+  if (RATE_LIMIT.test(o.message) && !/individual quota reached|upgrade your subscription/i.test(o.message)) return false;
+  return OUT_OF_USAGE.test(o.message);
 }
 
 export class AcpExitedError extends Error {

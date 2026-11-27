@@ -422,6 +422,31 @@ async function agyPrompt(id, p, s, word, rest) {
     });
     return; // leaves session/prompt hanging, as agy_acp_server does
   }
+  else if (word === 'crash_harness_chunked') {
+    update(p.sessionId, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Agent execution error: Harness process exited un' },
+    });
+    update(p.sessionId, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'expectedly (WS close code 1006).\nHarness stderr:\ncontext canceled' },
+    });
+    return; // leaves session/prompt hanging, as agy_acp_server does
+  }
+  else if (word === 'tool_code_containing_error') {
+    const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
+    update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'run', kind: 'execute', status: 'in_progress', rawInput: {} });
+    update(p.sessionId, {
+      sessionUpdate: 'tool_call_update',
+      toolCallId,
+      status: 'completed',
+      content: [{ type: 'text', text: 'const reason = "agent executor error";' }],
+      rawOutput: 'const reason = "agent executor error";',
+    });
+    update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'Discussing Error 429: RESOURCE_EXHAUSTED with the user.' } });
+    send({ id, result: { stopReason: 'end_turn' } });
+    return;
+  }
   else if (word === 'quota_fail') {
     const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
     update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'run', kind: 'execute', status: 'in_progress', rawInput: {} });

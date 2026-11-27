@@ -144,16 +144,25 @@ test('out of usage is a 402 or the words Grok uses for it, never a rate limit', 
   assert.equal(outOfUsage({ message: 'Internal error' }), false);
 });
 
-test('out of usage recognises Gemini and Google quota exhaustion', () => {
+test('out of usage recognises Gemini and Google quota exhaustion, not temporary rate limits', () => {
   const gemini429 = 'Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")';
   assert.equal(outOfUsage({ message: gemini429 }), true);
   for (const m of [
     'Individual quota reached. Please upgrade your subscription to increase your limits.',
-    'Status: RESOURCE_EXHAUSTED',
-    'reason:QUOTA_EXHAUSTED',
-    'Quota reached for model gemini-4-neon',
+    'Please upgrade your subscription to increase your limits.',
+    'Individual quota reached',
   ]) {
     assert.equal(outOfUsage({ message: m }), true, m);
+  }
+  // Transient rate limits and generic RESOURCE_EXHAUSTED without subscription/quota limits must not count as out of usage
+  for (const m of [
+    'Error 429: RESOURCE_EXHAUSTED: quota exceeded for requests per minute. Retry in 1s.',
+    'Status: RESOURCE_EXHAUSTED',
+    'Quota exceeded for quota metric Requests and limit Requests per minute',
+    'Rate limit exceeded. Try again in 2s.',
+  ]) {
+    assert.equal(outOfUsage({ message: m, httpStatus: 429 }), false, m);
+    assert.equal(outOfUsage({ message: m }), false, m);
   }
 });
 
