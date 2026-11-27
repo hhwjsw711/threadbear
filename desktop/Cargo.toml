@@ -110,6 +110,8 @@ gpui-base = { path = "vendor/gpui-base" }
 # the current focus, so a native HTML page can keep its shortcuts without
 # editing the review reply through a stale GPUI handler (window.rs,
 # key_dispatch.rs focus-interception regressions).
+# And Window::add_tooltip_exclusion records visible native child bounds
+# during prepaint; tooltip placement avoids those bounds (window.rs).
 gpui-pre = { path = "vendor/gpui-pre" }
 # gpui-pre-macos 0.3.11 as published, except that with a native view inside
 # the window holding the keyboard (a web panel's page), a key without ⌘ or
