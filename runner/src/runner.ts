@@ -2031,10 +2031,16 @@ export class Runner {
 
   // Whether a shell the last turn left running without end_turn is still
   // going, or has just ended with its result about to be read (awaitedShells).
-  private awaitingShells(st: ThreadState): boolean {
-    const ids = st.rt.awaitedShells;
-    if (!ids?.length) return false;
-    const going = new Set([...st.rt.tasks, ...(st.rt.wakeTimer ? st.rt.finished : [])].map((t) => t.id));
+  // Only with no card for the last turn: asks it carried for jobs
+  // (afterJobs) go by asksHeld, as the sections do.
+  private awaitingShells(st: ThreadState, card: boolean): boolean {
+    const { rt } = st;
+    const ids = rt.awaitedShells;
+    if (!ids?.length || card) return false;
+    // A wake grace is a result on its way, even one whose finished list a
+    // grace that ran out mid-turn emptied (Gemini's review).
+    if (rt.wakeTimer) return true;
+    const going = new Set(rt.tasks.map((t) => t.id));
     return ids.some((id) => going.has(id));
   }
 
@@ -3509,10 +3515,18 @@ export class Runner {
         : undefined;
     const said = outcome === 'completed' ? turnNeeds(turn) : undefined;
     // Ended without a say (no end_turn, nothing asked in its text) while a
-    // shell it started still runs: it's waiting on that, not on Mike.
-    const awaited = outcome === 'completed' && !said && !turn.local && this.wakes(st) ? [...(turn.shellsStarted ?? [])] : [];
-    if (awaited.length) rt.awaitedShells = awaited;
-    else delete rt.awaitedShells;
+    // shell it started still runs: it's waiting on that, not on Mike. A wake
+    // turn that reads one result and goes on waiting keeps the rest (Codex
+    // and Gemini's review, 28 Nov 2026). A runner-answered command changes
+    // nothing.
+    if (!turn.local) {
+      // An earlier one counts while it runs or its result is still to be read.
+      const live = new Set([...rt.tasks, ...rt.finished].map((t) => t.id));
+      const kept = (rt.awaitedShells ?? []).filter((id) => live.has(id));
+      const awaited = outcome === 'completed' && !said && this.wakes(st) ? new Set([...kept, ...(turn.shellsStarted ?? [])]) : new Set<string>();
+      if (awaited.size) rt.awaitedShells = [...awaited];
+      else delete rt.awaitedShells;
+    }
     const explicitNext = Boolean(turn.endTurn && typeof turn.endTurn === 'object' && 'next' in turn.endTurn && (turn.endTurn as Record<string, unknown>).next !== undefined);
     if (outcome === 'completed' && !turn.local && !turn.byMike && said?.needs === 'nothing' && !said.next?.length && !explicitNext && prevNext) {
       said.next = prevNext.next;
@@ -3974,6 +3988,8 @@ export class Runner {
     const { rec, rt } = st;
     const turn = rt.turn;
     if (!turn) return;
+    // A failed turn is Mike's to see, whatever an earlier one waited on.
+    delete rt.awaitedShells;
     // A message held for a compaction never reached the CLI (runner/cold-compact.ts).
     this.keepHeldMessage(st);
     this.saveInterruptedMessages(st);
@@ -4092,6 +4108,7 @@ export class Runner {
     this.cli(st, { kind: 'stopTasks' });
     rt.finished = [];
     rt.taskEndedInTurn = false;
+    delete rt.awaitedShells;
     // Native sub-agents went with this CLI. Coordinator helpers have their own sessions.
     this.stopSubagents(st, { keepCoordinatorHelpers: true });
     rt.wakeTimer?.cancel();
@@ -5377,8 +5394,8 @@ export class Runner {
     // phone push until they're done and the agent has had its say on them.
     // Asks the agent said wait for its shell jobs count them too.
     const afterJobs = this.asksHeld(st);
-    const unfinished = running || this.awaitingShells(st) || (this.coordinators?.forThread(rec.id) ? afterJobs : agentsStillWorking(background, afterJobs));
     const card = rec.needs?.seq === rec.lastTurnCompletedSeq ? rec.needs : undefined;
+    const unfinished = running || this.awaitingShells(st, Boolean(card)) || (this.coordinators?.forThread(rec.id) ? afterJobs : agentsStillWorking(background, afterJobs));
     const asks = card?.asks;
     const active = card && asks && this.coordinators?.activeAsks(rec.id, asks, card.seq);
     const cleared = Boolean(asks?.length && active?.length === 0);

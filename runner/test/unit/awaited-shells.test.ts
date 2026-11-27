@@ -103,3 +103,68 @@ test('a CLI that does not wake for its jobs (Codex) leaves a no-end_turn turn wi
   await tick();
   assert.equal(h.runner.get(id).needsYou, true);
 });
+
+// Codex and Gemini's review, 28 Nov 2026: a wake turn that reads one result
+// and goes on waiting dropped the other shell.
+test('a wake turn that reads one of two shells and ends without end_turn keeps waiting on the other', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Build and test');
+  const build = { ...SHELL, id: 'sh_build', description: 'npm run build' };
+  s.out({ kind: 'tasks', tasks: [build, SHELL] });
+  s.text('m1', 'Both are running.');
+  s.result('completed');
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, false);
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.out({ kind: 'cliTurn' });
+  s.text('m2', 'The build passed; still waiting on the tests.');
+  s.result('completed');
+  await tick();
+  let t = h.runner.get(id);
+  assert.equal(t.status, 'idle');
+  assert.equal(t.needsYou, false, 'the tests are still awaited');
+  s.out({ kind: 'tasks', tasks: [] });
+  h.clock.advance(16_000);
+  await tick();
+  t = h.runner.get(id);
+  assert.equal(t.needsYou, true);
+});
+
+test("a failed turn reaches Mike even while an earlier turn's awaited shell runs", async () => {
+  const h = makeHarness();
+  const { id, s } = start(h);
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.text('m1', 'Waiting on the tests.');
+  s.result('completed');
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, false);
+  h.runner.send(id, 'Something else meanwhile');
+  await tick();
+  h.runner.failTurn(h.runner.threads.get(id)!, 'it broke');
+  await tick();
+  const t = h.runner.get(id);
+  assert.equal(t.status, 'error');
+  assert.equal(t.needsYou, true);
+});
+
+test('asks carried for an earlier job stay consistent: needsYou and the Inbox agree', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Land it');
+  const landing = { ...SHELL, id: 'sh_land', description: 'tb land' };
+  s.out({ kind: 'tasks', tasks: [landing] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'you', asks: [{ question: 'Check it?' }], askWhen: 'jobsEnd' } } });
+  s.text('m1', 'Landing.');
+  s.result('completed');
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, false, 'held for the landing');
+  // The landing ends and its wake starts another shell, ending without end_turn.
+  s.out({ kind: 'tasks', tasks: [] });
+  s.out({ kind: 'cliTurn' });
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.text('m2', 'Landed; running the tests.');
+  s.result('completed');
+  await tick();
+  const t = h.runner.get(id);
+  assert.equal(t.needs, 'you');
+  assert.equal(t.needsYou, t.waitState === 'needsYou', `needsYou ${t.needsYou} but waitState ${t.waitState}`);
+});
