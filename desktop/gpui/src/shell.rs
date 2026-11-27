@@ -44,7 +44,7 @@ const UNDER_THREADS: [&str; 5] = [USAGE, UPDATES, SETUP, CONNECTORS, RUNNERS];
 const SAVE_THROTTLE_MS: i64 = 300;
 
 /// `SidebarMode`: which view the sidebar shows, from the activity bar.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum SidebarMode {
     #[default]
     Inbox,
@@ -191,6 +191,11 @@ impl DockContent for Panels {
 
     fn icon(&self, panel: &str, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let color = cx.theme().muted_foreground;
+        if let Some(app) = self.app.upgrade() {
+            if let Some(pr_icon) = app.read(cx).pr_panel_icon(panel, cx) {
+                return Some(pr_icon);
+            }
+        }
         if let Some(symbol) = panel_symbol(panel) {
             return Some(
                 icons::symbol(symbol)
@@ -263,6 +268,10 @@ impl DockContent for Panels {
         if crate::thread_panels::pinned_thread(panel).is_some() {
             return app.update(cx, |t, cx| t.thread_panel_buttons(panel, cx));
         }
+        // A GitHub PR panel: Refresh and Open on GitHub (pr_view.rs).
+        if let Some(url) = threadbear_core::pull_requests::panel_url(panel) {
+            return app.update(cx, |t, cx| t.pr_panel_buttons(url, cx));
+        }
         if panel != MAIN {
             // A web panel's Back, Reload and Open in browser (web_panels.rs).
             return app.update(cx, |t, cx| crate::web_panels::bar_buttons(t, panel, cx));
@@ -304,12 +313,13 @@ impl DockContent for Panels {
         }]
     }
 
-    /// A pinned panel's tab says whose it is.
+    /// A pinned panel's tab says whose it is; a PR panel's names the repo,
+    /// number and title.
     fn tip(&self, panel: &str, cx: &App) -> Option<SharedString> {
-        self.app
-            .upgrade()?
-            .read(cx)
-            .pinned_tip(panel)
+        let app = self.app.upgrade()?;
+        let t = app.read(cx);
+        t.pinned_tip(panel)
+            .or_else(|| t.pr_panel_tip(panel, cx))
             .map(SharedString::from)
     }
 }
@@ -637,6 +647,7 @@ impl Threadbear {
         if let Some(title) = self
             .thread_panel_title(panel)
             .or_else(|| self.pinned_title(panel))
+            .or_else(|| self.pr_panel_title(panel))
         {
             return title;
         }
@@ -693,14 +704,15 @@ impl Threadbear {
     }
 
     /// `WindowDock.section(_:)` != nil: a pane section's panel, not the
-    /// sidebar, the main panel, one of the activity bar's panels or a thread
-    /// in a panel of its own.
+    /// sidebar, the main panel, one of the activity bar's panels, a thread
+    /// in a panel of its own or a PR panel.
     pub(crate) fn is_pane_section(panel: &str) -> bool {
         !matches!(
             panel,
             THREADS | MAIN | USAGE | UPDATES | CONNECTORS | RUNNERS | SETUP | TERMINAL
         ) && crate::thread_panels::pinned_thread(panel).is_none()
             && crate::pinned_panels::pinned(panel).is_none()
+            && threadbear_core::pull_requests::panel_url(panel).is_none()
     }
 
     /// `available` in `RootView.content`: Highlights, Files and a thread's own
@@ -720,6 +732,10 @@ impl Threadbear {
         // (pinned_panels.rs).
         if crate::pinned_panels::pinned(panel).is_some() {
             return self.pinned_owner(panel).is_some();
+        }
+        // A GitHub PR panel is always available while open in the dock (pr_view.rs).
+        if threadbear_core::pull_requests::panel_url(panel).is_some() {
+            return true;
         }
         if !Self::is_pane_section(panel) {
             return true;
@@ -752,14 +768,18 @@ impl Threadbear {
     }
 
     /// The pane sections open in the dock, in layout order (`openPanes`),
-    /// and pinned panels, which sit among them.
-    fn open_panes(&self, cx: &App) -> Vec<String> {
+    /// along with pinned panels and per-thread PR panels that sit among them.
+    pub(crate) fn open_panes(&self, cx: &App) -> Vec<String> {
         self.dock
             .read(cx)
             .layout()
             .panels()
             .into_iter()
-            .filter(|p| Self::is_pane_section(p) || crate::pinned_panels::pinned(p).is_some())
+            .filter(|p| {
+                Self::is_pane_section(p)
+                    || crate::pinned_panels::pinned(p).is_some()
+                    || self.thread_panels.pr_tabs.contains_key(p)
+            })
             .collect()
     }
 
@@ -890,10 +910,22 @@ impl Threadbear {
             } else {
                 std::mem::take(&mut self.hidden_panes)
             };
+            let hidden_prs = std::mem::take(&mut self.thread_panels.hidden_pr_tabs);
             for panel in &panes {
+                if hidden_prs.contains(panel) {
+                    if let Some(url) = threadbear_core::pull_requests::panel_url(panel) {
+                        self.open_pr_panel(url, None, cx);
+                        continue;
+                    }
+                }
                 self.show_pane(panel, cx);
             }
         } else {
+            self.thread_panels.hidden_pr_tabs = open
+                .iter()
+                .filter(|p| self.thread_panels.pr_tabs.contains_key(*p))
+                .cloned()
+                .collect();
             self.dock.update(cx, |m, cx| {
                 for panel in &open {
                     m.close(panel, cx);
@@ -908,14 +940,30 @@ impl Threadbear {
             .update(cx, |m, cx| m.set_layout(default_layout(), cx));
     }
 
+    /// The layout as persisted to disk: transient per-thread PR panels are
+    /// omitted so they don't pile up across launches, while PR panels Mike
+    /// dragged out stay saved where he put them.
+    pub(crate) fn layout_for_save(&self, layout: &DockLayout) -> DockLayout {
+        if self.thread_panels.pr_tabs.is_empty() {
+            return layout.clone();
+        }
+        let mut saved = layout.clone();
+        for panel in self.thread_panels.pr_tabs.keys() {
+            saved.close(panel);
+        }
+        saved
+    }
+
     /// Saves the panel layout (`dock.onChange`), a moment after it last moved:
     /// a divider drag changes it every frame.
     pub(crate) fn dock_layout_changed(&mut self, layout: DockLayout, cx: &mut Context<Self>) {
         crate::activity::panels(crate::activity::showing(&layout));
-        self.settings.saved.dock_layout = serde_json::to_value(&layout).ok();
-        self.save_settings_soon(cx);
-        // Threads' own panels and the main panel's tabs (thread_panels.rs).
+        // Threads' own panels, per-thread PR panels and the main panel's tabs
+        // update before saving so a dragged-out PR panel is kept in settings.
         self.thread_panels_layout_changed(&layout, cx);
+        self.pr_panels_layout_changed(&layout);
+        self.settings.saved.dock_layout = serde_json::to_value(self.layout_for_save(&layout)).ok();
+        self.save_settings_soon(cx);
         // A patch panel come into sight goes in ⌘K's Recent.
         self.note_panels_shown(&layout, cx);
         self.pinned_panels_layout_changed(&layout);
@@ -2277,6 +2325,10 @@ impl Threadbear {
             // A panel pinned to its thread (pinned_panels.rs).
             _ if crate::pinned_panels::pinned(panel).is_some() => {
                 self.pinned_panel_view(panel, ghost, window, cx)
+            }
+            // A GitHub PR open in its own panel (pr_view.rs).
+            _ if threadbear_core::pull_requests::panel_url(panel).is_some() => {
+                self.pr_panel_view(panel, ghost, window, cx)
             }
             // Highlights, Files, Patches and a patch's own panels are sections of
             // the one pane beside the thread (highlights.rs), each its own panel

@@ -31,10 +31,27 @@ pub(crate) struct ThreadPanels {
     panes: HashMap<String, PanelPane>,
     /// Tabs opened beside the main panel for what it shows now (`mainTabs`).
     main_tabs: HashSet<String>,
+    /// Per-thread PR panels still in the dock group they opened into:
+    /// panel id -> home group id. Dragging one out drops it here so it stays
+    /// open across threads.
+    pub(crate) pr_tabs: HashMap<String, String>,
+    /// Per-thread PR panels hidden by View > Hide Panels on the current thread.
+    pub(crate) hidden_pr_tabs: HashSet<String>,
+    /// Per-thread PR panels closed when switching away, restored on return.
+    pub(crate) saved_pr_tabs: HashMap<MainContext, SavedPrTabs>,
+    /// PR panel views, by panel id, let go when the panel closes (pr_view.rs).
+    pub(crate) pr_views: HashMap<String, Entity<crate::pr_view::PrPanelView>>,
     /// What the main panel showed when last looked at.
-    context: Option<MainContext>,
+    pub(crate) context: Option<MainContext>,
     /// Pinned list and picture panels' views, by panel id (pinned_panels.rs).
     pub(crate) pinned: HashMap<String, Entity<crate::pinned_panels::PinnedPanelView>>,
+}
+
+/// Un-moved PR panels remembered when leaving a thread, in tab order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SavedPrTabs {
+    pub(crate) panels: Vec<String>,
+    pub(crate) selected: Option<String>,
 }
 
 struct PanelPane {
@@ -45,11 +62,11 @@ struct PanelPane {
 
 /// What the main panel shows: a thread, a project's page or one of the
 /// activity bar's pages. Its tabs go when this changes.
-#[derive(Clone, Debug, PartialEq)]
-struct MainContext {
-    thread: Option<String>,
-    project: Option<String>,
-    page: Option<SidebarMode>,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct MainContext {
+    pub(crate) thread: Option<String>,
+    pub(crate) project: Option<String>,
+    pub(crate) page: Option<SidebarMode>,
 }
 
 impl ThreadPanels {
@@ -547,18 +564,27 @@ impl Threadbear {
             .update(cx, |m, cx| m.open(panel, DockDrop::tab(main.id), cx));
     }
 
-    /// The main panel moved to another thread, a new thread, a page or a
-    /// project (`mainContextChanged`): the tabs opened for what it showed
-    /// before go, and its own tab comes to the front. Run whenever the app
-    /// changes, as that's every way the main panel can move on.
-    pub(crate) fn main_context_maybe_changed(&mut self, cx: &mut Context<Self>) {
-        let now = MainContext {
+    pub(crate) fn current_main_context(&self) -> MainContext {
+        MainContext {
             thread: self.selected.clone(),
             project: self.projects.open.clone(),
             page: self.home_page(),
-        };
+        }
+    }
+
+    /// The main panel moved to another thread, a new thread, a page or a
+    /// project (`mainContextChanged`): the tabs opened for what it showed
+    /// before go, and its own tab comes to the front. Per-thread PR panels
+    /// still in their home group are remembered for this context, closed, and
+    /// restored if the new context had any. Run whenever the app changes, as
+    /// that's every way the main panel can move on.
+    pub(crate) fn main_context_maybe_changed(&mut self, cx: &mut Context<Self>) {
+        let now = self.current_main_context();
         let before = self.thread_panels.context.replace(now.clone());
-        if before.is_none() || before == Some(now) {
+        let Some(prev) = before else {
+            return;
+        };
+        if prev == now {
             return;
         }
         let layout = self.dock.read(cx).layout().clone();
@@ -569,17 +595,46 @@ impl Threadbear {
             .drain()
             .filter(|p| main.as_ref().is_some_and(|g| g.panels.contains(p)))
             .collect();
-        if stale.is_empty() && main.as_ref().is_none_or(|g| g.selected == MAIN) {
-            return;
+        let closing_prs: Vec<String> = layout
+            .panels()
+            .into_iter()
+            .filter(|p| self.thread_panels.pr_tabs.contains_key(p))
+            .collect();
+        let selected_pr = closing_prs
+            .iter()
+            .find(|p| self.dock.read(cx).is_showing(p))
+            .cloned();
+        if closing_prs.is_empty() {
+            self.thread_panels.saved_pr_tabs.remove(&prev);
+        } else {
+            self.thread_panels.saved_pr_tabs.insert(
+                prev,
+                SavedPrTabs {
+                    panels: closing_prs.clone(),
+                    selected: selected_pr,
+                },
+            );
         }
-        self.dock.update(cx, |m, cx| {
-            for panel in &stale {
-                m.close(panel, cx);
-            }
-            if m.layout().contains(MAIN) {
-                m.select(MAIN, cx);
-            }
-        });
+        self.thread_panels.pr_tabs.clear();
+        let hidden_prs = std::mem::take(&mut self.thread_panels.hidden_pr_tabs);
+        self.hidden_panes
+            .retain(|p| !closing_prs.contains(p) && !hidden_prs.contains(p));
+        let restore = self.thread_panels.saved_pr_tabs.remove(&now);
+
+        let needs_main_select = main.as_ref().is_some_and(|g| g.selected != MAIN);
+        if !stale.is_empty() || !closing_prs.is_empty() || needs_main_select {
+            self.dock.update(cx, |m, cx| {
+                for panel in stale.iter().chain(&closing_prs) {
+                    m.close(panel, cx);
+                }
+                if needs_main_select && m.layout().contains(MAIN) {
+                    m.select(MAIN, cx);
+                }
+            });
+        }
+        if let Some(saved) = restore {
+            self.restore_pr_panels(saved, cx);
+        }
     }
 
     /// The panels for the dump: each thread in a panel of its own, whether

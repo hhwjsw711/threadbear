@@ -3,14 +3,11 @@ import type { ThreadbearWorld } from '../support/world.ts';
 import { pane } from '../support/pane.ts';
 import type { Dump } from '../support/driver.ts';
 
-// A PR open as a tab in the pane. The GPUI app's
-// dump has it as the pane's preview, `previewKind` "pr", and `pr` with the
-// words the tab draws.
+// A PR open as a dock panel (`prPanels` in the GPUI app's dump).
 type PrDump = { url: string; tab?: string | null; busy?: string | null; error?: string | null; pr: { title: string; state: string; status: string; checks: string; failed?: string | null; files: string[]; filesLater?: boolean; activity: string[] } | string };
-const pr = (d: Dump): PrDump | undefined => {
-  const p = pane(d) as (ReturnType<typeof pane> & { pr?: PrDump }) | undefined;
-  return p?.previewKind === 'pr' ? p.pr : undefined;
-};
+type PrPanelEntry = { id: string; url: string; title?: string | null; tip?: string | null; showing: boolean; floating: boolean; perThread: boolean; pr: PrDump };
+const prPanels = (d: Dump): PrPanelEntry[] => ((d as unknown as { prPanels?: PrPanelEntry[] }).prPanels ?? []);
+const pr = (d: Dump): PrDump | undefined => prPanels(d).find((p) => p.showing)?.pr;
 const loaded = (d: Dump) => {
   const p = pr(d)?.pr;
   return typeof p === 'object' ? p : undefined;
@@ -106,4 +103,35 @@ Then("the PR {string} isn't read yet", async function (this: ThreadbearWorld, ur
 // The mock's PR files come 3 s after the rest (@slow-pr-files).
 Then("the PR's changes are still being read", async function (this: ThreadbearWorld) {
   await this.until('the PR read without its files', (d) => loaded(d)?.filesLater === true && loaded(d)?.files.length === 0);
+});
+
+Then('the PR {string} is open as a normal panel beside Highlights', async function (this: ThreadbearWorld, url: string) {
+  await this.until(`the PR panel for "${url}" beside Highlights`, (d) => {
+    const entry = prPanels(d).find((p) => p.url === url);
+    const highlightsPreview = pane(d)?.previewKind;
+    return Boolean(entry?.showing && entry.perThread && highlightsPreview !== 'pr' && (d.dock ?? '').includes(`pr:${url}`));
+  });
+});
+
+Then('no PR panel is open', async function (this: ThreadbearWorld) {
+  await this.until('no PR panels in the dock', (d) => prPanels(d).length === 0);
+});
+
+When('I move the PR panel {string} to the bottom of the window', async function (this: ThreadbearWorld, url: string) {
+  await this.app.do({ cmd: 'dock-move', panel: `threadbear.pr:${url}`, edge: 'bottom' });
+});
+
+Then('the PR panel {string} stays open across threads', async function (this: ThreadbearWorld, url: string) {
+  await this.until(`the moved PR panel "${url}" still showing`, (d) => {
+    const entry = prPanels(d).find((p) => p.url === url);
+    return Boolean(entry?.showing && !entry.perThread);
+  });
+});
+
+Then('the open menu offers {string}', async function (this: ThreadbearWorld, item: string) {
+  await this.until(`open menu offering "${item}"`, async () => {
+    const raw = await this.app.do({ cmd: 'context-menus' });
+    const menus = JSON.parse(raw.replace(/^ok\s*/, '')) as string[][];
+    return menus.some((items) => items.includes(item));
+  });
 });

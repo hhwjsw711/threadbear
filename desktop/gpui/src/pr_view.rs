@@ -1,21 +1,25 @@
-// A GitHub pull request open as a tab in the side pane: a PR link clicked in a reply or in Highlights opens here
-// rather than in the browser, with what's needed to decide on it and the
-// buttons to act (docs/protocol/panels.md, "Pull requests"; the rules and words are
+// A GitHub pull request open as a dock panel beside the thread: a PR link
+// clicked in a reply or in Highlights opens here rather than in the browser,
+// with what's needed to decide on it and the buttons to act
+// (docs/protocol/panels.md, "Pull requests"; the rules and words are
 // threadbear_core::pull_requests). Mike picked this layout, option A of three
-// mockups (18 Nov 2026), after trying Capy.
+// mockups (18 Nov 2026), after trying Capy, and asked for PRs to be normal
+// dock panels rather than an overlay inside Highlights (27 Nov 2026).
 //
-// It's a preview over the pane's section (`Target::Pr`), as a file is, so
-// Back goes to Highlights. Each PR the thread opened stays as a tab in the
-// header until closed, so moving between the ones a triage named is a click.
-// The runner reads it with gh; every button spins and stops taking clicks
-// until GitHub has answered, then the PR is read again.
-use crate::highlights::{icon, palette, tipped, Palette, PanePreview, SidePane, Target};
+// Each PR opens as a real tab beside Highlights (or down the right when no
+// side panel is open), with Refresh and Open on GitHub in its panel bar.
+// Un-moved PR tabs follow their thread (closing on switch and coming back on
+// return); dragging one into another group or a window of its own keeps it
+// open across threads. The runner reads it with gh; every button spins and
+// stops taking clicks until GitHub has answered, then the PR is read again.
+use crate::app::Threadbear;
+use crate::highlights::{icon, palette, tipped, Palette, SidePane};
 use crate::style::{self, px};
 use crate::tips::Tip as _;
 use crate::{call, now_ms};
 use gpui_kit::base::TextViewState;
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, StyledExt as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{json, Value};
@@ -25,6 +29,7 @@ use threadbear_core::inbox::{ago, parse_ms, ThreadSummary};
 use threadbear_core::pull_requests::{
     self as rules, CachedPr, CheckState, MergeMethod, PrFiles, PrRef, PrState, PrTab, PrView,
 };
+use threadbear_dock::{DockDrop, DockEdge, DockLayout};
 
 /// The tip on a PR's buttons while the copy kept from an earlier run is
 /// read again.
@@ -61,8 +66,10 @@ pub(crate) struct PrUi {
 pub(crate) struct PrPanes {
     loads: HashMap<String, PrLoad>,
     ui: HashMap<String, PrUi>,
-    /// Each thread's PR tabs, in the order it opened them.
-    tabs: HashMap<String, Vec<String>>,
+    /// The folder of the thread each PR was opened from, so "Start a thread"
+    /// and "Ask Claude to review" still know where to start even if the panel
+    /// was dragged out onto another thread.
+    cwds: HashMap<String, String>,
     /// The thread starting a review or a thread on it, so a second click
     /// can't start two.
     starting: Option<String>,
@@ -118,30 +125,47 @@ pub(crate) fn pr_url(url: &str) -> Option<String> {
 }
 
 impl SidePane {
-    /// A PR link clicked: its tab, over the section in front, read from GitHub
-    /// if it isn't already.
-    pub(crate) fn open_pr(&mut self, url: &str, thread: &ThreadSummary, cx: &mut Context<Self>) {
-        let Some(r) = PrRef::parse(url) else { return };
-        let url = r.url();
-        let tabs = self.prs.tabs.entry(thread.id.clone()).or_default();
-        if !tabs.contains(&url) {
-            tabs.push(url.clone());
+    /// Remembers the working folder of the thread a PR was opened from.
+    pub(crate) fn remember_pr_cwd(&mut self, url: &str, cwd: String) {
+        if !cwd.is_empty() {
+            self.prs.cwds.insert(url.to_owned(), cwd);
         }
-        let from = match self.previews.get(&thread.id) {
-            Some(p) if matches!(p.target, Target::Pr(_)) => p.from.clone(),
-            _ => self.section_for(thread),
-        };
-        self.show_preview(
-            PanePreview::new(Target::Pr(url), r.tab_title(), from),
-            &thread.id,
-            cx,
-        );
     }
 
-    /// From `begin_preview`: read it the first time it shows, or again if
-    /// the last read failed (a read started by a hover, say, that the runner
-    /// or GitHub turned down), or behind what's showing once that was read
-    /// a while ago.
+    /// The PR's state, from its full read if ready else from `github.prStates`.
+    pub(crate) fn pr_state(&self, url: &str) -> Option<PrState> {
+        match self.prs.loads.get(url) {
+            Some(PrLoad::Ready(pr)) => Some(pr.state),
+            _ => self.prs.states.get(url).copied(),
+        }
+    }
+
+    /// The PR's title once loaded, for the dock tab's tooltip.
+    pub(crate) fn pr_title(&self, url: &str) -> Option<String> {
+        match self.prs.loads.get(url) {
+            Some(PrLoad::Ready(pr)) => Some(pr.title.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pr_refreshing(&self, url: &str) -> bool {
+        self.prs.ui.get(url).is_some_and(|u| u.refreshing)
+            || matches!(self.prs.loads.get(url), Some(PrLoad::Loading))
+    }
+
+    /// True when a PR panel restored from the saved layout hasn't started
+    /// reading yet. Never true for a failed load (which waits for Try again).
+    pub(crate) fn needs_pr_begin(&self, url: &str) -> bool {
+        !self.prs.loads.contains_key(url)
+    }
+
+    pub(crate) fn refresh_pr(&mut self, url: &str, cx: &mut Context<Self>) {
+        self.load_pr(url, cx);
+    }
+
+    /// Reads the PR the first time it shows, or again if the last read failed
+    /// (a read started by a hover, say, that the runner or GitHub turned
+    /// down), or behind what's showing once that was read a while ago.
     pub(crate) fn begin_pr(&mut self, url: &str, cx: &mut Context<Self>) {
         let stale = self
             .prs
@@ -248,11 +272,13 @@ impl SidePane {
                         this.keep_pr(&url, cx);
                     }
                 }
+                cx.refresh_windows();
                 cx.notify();
             })
             .ok();
         })
         .detach();
+        cx.refresh_windows();
         cx.notify();
     }
 
@@ -417,167 +443,22 @@ impl SidePane {
         cx.notify();
     }
 
-    /// Closes a PR's tab; the one in front goes back to the section, or
-    /// on to the tab beside it.
-    fn close_pr_tab(&mut self, thread_id: &str, url: &str, cx: &mut Context<Self>) {
-        let Some(tabs) = self.prs.tabs.get_mut(thread_id) else {
-            return;
-        };
-        let at = tabs.iter().position(|u| u == url);
-        tabs.retain(|u| u != url);
-        let next = at
-            .and_then(|i| tabs.get(i.min(tabs.len().saturating_sub(1))))
-            .cloned();
-        let showing = self
-            .previews
-            .get(thread_id)
-            .is_some_and(|p| p.target == Target::Pr(url.to_owned()));
-        if showing {
-            match (next, self.thread(cx)) {
-                (Some(next), Some(thread)) => self.open_pr(&next, &thread, cx),
-                _ => self.preview_back(thread_id, cx),
-            }
-        }
-        cx.notify();
-    }
-
-    /// The header for a PR: Back to the section, then a tab per PR this
-    /// thread opened, the one in front marked, each with its close.
-    pub(crate) fn render_pr_header(
+    /// The PR's panel body: Overview, Diff or Checks, under the bar and
+    /// buttons, plus its Review/Merge popup menu when open.
+    pub(crate) fn render_pr_panel(
         &mut self,
-        thread: &ThreadSummary,
-        url: &str,
-        from_title: String,
-        p: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let thread_id = thread.id.clone();
-        let mut row = h_flex().flex_1().min_w_0().gap(px(2.)).items_center();
-        let back_id = thread_id.clone();
-        row = row.child(self.header_button(
-            "hl-back",
-            "chevron.left",
-            format!("Back to {from_title}"),
-            p,
-            cx,
-            move |this, cx| this.preview_back(&back_id, cx),
-        ));
-        let tabs = self
-            .prs
-            .tabs
-            .get(&thread.id)
-            .cloned()
-            .unwrap_or_else(|| vec![url.to_owned()]);
-        for (i, tab) in tabs.iter().enumerate() {
-            let front = tab == url;
-            let r = PrRef::parse(tab);
-            let state = match self.prs.loads.get(tab) {
-                Some(PrLoad::Ready(pr)) => Some(pr.state),
-                _ => None,
-            };
-            let title = r.as_ref().map_or_else(|| tab.clone(), |r| r.tab_title());
-            let tip = match (&r, self.prs.loads.get(tab)) {
-                (_, Some(PrLoad::Ready(pr))) => format!(
-                    "{}/{}#{}: {}",
-                    r.as_ref().map_or("", |r| r.owner.as_str()),
-                    r.as_ref().map_or("", |r| r.repo.as_str()),
-                    pr.number,
-                    pr.title
-                ),
-                _ => title.clone(),
-            };
-            let (open_url, close_url) = (tab.clone(), tab.clone());
-            let (open_thread, close_thread) = (thread.clone(), thread_id.clone());
-            let hover = p.hover;
-            let close = tipped(
-                div()
-                    .id(("pr-tab-close", i))
-                    .size(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.))
-                    .hover(move |s| s.bg(hover))
-                    .child(icon("xmark", 9., p.faint)),
-                "Close this tab",
-            )
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                this.close_pr_tab(&close_thread, &close_url, cx);
-            }));
-            let tab_el = div()
-                .id(("pr-tab", i))
-                .h(px(24.))
-                .pl(px(7.))
-                .pr(px(3.))
-                .gap(px(4.))
-                .flex()
-                .items_center()
-                .rounded(px(6.))
-                .cursor_pointer()
-                .when(front, |d| d.bg(p.hover))
-                .hover(move |s| s.bg(hover))
-                .child(icon(
-                    "arrow.triangle.pull",
-                    11.,
-                    state.map_or(p.secondary, |s| state_colour(s, cx)),
-                ))
-                .child(
-                    div()
-                        .text_size(px(style::size::LABEL))
-                        .when(front, |d| d.font_semibold())
-                        .text_color(if front { p.fg } else { p.secondary })
-                        .child(title),
-                )
-                .child(close);
-            row = row.child(tipped(tab_el, tip).on_click(cx.listener(
-                move |this, _: &ClickEvent, _, cx| this.open_pr(&open_url, &open_thread, cx),
-            )));
-        }
-        let mut out = h_flex().flex_1().min_w_0().items_center().child(row);
-        let (refresh_url, open_url) = (url.to_owned(), url.to_owned());
-        let refreshing = self.prs.ui.get(url).is_some_and(|u| u.refreshing)
-            || matches!(self.prs.loads.get(url), Some(PrLoad::Loading));
-        if refreshing {
-            let spinner = div()
-                .id("pr-reading")
-                .size(px(26.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(crate::spinner::TurningArc::new(12., p.secondary));
-            out = out.child(tipped(spinner, "Reading it from GitHub".to_owned()));
-        } else {
-            out = out.child(self.header_button(
-                "pr-refresh",
-                "arrow.clockwise",
-                "Read it again from GitHub".to_owned(),
-                p,
-                cx,
-                move |this, cx| this.load_pr(&refresh_url, cx),
-            ));
-        }
-        out = out.child(self.header_button(
-            "pr-open",
-            "arrow.up.right",
-            "Open on GitHub".to_owned(),
-            p,
-            cx,
-            move |_, cx| crate::files::open_web(&open_url, cx),
-        ));
-        out.into_any_element()
-    }
-
-    /// The PR's tab: its Overview, Diff or Checks, under the title and the
-    /// buttons.
-    pub(crate) fn render_pr(
-        &mut self,
-        thread: &ThreadSummary,
         url: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = palette(cx);
+        let cwd = self
+            .prs
+            .cwds
+            .get(url)
+            .cloned()
+            .or_else(|| self.thread(cx).map(|t| t.cwd))
+            .unwrap_or_default();
         let pr = match self.prs.loads.get(url) {
             None | Some(PrLoad::Loading) => {
                 return pr_skeleton(style::primary_opacity(cx, 0.07)).into_any_element()
@@ -635,12 +516,19 @@ impl SidePane {
         let ui_tab = self.prs.ui[url].tab;
         let scroll = self.prs.ui[url].scroll.clone();
         let body = match ui_tab {
-            PrTab::Overview => self.pr_overview(thread, url, &pr, p, window, cx),
+            PrTab::Overview => self.pr_overview(&cwd, url, &pr, p, window, cx),
             PrTab::Diff => self.pr_diff(url, &pr, p, cx),
             PrTab::Checks => pr_checks(&pr, p, cx),
         };
+        let menu = self
+            .menu
+            .as_ref()
+            .filter(|m| m.owner.as_deref() == Some(url))
+            .map(|m| (m.position, m.view.clone()));
         v_flex()
+            .relative()
             .size_full()
+            .text_color(p.fg)
             .child(self.pr_bar(url, &pr, p, cx))
             .child(
                 div()
@@ -651,6 +539,17 @@ impl SidePane {
                     .track_scroll(&scroll)
                     .child(v_flex().px(px(18.)).pt(px(4.)).pb(px(24.)).child(body)),
             )
+            .when_some(menu, |s, (position, view)| {
+                s.child(
+                    deferred(
+                        anchored()
+                            .position(position)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(div().occlude().child(view)),
+                    )
+                    .with_priority(1),
+                )
+            })
             .into_any_element()
     }
 
@@ -893,7 +792,7 @@ impl SidePane {
         items.push(crate::highlights::MenuItem::submenu(
             "Default", "star", choices,
         ));
-        self.open_menu(items, position, window, cx);
+        self.open_pr_menu(url, items, position, window, cx);
     }
 
     fn open_review_menu(
@@ -922,7 +821,7 @@ impl SidePane {
                 },
             ),
         ];
-        self.open_menu(items, position, window, cx);
+        self.open_pr_menu(url, items, position, window, cx);
     }
 
     /// A merge or review chosen from its menu.
@@ -986,7 +885,7 @@ impl SidePane {
     )]
     fn pr_overview(
         &mut self,
-        thread: &ThreadSummary,
+        cwd: &str,
         url: &str,
         pr: &Arc<PrView>,
         p: Palette,
@@ -1102,8 +1001,8 @@ impl SidePane {
         col = col.child(fields);
         // Claude: a thread to review it, or to work on it.
         let starting = self.prs.starting.is_some();
-        let (review_pr, work_pr, review_thread, work_thread) =
-            (pr.clone(), pr.clone(), thread.clone(), thread.clone());
+        let (review_pr, work_pr, review_cwd, work_cwd) =
+            (pr.clone(), pr.clone(), cwd.to_owned(), cwd.to_owned());
         // Two buttons that wrap onto a second line in a narrow pane, rather
         // than words saying what they're for: their tips say that.
         col = col.child(
@@ -1123,7 +1022,7 @@ impl SidePane {
                         let side = cx.entity().downgrade();
                         move |_, window, cx| {
                             let _ = side.update(cx, |this, cx| {
-                                this.start_pr_draft(&work_pr, &work_thread, window, cx)
+                                this.start_pr_draft(&work_pr, &work_cwd, window, cx)
                             });
                         }
                     }),
@@ -1140,7 +1039,7 @@ impl SidePane {
                         let side = cx.entity().downgrade();
                         move |_, window, cx| {
                             let _ = side.update(cx, |this, cx| {
-                                this.start_pr_review(&review_pr, &review_thread, window, cx)
+                                this.start_pr_review(&review_pr, &review_cwd, window, cx)
                             });
                         }
                     }),
@@ -1157,7 +1056,7 @@ impl SidePane {
                     .border_color(p.hairline)
                     .text_size(px(style::size::LABEL))
                     .line_height(px(20.))
-                    .child(self.pr_text(&doc, thread, cx)),
+                    .child(self.pr_text(&doc, cwd, cx)),
             );
         }
         // What's happened on it.
@@ -1193,7 +1092,7 @@ impl SidePane {
                         div()
                             .text_size(px(style::size::LABEL))
                             .line_height(px(20.))
-                            .child(self.pr_text(&doc, thread, cx)),
+                            .child(self.pr_text(&doc, cwd, cx)),
                     );
                 }
                 col = col.child(entry);
@@ -1337,18 +1236,18 @@ impl SidePane {
     }
 
     /// PR words, drawn as a reply's, their links going where a reply's go
-    /// from the pane (another PR opens as its own tab).
+    /// from the pane (another PR opens as its own panel).
     fn pr_text(
         &self,
         doc: &Entity<TextViewState>,
-        thread: &ThreadSummary,
+        cwd: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let side = cx.entity().downgrade();
         let style = crate::rows::reading_style(cx);
         // Through the open gate's view, its click handler replaced by the
-        // pane's, which still opens only through the gate (or as a PR tab).
-        crate::open_gate::text_view(doc, crate::open_gate::Origin::ThisMac, &thread.cwd)
+        // pane's, which still opens only through the gate (or as a PR panel).
+        crate::open_gate::text_view(doc, crate::open_gate::Origin::ThisMac, cwd)
             .selectable(true)
             .style(style)
             .on_link_click(
@@ -1491,24 +1390,29 @@ impl SidePane {
     }
 
     /// Start a thread on it: the new-thread box in this thread's folder,
-    /// with the PR's link and name in it for Mike to say what to do.
+    /// with the PR's link and name in it for Mike to say what to do, keeping
+    /// the PR panel open beside the new thread so he can read it as he writes.
     fn start_pr_draft(
         &mut self,
         pr: &PrView,
-        thread: &ThreadSummary,
+        cwd: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(app) = self.app.upgrade() else {
             return;
         };
-        let (text, cwd) = (rules::work_prompt(pr), thread.cwd.clone());
+        let (text, cwd, url) = (rules::work_prompt(pr), cwd.to_owned(), pr.url.clone());
         app.update(cx, |app, cx| {
             app.new_thread(cx);
             app.choose_new_thread_runner(None, true, cx);
-            app.new_thread.picks.cwd = Some(cwd);
+            if !cwd.is_empty() {
+                app.new_thread.picks.cwd = Some(cwd.clone());
+            }
             let composer = app.ensure_new_composer(window, cx);
             composer.update(cx, |c, cx| c.replace_text(text, cx));
+            app.main_context_maybe_changed(cx);
+            app.open_pr_panel(&url, (!cwd.is_empty()).then_some(cwd), cx);
             cx.notify();
         });
     }
@@ -1518,15 +1422,16 @@ impl SidePane {
     fn start_pr_review(
         &mut self,
         pr: &PrView,
-        thread: &ThreadSummary,
+        cwd: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.prs.starting.is_some() {
             return;
         }
-        self.prs.starting = Some(pr.url.clone());
-        let params = json!({ "cwd": thread.cwd, "text": rules::review_prompt(pr), "title": format!("Review #{}: {}", pr.number, pr.title) });
+        let pr_url = pr.url.clone();
+        self.prs.starting = Some(pr_url.clone());
+        let params = json!({ "cwd": cwd, "text": rules::review_prompt(pr), "title": format!("Review #{}: {}", pr.number, pr.title) });
         let client = self.client.clone();
         let app = self.app.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -1539,27 +1444,18 @@ impl SidePane {
                             serde_json::from_value::<ThreadSummary>(v["thread"].clone()),
                             app.upgrade(),
                         ) {
+                            let cwd = t.cwd.clone();
                             app.update(cx, |app, cx| {
                                 let id = t.id.clone();
                                 app.store_reply_summary(t);
                                 app.open(id, window, cx);
+                                app.main_context_maybe_changed(cx);
+                                app.open_pr_panel(&pr_url, Some(cwd), cx);
                             });
                         }
                     }
                     Err(e) => {
-                        if let Some(ui) = this.prs.ui.get_mut(
-                            &this
-                                .previews
-                                .values()
-                                .find_map(|p| {
-                                    if let Target::Pr(u) = &p.target {
-                                        Some(u.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or_default(),
-                        ) {
+                        if let Some(ui) = this.prs.ui.get_mut(&pr_url) {
                             ui.error = Some(format!("Couldn't start the review: {}", e.message));
                         }
                     }
@@ -1570,6 +1466,295 @@ impl SidePane {
         })
         .detach();
         cx.notify();
+    }
+}
+
+// ---------------------------------------------------------------- dock panels
+
+/// One PR open as a BearDock panel, drawing from `SidePane`'s shared PR cache
+/// and redrawing when that PR's read or UI state changes.
+pub(crate) struct PrPanelView {
+    side: Entity<SidePane>,
+    url: String,
+    _watch: Subscription,
+}
+
+impl PrPanelView {
+    fn new(side: Entity<SidePane>, url: String, cx: &mut Context<Self>) -> Self {
+        let watch = cx.observe(&side, |_, _, cx| cx.notify());
+        PrPanelView {
+            side,
+            url,
+            _watch: watch,
+        }
+    }
+}
+
+impl Render for PrPanelView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.side.read(cx).needs_pr_begin(&self.url) {
+            let (side, url) = (self.side.clone(), self.url.clone());
+            cx.defer(move |cx| side.update(cx, |s, cx| s.begin_pr(&url, cx)));
+        }
+        let url = self.url.clone();
+        let body = self
+            .side
+            .update(cx, |s, cx| s.render_pr_panel(&url, window, cx));
+        div().size_full().bg(cx.theme().background).child(body)
+    }
+}
+
+impl Threadbear {
+    /// Opens a GitHub PR as a normal dock panel beside Highlights (or down the
+    /// right if no side panel is open), tracked as a per-thread tab until Mike
+    /// closes it or drags it into another group or window.
+    pub(crate) fn open_pr_panel(&mut self, url: &str, cwd: Option<String>, cx: &mut Context<Self>) {
+        let Some(r) = PrRef::parse(url) else { return };
+        let canonical = r.url();
+        let panel = r.panel_id();
+        self.side.update(cx, |s, cx| {
+            if let Some(cwd) = cwd {
+                s.remember_pr_cwd(&canonical, cwd);
+            }
+            s.begin_pr(&canonical, cx);
+        });
+        if self.dock.read(cx).layout().contains(&panel) {
+            self.dock.update(cx, |m, cx| {
+                m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx)
+            });
+            return;
+        }
+        if self.thread_panels.context.is_none() {
+            self.thread_panels.context = Some(self.current_main_context());
+        }
+        // Prefer Highlights' group, then another open side panel or per-thread
+        // PR tab, so a PR dragged elsewhere never hijacks new PR tabs. Know its
+        // home group before opening so `dock_layout_changed` omits this
+        // transient tab from disk.
+        let target_group = {
+            let layout = self.dock.read(cx).layout();
+            layout
+                .group_containing(crate::shell::HIGHLIGHTS)
+                .map(|g| g.id)
+                .or_else(|| {
+                    self.open_panes(cx)
+                        .into_iter()
+                        .find_map(|p| layout.group_containing(&p).map(|g| g.id))
+                })
+        };
+        if let Some(group_id) = target_group {
+            self.thread_panels
+                .pr_tabs
+                .insert(panel.clone(), group_id.clone());
+            self.dock
+                .update(cx, |m, cx| m.open(&panel, DockDrop::tab(group_id), cx));
+        } else {
+            self.dock.update(cx, |m, cx| {
+                m.open(&panel, DockDrop::window(DockEdge::Right), cx)
+            });
+            if let Some(group) = self.dock.read(cx).layout().group_containing(&panel) {
+                self.thread_panels.pr_tabs.insert(panel, group.id);
+                let layout = self.dock.read(cx).layout().clone();
+                self.settings.saved.dock_layout =
+                    serde_json::to_value(self.layout_for_save(&layout)).ok();
+                self.save_settings_soon(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Reopens a thread's un-moved PR panels when returning to it.
+    pub(crate) fn restore_pr_panels(
+        &mut self,
+        saved: crate::thread_panels::SavedPrTabs,
+        cx: &mut Context<Self>,
+    ) {
+        let open_panes = self.open_panes(cx);
+        if saved.selected.is_none() && open_panes.is_empty() {
+            return;
+        }
+        let prev_selected = open_panes.into_iter().find_map(|p| {
+            self.dock
+                .read(cx)
+                .layout()
+                .group_containing(&p)
+                .map(|g| g.selected)
+        });
+        for panel in &saved.panels {
+            if self.dock.read(cx).layout().contains(panel) {
+                continue;
+            }
+            if let Some(url) = rules::panel_url(panel) {
+                self.open_pr_panel(url, None, cx);
+            }
+        }
+        let select = saved.selected.or(prev_selected);
+        if let Some(sel) = select {
+            if self.dock.read(cx).layout().contains(&sel) {
+                self.dock.update(cx, |m, cx| m.select(&sel, cx));
+            }
+        }
+    }
+
+    /// After a dock layout change: a PR panel dragged out of its home group
+    /// (into a split, onto Main or into a window of its own) stays open across
+    /// threads, and views for closed PR panels are dropped.
+    pub(crate) fn pr_panels_layout_changed(&mut self, layout: &DockLayout) {
+        self.thread_panels.pr_tabs.retain(|panel, home| {
+            layout
+                .group_containing(panel)
+                .is_some_and(|g| g.id == *home)
+        });
+        self.thread_panels
+            .pr_views
+            .retain(|panel, _| layout.contains(panel));
+    }
+
+    pub(crate) fn pr_panel_title(&self, panel: &str) -> Option<String> {
+        Some(rules::panel_ref(panel)?.tab_title())
+    }
+
+    pub(crate) fn pr_panel_tip(&self, panel: &str, cx: &App) -> Option<String> {
+        let r = rules::panel_ref(panel)?;
+        let url = r.url();
+        Some(match self.side.read(cx).pr_title(&url) {
+            Some(title) => format!("{}/{}#{}: {title}", r.owner, r.repo, r.number),
+            None => format!("{}/{}#{}", r.owner, r.repo, r.number),
+        })
+    }
+
+    pub(crate) fn pr_panel_icon(&self, panel: &str, cx: &App) -> Option<AnyElement> {
+        let url = rules::panel_url(panel)?;
+        let color = self
+            .side
+            .read(cx)
+            .pr_state(url)
+            .map_or_else(|| cx.theme().muted_foreground, |s| state_colour(s, cx));
+        Some(
+            crate::icons::symbol("arrow.triangle.pull")
+                .with_size(px(13.))
+                .text_color(color)
+                .into_any_element(),
+        )
+    }
+
+    /// Refresh and Open on GitHub at the right end of a PR panel's dock bar.
+    pub(crate) fn pr_panel_buttons(
+        &mut self,
+        url: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let p = palette(cx);
+        let hover = p.hover;
+        let fg = p.fg;
+        let refreshing = self.side.read(cx).pr_refreshing(url);
+        let side = self.side.clone();
+        let refresh_url = url.to_owned();
+        let open_url = url.to_owned();
+        let mut row = h_flex().flex_none().items_center().pr(px(4.));
+        if refreshing {
+            let spinner = div()
+                .id(SharedString::from(format!("pr-reading-{url}")))
+                .size(px(26.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .child(crate::spinner::TurningArc::new(12., p.secondary));
+            row = row.child(tipped(spinner, "Reading it from GitHub".to_owned()));
+        } else {
+            row = row.child(
+                tipped(
+                    div()
+                        .id(SharedString::from(format!("pr-refresh-{url}")))
+                        .size(px(26.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .hover(move |s| s.bg(hover).text_color(fg))
+                        .cursor_pointer()
+                        .child(icon("arrow.clockwise", style::size::LABEL, p.secondary)),
+                    "Read it again from GitHub".to_owned(),
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    side.update(cx, |s, cx| s.refresh_pr(&refresh_url, cx));
+                }),
+            );
+        }
+        row = row.child(
+            tipped(
+                div()
+                    .id(SharedString::from(format!("pr-open-{url}")))
+                    .size(px(26.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .hover(move |s| s.bg(hover).text_color(fg))
+                    .cursor_pointer()
+                    .child(icon("arrow.up.right", style::size::LABEL, p.secondary)),
+                "Open on GitHub".to_owned(),
+            )
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(move |_, _, cx| crate::files::open_web(&open_url, cx)),
+        );
+        Some(row.into_any_element())
+    }
+
+    pub(crate) fn pr_panel_view(
+        &mut self,
+        panel: &str,
+        ghost: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if ghost {
+            return div()
+                .size_full()
+                .bg(cx.theme().background)
+                .into_any_element();
+        }
+        let Some(url) = rules::panel_url(panel) else {
+            return div().size_full().into_any_element();
+        };
+        let side = self.side.clone();
+        let url = url.to_owned();
+        let view = self
+            .thread_panels
+            .pr_views
+            .entry(panel.to_owned())
+            .or_insert_with(|| cx.new(|cx| PrPanelView::new(side, url, cx)))
+            .clone();
+        AnyView::from(view).into_any_element()
+    }
+
+    #[cfg(feature = "automation")]
+    pub(crate) fn pr_panels_dump(&self, cx: &App) -> Value {
+        let dock = self.dock.read(cx);
+        let side = self.side.read(cx);
+        let list: Vec<Value> = dock
+            .layout()
+            .panels()
+            .iter()
+            .filter_map(|id| {
+                let url = rules::panel_url(id)?;
+                Some(json!({
+                    "id": id,
+                    "url": url,
+                    "title": self.pr_panel_title(id),
+                    "tip": self.pr_panel_tip(id, cx),
+                    "showing": dock.is_showing(id),
+                    "floating": dock.layout().is_floating(id),
+                    "perThread": self.thread_panels.pr_tabs.contains_key(id),
+                    "pr": side.prs.describe(url),
+                }))
+            })
+            .collect();
+        json!(list)
     }
 }
 

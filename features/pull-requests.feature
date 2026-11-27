@@ -78,3 +78,17 @@ Feature: Pull requests open beside the thread
     And a reply linking "the fix" to "https://github.com/acme/app/pull/72" streams in
     And I click the link "the fix"
     Then the pane shows the PR "Fewer approvals when a fork brings in a release"
+
+  @pane.prs @swift-pending
+  Scenario: A PR opens as a normal panel that follows its thread unless moved
+    When I follow the PR link "https://github.com/acme/app/pull/72" in the thread
+    Then the PR "https://github.com/acme/app/pull/72" is open as a normal panel beside Highlights
+    When I press the PR's button "Approve it, or ask for changes"
+    Then the open menu offers "Approve"
+    When I open the thread "Draft the release notes for 0.4"
+    Then no PR panel is open
+    When I open the thread "Make uploads resume after a crash"
+    Then the PR "https://github.com/acme/app/pull/72" is open as a normal panel beside Highlights
+    When I move the PR panel "https://github.com/acme/app/pull/72" to the bottom of the window
+    And I open the thread "Draft the release notes for 0.4"
+    Then the PR panel "https://github.com/acme/app/pull/72" stays open across threads

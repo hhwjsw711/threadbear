@@ -53,8 +53,6 @@ pub(crate) enum Target {
     File(String),
     Folder(String),
     Page(String),
-    /// A GitHub pull request's tab, by its own URL (pr_view.rs).
-    Pr(String),
 }
 
 /// A folder's selection and open rows, kept so coming Back to it finds it as
@@ -119,8 +117,7 @@ fn remembered_open(p: &PanePreview) -> Option<crate::pane_store::Open> {
     let (path, folder) = match &p.target {
         Target::File(path) => (path.clone(), false),
         Target::Folder(path) => (path.clone(), true),
-        // A PR is read from GitHub again each launch, so isn't kept.
-        Target::Page(_) | Target::Pr(_) => return None,
+        Target::Page(_) => return None,
     };
     let back = p.back.iter().filter_map(remembered_open).collect();
     Some(crate::pane_store::Open {
@@ -159,10 +156,13 @@ pub(crate) struct RowFlags {
     pub all_started: bool,
 }
 
-/// A row's menu, open at a place in the window.
+/// A row's menu, open at a place in the window. `owner` is `Some(pr_url)` when
+/// opened from a PR panel so that panel draws it in its own window instead of
+/// Highlights.
 pub(crate) struct OpenMenu {
     pub position: Point<Pixels>,
     pub view: Entity<PopupMenu>,
+    pub owner: Option<String>,
     _dismissed: Subscription,
 }
 
@@ -931,9 +931,15 @@ impl SidePane {
             }
             return;
         }
-        // A PR opens as its own tab here.
-        if let (Some(_), Some(thread)) = (crate::pr_view::pr_url(url), self.thread(cx)) {
-            self.open_pr(url, &thread, cx);
+        // A PR opens as its own panel beside Highlights.
+        if crate::pr_view::pr_url(url).is_some() {
+            let cwd = self.thread(cx).map(|t| t.cwd);
+            let url = url.to_owned();
+            if let Some(app) = self.app.upgrade() {
+                cx.defer(move |cx| {
+                    app.update(cx, |app, cx| app.open_pr_panel(&url, cwd, cx));
+                });
+            }
             return;
         }
         if core::is_web_page(url) {
@@ -1289,6 +1295,28 @@ impl SidePane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_menu_for(None, items, position, window, cx);
+    }
+
+    pub(crate) fn open_pr_menu(
+        &mut self,
+        pr_url: &str,
+        items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu_for(Some(pr_url.to_owned()), items, position, window, cx);
+    }
+
+    fn open_menu_for(
+        &mut self,
+        owner: Option<String>,
+        items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let entity = cx.entity().downgrade();
         let build = items;
         let view = PopupMenu::build(window, cx, move |menu, window, cx| {
@@ -1309,6 +1337,7 @@ impl SidePane {
         self.menu = Some(OpenMenu {
             position,
             view,
+            owner,
             _dismissed: dismissed,
         });
         cx.notify();
@@ -2908,9 +2937,6 @@ impl SidePane {
                 || self.section_title(thread, &preview.from),
                 |b| b.title.clone(),
             );
-            if let Target::Pr(url) = &preview.target {
-                return row.child(self.render_pr_header(thread, url, back_to, p, cx));
-            }
             row = row.child(self.header_button(
                 "hl-back",
                 "chevron.left",
@@ -3114,7 +3140,10 @@ impl SidePane {
         // What's over the whole pane is drawn once, by one section.
         let hosts = self.overlay_section(&thread, cx) == section;
         let menu = if hosts {
-            self.menu.as_ref().map(|m| (m.position, m.view.clone()))
+            self.menu
+                .as_ref()
+                .filter(|m| m.owner.is_none())
+                .map(|m| (m.position, m.view.clone()))
         } else {
             None
         };

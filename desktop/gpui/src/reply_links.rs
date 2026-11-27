@@ -528,18 +528,14 @@ impl ThreadPane {
         }
     }
 
-    /// A PR's tab in the pane beside this thread, opening the pane if it's shut.
+    /// A PR's panel beside this thread (tabbed with Highlights if open, else
+    /// down the right).
     fn open_pr_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        let thread = self.summary.clone();
+        let cwd = Some(self.summary.cwd.clone());
         let Some(app) = self.composer.read(cx).app.upgrade() else {
             return;
         };
-        let side = app.read(cx).side.clone();
-        let section = side.update(cx, |side, cx| {
-            side.open_pr(url, &thread, cx);
-            side.section_for(&thread)
-        });
-        show_pane(&app, &section, cx);
+        app.update(cx, |app, cx| app.open_pr_panel(url, cwd, cx));
     }
 
     /// A web page where `action` says: the browser, or the pane (only the

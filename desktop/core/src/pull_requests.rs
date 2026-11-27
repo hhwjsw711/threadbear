@@ -10,6 +10,28 @@
 use crate::reducer::event::{DiffHunk, EditDiff};
 use serde::{Deserialize, Serialize};
 
+/// A PR panel's id starts with this, followed by the PR's canonical GitHub URL
+/// (e.g. `threadbear.pr:https://github.com/owner/repo/pull/72`).
+pub const PANEL_PREFIX: &str = "threadbear.pr:";
+
+/// A PR's dock panel id for any GitHub pull request URL, normalized to its
+/// canonical URL so `/files` and `#discussion` links share one panel.
+pub fn panel(url: &str) -> Option<String> {
+    PrRef::parse(url).map(|r| r.panel_id())
+}
+
+/// The canonical PR URL a panel id names, or `None` for any other panel.
+pub fn panel_url(panel: &str) -> Option<&str> {
+    let url = panel.strip_prefix(PANEL_PREFIX)?;
+    PrRef::parse(url)?;
+    Some(url)
+}
+
+/// The parsed repo and number a PR panel id names, or `None` for any other panel.
+pub fn panel_ref(panel: &str) -> Option<PrRef> {
+    PrRef::parse(panel.strip_prefix(PANEL_PREFIX)?)
+}
+
 /// A PR link's repo and number: `https://github.com/<owner>/<repo>/pull/<n>`,
 /// with anything after the number (`/files`, `#discussion`) left off, as the
 /// runner's `parsePrUrl` reads it.
@@ -69,6 +91,11 @@ impl PrRef {
     /// "#72", the tab's name.
     pub fn tab_title(&self) -> String {
         format!("#{}", self.number)
+    }
+
+    /// Its dock panel id (`threadbear.pr:<canonical url>`).
+    pub fn panel_id(&self) -> String {
+        format!("{PANEL_PREFIX}{}", self.url())
     }
 
     /// Its file's name in the app's cache of PRs read before
@@ -730,5 +757,18 @@ mod tests {
         assert_eq!(duration(45), "45s");
         assert_eq!(duration(64), "1m 04s");
         assert_eq!(duration(3720), "1h 02m");
+    }
+
+    #[test]
+    fn panel_ids_round_trip_and_normalize() {
+        let id = panel("https://github.com/acme/app/pull/72/files#diff-1").unwrap();
+        assert_eq!(id, "threadbear.pr:https://github.com/acme/app/pull/72");
+        assert_eq!(panel_url(&id), Some("https://github.com/acme/app/pull/72"));
+        let r = panel_ref(&id).unwrap();
+        assert_eq!(r.tab_title(), "#72");
+        assert_eq!(r.panel_id(), id);
+        assert_eq!(panel_url("threadbear.pr:"), None);
+        assert_eq!(panel_url("threadbear.pr:https://example.com/nope"), None);
+        assert_eq!(panel_url("threadbear.highlights"), None);
     }
 }

@@ -2199,6 +2199,8 @@ impl Threadbear {
         dump["tokenCard"] = self.token_card_dump();
         // Panels pinned to their threads (pinned_panels.rs).
         dump["pinnedPanels"] = self.pinned_panels_dump(cx);
+        // GitHub PR panels open in the dock (pr_view.rs).
+        dump["prPanels"] = self.pr_panels_dump(cx);
         // The # thread picker over the box, while it's open (thread_palette.rs).
         dump["threadPicker"] = self
             .composer(cx)

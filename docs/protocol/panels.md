@@ -288,12 +288,15 @@ ignore fields they don't know.
 
 ## Pull requests
 
-A github.com PR link clicked in a reply or
-in Highlights opens as a tab in the side pane rather than the browser. The
-runner reads it with the gh CLI (`runner/src/github-pr.ts`), signed in as
-whoever `gh auth` is on this Mac: `github.pr` runs `gh pr view`, `gh pr
-diff` and `gh repo view` with `-R owner/repo` from the temp folder, never
-inside a checkout, so no repo's git config or hooks run.
+A github.com PR link clicked in a reply or in Highlights opens as a dock
+panel beside Highlights (panel id `threadbear.pr:<canonical url>`) rather
+than in the browser. Un-moved PR panels follow their thread (closing on
+switch and returning with the thread); dragging one to another group or a
+window of its own keeps it open across threads. The runner reads it with
+the gh CLI (`runner/src/github-pr.ts`), signed in as whoever `gh auth` is
+on this Mac: `github.pr` runs `gh pr view`, `gh pr diff` and `gh repo view`
+with `-R owner/repo` from the temp folder, never inside a checkout, so no
+repo's git config or hooks run.
 
 ```ts
 type PrView = {
