@@ -124,6 +124,11 @@ test('a coordinator gate runs before Full access and blocks writes and native su
   const pre = state.options.hooks.PreToolUse[0].hooks[0];
   const hook = (name: string, input: unknown = {}, agentId?: string) => pre({ hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: 'call-1', tool_input: input, ...(agentId ? { agent_id: agentId } : {}) });
   try {
+    for (const name of ['Read', 'Grep', 'Glob', 'ToolSearch']) {
+      assert.ok(state.options.tools?.includes(name), `${name} must be offered to the coordinator`);
+      assert.deepEqual(await hook(name), {}, `${name} can pass the coordinator gate`);
+    }
+    assert.equal(state.options.tools.includes('Bash'), false, 'the CLI must offer native search without Bash');
     for (const name of ['Bash', 'Write', 'Skill', 'Agent', 'Task', 'mcp__other__write', 'mcp__threadbear__create_thread']) {
       assert.equal((await hook(name)).hookSpecificOutput.permissionDecision, 'deny', name);
     }
@@ -168,6 +173,7 @@ test('coordinator helper sessions allow work tools, route questions to the coord
     },
   });
   try {
+    assert.equal(state.options.tools, undefined, 'helpers keep the default work tools');
     const pre = state.options.hooks.PreToolUse[0].hooks[0];
     assert.deepEqual(await pre({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_use_id: 'w0', tool_input: { file_path: '/tmp/a', content: 'b' } }), {});
     assert.deepEqual(await pre({ hook_event_name: 'PreToolUse', tool_name: 'mcp__threadbear__read_project', tool_use_id: 'r0', tool_input: {} }), {});

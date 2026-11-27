@@ -25,7 +25,7 @@ import { RUNNER_VERSION } from '../../config.ts';
 import { stripModelSuffix } from '../../accounts.ts';
 import { END_TURN_FULL_NAME, END_TURN_NUDGE, endTurnMessageStands, endTurnWantsReply, needsFromTool, ONE_REPLY_END_TURN_NUDGE, ONE_REPLY_WRITE_NUDGE, missingLinksNudge, owedReplyAfterCompact, replyAsks, replyAsksNudge, WakeRead } from '../../needs.ts';
 import { missingFileLinks } from '../../highlights.ts';
-import { HELPER_REPORT, coordinatorTool, isHelperQuestionTool } from './coordinator.ts';
+import { CLAUDE_COORDINATOR_BUILTINS, HELPER_REPORT, coordinatorTool, isHelperQuestionTool } from './coordinator.ts';
 
 // Variables a parent Claude Code session sets for its own children. If the
 // runner was started from inside one (tests, a terminal in T3), they would
@@ -533,6 +533,9 @@ class ClaudeSession implements AgentSession {
       abortController: this.abort,
       spawnClaudeCodeProcess: groupSpawner(deps.registry, deps.log, (line) => this.stderr(line), opts.threadId),
     };
+    // Native Claude Code defaults to Bash for search. Name Grep and Glob
+    // as available tools without pre-approving them via allowedTools.
+    if (opts.coordinator?.role === 'coordinator') options.tools = [...CLAUDE_COORDINATOR_BUILTINS];
     const servers = deps.mcpServersFor?.(opts.threadId);
     if (servers && Object.keys(servers).length) options.mcpServers = servers;
     this.hasEndTurn = opts.coordinator?.role === 'helper' ? false : Object.keys(servers ?? {}).some((k) => END_TURN_FULL_NAME.startsWith(`mcp__${k}__`));
