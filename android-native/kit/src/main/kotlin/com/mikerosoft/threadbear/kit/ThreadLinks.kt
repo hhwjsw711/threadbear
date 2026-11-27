@@ -4,14 +4,14 @@ package com.mikerosoft.threadbear.kit
  * Links from a message back into the thread (docs/protocol/needs-you.md, "Links into
  * the thread"; ThreadLinks.swift), as the Mac's WorkLinks reads them:
  * `work:<words>` quotes a step in the turn's working, `thread:<id>` is
- * another thread and `review:<id>` a design review, which only the Mac can
- * open. `button:<id>` is a reply button (ReplyButtons.kt).
+ * another thread and `review:<id>` a design review (the review board, from
+ * backend API 86). `button:<id>` is a reply button (ReplyButtons.kt).
  */
 object ThreadLinks {
     sealed class Target {
         data class Step(val quote: String) : Target()
         data class Thread(val id: String) : Target()
-        data object Review : Target()
+        data class Review(val id: String) : Target()
         data class Button(val id: String) : Target()
     }
 
@@ -102,7 +102,7 @@ object ThreadLinks {
         return when (name) {
             "work" -> if (words.isEmpty()) null else Target.Step(words)
             "thread" -> if (words.isEmpty()) null else Target.Thread(words)
-            "review" -> Target.Review
+            "review" -> if (words.isEmpty()) null else Target.Review(words)
             "button" -> if (words.isEmpty()) null else Target.Button(words)
             else -> null
         }

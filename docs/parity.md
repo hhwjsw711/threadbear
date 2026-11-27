@@ -25,9 +25,9 @@ and "iPhone" read every thread through Convex, with the same functions (convex/p
 | A message's reply buttons | `buttons.list` | Yes | Yes | Yes | Yes |
 | The slash command list | `threads.commands` | Yes | Yes | Yes | Yes |
 | Hibernate until something happens | `threads.hibernateWhen` | Yes | No: The phone hibernates until a time only. | No: The phone hibernates until a time only. | No: The phone hibernates until a time only. |
-| Design reviews | `reviews.list` | No: Reviews open in the Mac app from that Mac. | Yes | Yes | No: Design reviews (backend API 86) are not on Android yet. |
-| Reading a design review | `reviews.get` | No: Reviews open in the Mac app from that Mac. | Yes | Yes | No: Design reviews (backend API 86) are not on Android yet. |
-| Answering a design review | `reviews.respond` | No: Reviews open in the Mac app from that Mac. | Yes | Yes | No: Design reviews (backend API 86) are not on Android yet. |
+| Design reviews | `reviews.list` | No: Reviews open in the Mac app from that Mac. | Yes | Yes | Yes |
+| Reading a design review | `reviews.get` | No: Reviews open in the Mac app from that Mac. | Yes | Yes | Yes |
+| Answering a design review | `reviews.respond` | No: Reviews open in the Mac app from that Mac. | Yes | Yes | Yes |
 | What fills its context | `threads.contextUsage` | No: Asked of the CLI on that Mac; the ring's popover there shows the totals only. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
 | Ticking an ask on the card | `threads.tickAsk` | No: Ticks stay on that Mac. | No: The phone sends picks with its answer instead. | No: The phone sends picks with its answer instead. | No: The phone sends picks with its answer instead. |
 | Editing a message | `threads.edit` | No: It undoes file changes on that Mac, so it waits for a way to show what it undid. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
@@ -66,6 +66,7 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | A tool line | `row.tool` | Yes | Yes | Yes |
 | Permission card | `row.approval` | Yes | Yes | Yes |
 | The agent's question card | `row.question` | Yes | Yes | Yes |
+| Design review card | `row.review` | Yes | Yes | Yes |
 | System note | `row.note` | Yes | Yes | Yes |
 | Secret request card | `row.secret` | Yes | Yes | Yes |
 | Card of asks under a finished turn | `row.asks` | Yes | Yes | Yes |
@@ -74,7 +75,6 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | "6 min later" divider before a woken turn | `row.gap` | Yes | Yes | Yes |
 | Plan first card, waiting for approval | `row.planCard` | Yes | Yes | Yes |
 | Another lab's review of the turn | `row.labReview` | Yes | Yes | Yes |
-| Design review card | `row.review` | Yes | No: Not drawn yet. | Yes |
 | A failed turn's error | `row.error` | Yes | No: Not drawn yet. | Yes |
 | Background jobs still going | `row.background` | Yes | Yes | No: Not drawn yet. |
 | Thinking | `row.reasoning` | No: Not drawn yet. | No: Not drawn yet. | Yes |
@@ -188,8 +188,8 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 |---|---|---|---|---|
 | Link to a step of the working | `link.work` | Yes | Yes | Yes |
 | Link to another thread | `link.thread` | Yes | Yes | Yes |
+| Link to a design review | `link.review` | Yes | Yes | Yes |
 | Reply button | `link.button` | Yes | Yes | Yes |
-| Link to a design review | `link.review` | Yes | No: Not drawn yet. | Yes |
 
 ## A thread link's mark (LinkMark, link_marks.rs)
 

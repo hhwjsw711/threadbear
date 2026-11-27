@@ -47,6 +47,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -110,6 +111,12 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
     val gate = rememberLinkGate()
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     var pickerOpen by remember { mutableStateOf(false) }
+    // A design review open over the thread: its id, or "" for the list (backend API 86).
+    var reviewShown by remember { mutableStateOf<String?>(null) }
+    val reviewDrafts = remember { mutableStateMapOf<String, com.mikerosoft.threadbear.kit.DesignReviewDraft>() }
+    val openReview = { id: String ->
+        if (model.apiVersion >= BackendApi.DESIGN_REVIEWS) reviewShown = id else model.note("That review opens on the Mac.")
+    }
 
     LaunchedEffect(thread?.isBusy) { if (thread?.isBusy == false) model.stopped(threadId) }
 
@@ -123,7 +130,7 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
     CompositionLocalProvider(LocalPushThread provides push, LocalButtonThread provides threadId) {
     Scaffold(
         snackbarHost = { SnackbarHost(LocalSnackbar.current) },
-        topBar = { ThreadBar(thread, back) },
+        topBar = { ThreadBar(thread, back) { openReview("") } },
         bottomBar = {
             if (thread != null) Column {
                 OverTheBox(
@@ -171,7 +178,7 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
                     Text("It may have been deleted on the Mac.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            is Loaded.Here -> Transcript(vm, l.detail.thread, l.detail.messages, inner, back, gate) { if (box.isEmpty) box.text.setTextAndPlaceCursorAtEnd(it) }
+            is Loaded.Here -> Transcript(vm, l.detail.thread, l.detail.messages, inner, back, gate, openReview) { if (box.isEmpty) box.text.setTextAndPlaceCursorAtEnd(it) }
         }
     }
     }
@@ -197,6 +204,7 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
         )
     }
     LinkGateDialog(gate)
+    reviewShown?.let { id -> DesignReviewsDialog(threadId, id, reviewDrafts) { reviewShown = null } }
 }
 
 /**
@@ -253,7 +261,7 @@ private fun OverTheBox(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ThreadBar(thread: PhoneThread?, back: () -> Unit) {
+private fun ThreadBar(thread: PhoneThread?, back: () -> Unit, reviews: () -> Unit) {
     val model = LocalModel.current
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
@@ -278,6 +286,10 @@ private fun ThreadBar(thread: PhoneThread?, back: () -> Unit) {
             }
         },
         actions = {
+            // The pending design reviews, as the iPhone's Reviews button (backend API 86).
+            if (thread != null && model.apiVersion >= BackendApi.DESIGN_REVIEWS && (thread.pendingReviews ?: 0.0) > 0) {
+                IconButton(onClick = reviews) { Icon(Line.Gallery, "Reviews", Modifier.size(20.dp)) }
+            }
             if (thread != null) Box {
                 IconButton(onClick = { menu = true }) { Icon(Line.More, "More", Modifier.size(20.dp)) }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -364,6 +376,7 @@ private fun Transcript(
     inner: PaddingValues,
     leave: () -> Unit,
     gate: LinkGate,
+    openReview: (String) -> Unit,
     giveBack: (String) -> Unit,
 ) {
     val model = LocalModel.current
@@ -409,8 +422,9 @@ private fun Transcript(
     /**
      * A link in a message. A work: link opens the turn's working over the
      * thread with the step lit; a thread: link opens that thread on top of
-     * this one; a review only opens on the Mac, so that one says so rather
-     * than doing nothing; anything else goes through the link gate.
+     * this one; a review opens its board (on a backend before API 86 it says
+     * it opens on the Mac rather than doing nothing); anything else goes
+     * through the link gate.
      */
     fun follow(url: String, seq: Int?) {
         when (val target = ThreadLinks.target(url)) {
@@ -425,7 +439,7 @@ private fun Transcript(
             }
             // Agents may give only the start of the id.
             is ThreadLinks.Target.Thread -> push(model.inbox.value?.firstOrNull { it.threadId.startsWith(target.id) }?.threadId ?: target.id)
-            ThreadLinks.Target.Review -> model.note("That review opens on the Mac.")
+            is ThreadLinks.Target.Review -> openReview(target.id)
             is ThreadLinks.Target.Button -> {
                 // One partway through a line, drawn as a link. An id the row doesn't carry is just its words.
                 val button = messages.firstOrNull { it.seq == seq }?.buttons?.firstOrNull { it.id == target.id } ?: return

@@ -306,8 +306,8 @@ message, so a go ahead in your reply doesn't set the same job off twice. It work
 without Full access can't make a button that does more than it could
 itself, and that's checked again when you press it.
 
-On the iPhone, tap Reviews in the thread's top bar, or a review link in a
-reply. The sheet shows the options, their notes and a still of each
+On the iPhone and the Android app, tap Reviews in the thread's top bar, or a
+review link in a reply. The board shows the options, their notes and a still of each
 picture, with the agent's marks drawn on it. Videos and sounds play there
 too, up to 10 MB each; a bigger one, and a page, shows its still, so open
 the real thing on the Mac. You can mark a picture as you can on the Mac

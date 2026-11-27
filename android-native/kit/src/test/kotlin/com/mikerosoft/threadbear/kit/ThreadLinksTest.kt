@@ -53,7 +53,7 @@ class ThreadLinksTest {
 
     @Test fun readsEachKindOfLink() {
         assertEquals(ThreadLinks.Target.Thread("a1b2c3d4"), ThreadLinks.target("thread:a1b2c3d4"))
-        assertEquals(ThreadLinks.Target.Review, ThreadLinks.target("review:abc"))
+        assertEquals(ThreadLinks.Target.Review("abc"), ThreadLinks.target("review:abc"))
         assertNull(ThreadLinks.target("https://a.b"))
     }
 
@@ -98,12 +98,12 @@ class ThreadLinksTest {
 
     private fun JsonObject?.asTarget(): Map<String, String>? = this?.let { mapOf("kind" to it.str("kind")!!, "value" to it.str("value")!!) }
 
-    /** A target as the shared cases write it. Android keeps no review id (only the Mac opens reviews), so a review is compared by kind alone. */
-    private fun neutral(t: ThreadLinks.Target?, want: Map<String, String>?): Map<String, String>? = when (t) {
+    /** A target as the shared cases write it. */
+    private fun neutral(t: ThreadLinks.Target?): Map<String, String>? = when (t) {
         null -> null
         is ThreadLinks.Target.Step -> mapOf("kind" to "step", "value" to t.quote)
         is ThreadLinks.Target.Thread -> mapOf("kind" to "thread", "value" to t.id)
-        ThreadLinks.Target.Review -> mapOf("kind" to "review", "value" to (want?.get("value") ?: ""))
+        is ThreadLinks.Target.Review -> mapOf("kind" to "review", "value" to t.id)
         is ThreadLinks.Target.Button -> mapOf("kind" to "button", "value" to t.id)
     }
 
@@ -113,7 +113,7 @@ class ThreadLinksTest {
         assertTrue(cases.size > 5)
         for (c in cases) {
             val want = (c["expect"] as? JsonObject).asTarget()
-            assertEquals(want, neutral(ThreadLinks.target(c.str("input")!!), want), c.str("name"))
+            assertEquals(want, neutral(ThreadLinks.target(c.str("input")!!)), c.str("name"))
         }
     }
 
@@ -129,7 +129,7 @@ class ThreadLinksTest {
             if (input.str("op") == "escape") {
                 val want = expect.arr("links")!!.map { (it as? JsonObject).asTarget() }
                 val escaped = ThreadLinks.escapeDestinations(input.str("markdown")!!)
-                val got = destination.findAll(escaped).mapIndexed { i, m -> neutral(ThreadLinks.target(m.groupValues[1]), want.getOrNull(i)) }.toList()
+                val got = destination.findAll(escaped).map { m -> neutral(ThreadLinks.target(m.groupValues[1])) }.toList()
                 assertEquals(want, got, name)
             } else {
                 val rows = input.arr("rows")!!.map { r ->

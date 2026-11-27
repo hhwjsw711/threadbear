@@ -218,6 +218,31 @@ class PhoneBackend(private val transport: ConvexTransport, private val token: St
     /** Asks the thread's runner for its slash commands (API 62): the list comes back as the command's result. */
     suspend fun slashCommands(threadId: String): String = command("phone:slashCommands", args("threadId" to JsonPrimitive(threadId)))
 
+    /**
+     * Asks the thread's runner for its pending design reviews, or one of
+     * them (API 86): the answer comes back as the command's result
+     * (CommandStatus.designReviews).
+     */
+    suspend fun designReviews(threadId: String, reviewId: String?): String {
+        val a = mutableListOf<Pair<String, JsonElement>>("threadId" to JsonPrimitive(threadId))
+        reviewId?.let { a += "reviewId" to JsonPrimitive(it) }
+        return command("phone:designReviews", args(*a.toTypedArray()))
+    }
+
+    /** Answers a review at the revision it was read at (API 86; marks from 106). */
+    suspend fun respondReview(threadId: String, review: PhoneDesignReview, draft: DesignReviewDraft): String {
+        // A whole number: Convex's v.number() takes it either way, and the backend checks it's whole.
+        val revision = if (review.revision == Math.rint(review.revision) && Math.abs(review.revision) < 9e15) JsonPrimitive(review.revision.toLong()) else JsonPrimitive(review.revision)
+        return command(
+            "phone:respondReview",
+            args("threadId" to JsonPrimitive(threadId), "reviewId" to JsonPrimitive(review.id), "revision" to revision, "draft" to draft.arguments),
+        )
+    }
+
+    /** A review's stills, videos and sounds as storage addresses, live, as the runner uploads them (API 86, media from 106). */
+    fun reviewImages(threadId: String, sources: List<String>): Flow<List<MessageImage>> =
+        live("phone:reviewImages", args("threadId" to JsonPrimitive(threadId), "sources" to JsonArray(sources.map(::JsonPrimitive)))) { it.lossyList(MessageImage::read) }
+
     /** Before API 2: asks the runner to page older messages into phone:thread. */
     suspend fun loadEarlier(threadId: String, beforeSeq: Int): String =
         command("phone:loadEarlier", args("threadId" to JsonPrimitive(threadId), "beforeSeq" to JsonPrimitive(beforeSeq)))

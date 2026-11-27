@@ -63,11 +63,11 @@ export const THREAD_REQUESTS: Record<string, Row> = {
   'actions.run': { what: 'An action chip', relay: { no: 'Patches run on that Mac.' }, phone: { no: 'No action chips on the phone.' } },
   'patches.trust': { what: "Trusting a folder's patches", relay: { no: 'Trust is given on that Mac.' }, phone: { no: 'Not on the phone.' } },
   'plans.approve': { what: 'Approving a plan', relay: { no: 'Not sent through Convex from the Mac yet.' }, phone: { no: 'Not on the phone yet.' } },
-  'reviews.list': { what: 'Design reviews', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' }, android: { no: 'Design reviews (backend API 86) are not on Android yet.' } },
+  'reviews.list': { what: 'Design reviews', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' } },
   'reviews.create': { what: 'Starting a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { no: 'Not on the phone.' } },
-  'reviews.get': { what: 'Reading a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' }, android: { no: 'Design reviews (backend API 86) are not on Android yet.' } },
+  'reviews.get': { what: 'Reading a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' } },
   'reviews.save': { what: 'Saving a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { no: 'Not on the phone.' } },
-  'reviews.respond': { what: 'Answering a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'respondReview' }, android: { no: 'Design reviews (backend API 86) are not on Android yet.' } },
+  'reviews.respond': { what: 'Answering a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'respondReview' } },
   'reviews.cancel': { what: 'Cancelling a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { no: 'Not on the phone.' } },
 };
 

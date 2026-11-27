@@ -594,6 +594,17 @@ object BackendApi {
      * phone:webPushKey for the VAPID key): the fdroid build's UnifiedPush.
      */
     const val WEB_PUSH = 93
+    /**
+     * From 86 phone:designReviews and phone:respondReview read and answer a
+     * thread's design reviews through its runner, and phone:reviewImages
+     * follows their stills. Older backends: a review opens on the Mac.
+     */
+    const val DESIGN_REVIEWS = 86
+    /**
+     * From 106 a review's shots carry the agent's marks and their video or
+     * sound, and phone:respondReview takes the phone's own marks.
+     */
+    const val REVIEW_MARKS = 106
     /** From 107 the desktop-twin model picker (pools, usage, defaults, existing-thread settings). */
     const val MOBILE_PICKER = 107
 }
@@ -606,6 +617,8 @@ data class CommandStatus(
     val threadId: String? = null,
     /** A slashCommands command's answer (API 62): phone:command's `result`. Anything that isn't a list of commands reads as none. */
     val commands: List<SlashCommand>? = null,
+    /** A designReviews command's answer (API 86), from the same `result`. */
+    val designReviews: DesignReviewResult? = null,
 ) {
     companion object {
         fun read(o: JsonObject) = CommandStatus(
@@ -621,6 +634,7 @@ data class CommandStatus(
             commands = o.arr("result")?.let { list ->
                 runCatching { list.map { SlashCommand.read(it as JsonObject) } }.getOrNull()
             },
+            designReviews = DesignReviewResult.fromResult(o["result"]),
         )
     }
 }

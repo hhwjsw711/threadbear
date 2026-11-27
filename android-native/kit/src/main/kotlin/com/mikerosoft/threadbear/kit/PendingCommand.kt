@@ -188,4 +188,6 @@ sealed interface CommandKey {
     data class Settings(val threadId: String) : CommandKey
     /** An approval, question or secret card, by its approval id. */
     data class Card(val approvalId: String) : CommandKey
+    /** Loading or answering one of the thread's design reviews. */
+    data class Review(val threadId: String) : CommandKey
 }

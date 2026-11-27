@@ -67,6 +67,7 @@ what the iPhone has.
 | NotifyMode, AppModel's runner order and offline line | `Settings.kt` | 5 |
 | AppModel's StartingThread (new threads on their way) | `Starting.kt` | 5 |
 | PendingCommand.swift, PendingCommands.swift (a command sent and waited on, and its one watcher; shared/cases/pending-commands.json) | `PendingCommand.kt`, `PendingCommands.kt` | 6 |
+| DesignReviews.swift, ReviewCanvas.swift (the review, its draft and marks, the board's layout, tour, camera and doodles) | `DesignReviews.kt`, `ReviewCanvas.kt` | 8 |
 | The website's ShareControl (web/src/share.tsx): the link from site and slug, what the sheet shows with a tap on its way | `Share.kt` | 7 |
 
 Dictation uses Android's own SpeechRecognizer (on-device where the phone
@@ -77,10 +78,9 @@ Pocket's "here" mark (it needs location and a map search), the rows flying
 between headings (RowFlight), the demo's sample data beyond what tests need.
 
 Behind the iPhone, and written down where a test keeps it true: the backend APIs
-74 (search everywhere, the librarian's keywords), 76 (lab review), 79 (login notes)
-and 86 (design reviews), with 73 (loose ends) and 89 (answers on a message), in
+74 (search everywhere, the librarian's keywords), 76 (lab review) and 79 (login notes), with 73 (loose ends) and 89 (answers on a message), in
 `shared/cases/wire-rows.json` (its `differs`, which `WireRowsTest.kt` skips), and
-tool output and design reviews in docs/parity.md's Android column
+tool output in docs/parity.md's Android column
 (`runner/src/parity.ts`, which checks each against what the kit calls). Port one
 and those tests say to take its note out.
 
@@ -223,6 +223,15 @@ for them to be built from source in the recipe.
    self-hosted note, Unpair with a confirm.
 6. Pocket (the wallet button, with its count): the deck, a card full screen,
    swipe a card away with Undo, open its thread, "Add to my pocket".
+7. Design reviews (backend API 86; the bar's Reviews button while one is
+   pending, or a `review:` link): the list, then the Mac's comparison board
+   in Compose (`ReviewBoard.kt`): pinch and drag, tap a picture to fly to it
+   and again to look closer, the tour's ‹ n of m ›, the agent's marks with
+   Caveat notes (`res/font`, OFL in `assets/caveat-OFL.txt`), Play/Stop for a
+   video (MediaPlayer on a TextureView over its still) or sound, one at a
+   time. From API 106, when the runner says `canMark`, circle, highlight
+   and pin tools; each mark's cut-out is uploaded fresh for every Send and
+   let go if it fails, as the iPhone's.
 
 The inbox's search is always showing, and after a 300 ms pause asks Convex
 for archived threads past the newest 100 (`phone:search`). Rows swipe left
