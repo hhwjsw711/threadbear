@@ -2837,6 +2837,32 @@ for (const { name, selected, other } of [
   });
 }
 
+test('the coordinator tool can refresh a running task without changing its state', async (t) => {
+  const { c, h, project } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id });
+  const { taskId } = c.startHelper(project.id, { brief: 'Compare offers from the suppliers' });
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { coordinators: () => c })
+    .find((item) => item.name === 'coordinator')!;
+  const update = (state: string, now: string) => tool.handler({ action: 'updateWorkTask', taskId, state, now } as never, {});
+  const run = c.get(project.id).tasks[0]!.run;
+
+  const refreshed = await update('working', 'Waiting for a reply from the last supplier');
+  assert.equal(refreshed.isError, undefined, said(refreshed));
+  const before = c.get(project.id);
+  assert.equal(before.taskBoard.tasks[0]!.now, 'Waiting for a reply from the last supplier');
+  assert.equal(before.taskBoard.tasks[0]!.state, 'working');
+  assert.deepEqual(before.tasks[0]!.run, run);
+
+  const refused = await update('done', 'All replies received');
+  assert.equal(refused.isError, true);
+  assert.match(said(refused), /wait for this task.s helper result/i);
+  const postponed = await tool.handler({ action: 'updateWorkTask', taskId, state: 'postponed', due: { type: 'tomorrow' } } as never, {});
+  assert.equal(postponed.isError, true);
+  assert.match(said(postponed), /tasks with a running helper cannot be postponed/i);
+  assert.deepEqual(c.get(project.id), before);
+});
+
 test('a loop-backed entry cannot become a child that blocks its parent from archiving', (t) => {
   const { c, project } = setup();
   t.after(() => c.stop());

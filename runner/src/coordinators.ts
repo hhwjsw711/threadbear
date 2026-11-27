@@ -816,7 +816,10 @@ export class Coordinators {
     const { title, work, state } = this.taskEdit(input, record);
     const task = row.tasks.find((t) => t.id === id);
     const newTitle = title === undefined ? undefined : text(title, task ? 200 : 240);
-    const nextState = input.state !== undefined && state !== 'postponed' ? state : undefined;
+    // Repeating the current state while refreshing a running task is not a transition.
+    const activeRun = task?.run?.status === 'queued' || task?.run?.status === 'running';
+    const repeatsState = activeRun && state === workTaskView(record, row.threadId).state;
+    const nextState = input.state !== undefined && state !== 'postponed' && !repeatsState ? state : undefined;
     const loop = task ? undefined : this.workLoop(row, id);
     if (input.due !== undefined) this.checkDueTarget(row, id, work.due);
     const draft = { ...record, work: { ...work } };

@@ -814,9 +814,9 @@ Select rows with `taskId` or `workItemId`. Edit older questions and decisions wi
 and `doneWhen` (up to 1,000 characters for completion criteria). Task edits accept `title`,
 `doneWhen`, `kind`, `owner`, `state`, `now`, `due`, `workItemId`,
 `parentTaskId`, `decisionOptions` (objects with `label` and optional `does`),
-and `recommendation` (the recommended option's label). Omitted edit fields
-keep their values. Pass null to clear `now`, `due`, decision options or the
-recommendation, or to move a task out of a group or parent. Setting
+and `recommendation` (the recommended option's label). Omitted fields keep their values.
+An edit can repeat a running helper's current task state. Null clears `now`, `due`,
+decision options, the recommendation, a group or a parent. Setting
 `state: "postponed"` takes a trigger in `due`. The coordinator tool accepts the
 structured triggers below and the strings `"Tomorrow"`, `"YYYY-MM-DD"`, and
 a timestamp with an explicit offset such as `"2026-11-28T09:45:00+08:00"`.
