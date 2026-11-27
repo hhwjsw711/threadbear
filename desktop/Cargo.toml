@@ -63,6 +63,10 @@ large_enum_variant = "allow" # Boxing to even out variants costs an allocation f
 # first 20 to 90 px, and each landed whole in one frame (27 Nov). With
 # ScrollbarHandle::jumps and note_jump, so a jump to the end, a track click,
 # a thumb drag or a selection stops what's left of it.
+# And an input keeps a right-click to itself (`input/input.rs`): the press
+# went on to a dock panel's menu, which opened with the input's own and took
+# its focus, so nothing picked from the Mac's menu reached the box (Wayne,
+# 25 Nov; mikecann/threadbear#94).
 [patch.crates-io]
 gpui-component = { path = "vendor/gpui-component" }
 gpui-base = { path = "vendor/gpui-base" }

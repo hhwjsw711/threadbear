@@ -131,8 +131,19 @@ pub(crate) fn panel_view(cx: &mut App) -> AnyElement {
 /// the thread's shell, started if it has none, and gives it the keyboard.
 pub(crate) fn toggle(app: &mut Threadbear, window: &mut Window, cx: &mut Context<Threadbear>) {
     if app.dock.read(cx).is_showing(crate::shell::TERMINAL) {
+        let had_keyboard = has_focus(window, cx);
         app.dock
             .update(cx, |m, cx| m.close(crate::shell::TERMINAL, cx));
+        // The shell keeps running, but a hidden shell's keyboard is outside
+        // key dispatch, so the next ⌘J went nowhere (#112). The keyboard goes
+        // back to the message box, as VS Code's goes back to the editor.
+        if had_keyboard {
+            match app.composer(cx) {
+                Some(composer) => composer.update(cx, |c, cx| c.focus(window, cx)),
+                None => window.focus(&app.root_focus, cx),
+            }
+            crate::web_panels::keyboard_to_app(window);
+        }
         return;
     }
     bring_up(app, cx);

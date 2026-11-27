@@ -65,6 +65,22 @@ Feature: The Terminal
     Then the Terminal is put away
     And the thread's shell is still running
 
+  # #112: putting it away left the keyboard on the hidden shell, where ⌘J
+  # never reached the app, so a third press did nothing.
+  @terminal.panel @windows-pending
+  Scenario: ⌘J a third time brings back the same shell
+    Given the thread "Rename the Settings tabs" works in a folder of its own
+    When I open the thread "Rename the Settings tabs"
+    And I press ⌘J
+    And I type "TB_KEPT=still-here" and press Return in the Terminal
+    And I press ⌘J
+    Then the Terminal is put away
+    When I press ⌘J
+    Then the Terminal is showing a shell in the thread's folder
+    And the Terminal has the keyboard
+    When I type "echo kept-$TB_KEPT" and press Return in the Terminal
+    Then the Terminal shows the line "kept-still-here"
+
   @terminal.panel @windows-pending
   Scenario: What a program prints shows in the Terminal
     Given the thread "Rename the Settings tabs" works in a folder of its own

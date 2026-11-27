@@ -785,4 +785,109 @@ mod selection_tests {
         })
         .unwrap();
     }
+
+    /// The fields inside something with a right-click menu of its own, as
+    /// every panel in the dock has (Hide Title, Open in New Window).
+    struct Panel {
+        fields: Entity<Fields>,
+        panel_menus: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+    impl Render for Panel {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::component::menu::ContextMenuExt as _;
+            let opened = self.panel_menus.clone();
+            div()
+                .id("panel")
+                .size_full()
+                .child(
+                    div()
+                        .w(gpui_kit::px(300.))
+                        .h(gpui_kit::px(240.))
+                        .child(self.fields.clone()),
+                )
+                .context_menu(move |menu, _, _| {
+                    opened.set(opened.get() + 1);
+                    menu.label("Hide Title")
+                })
+        }
+    }
+
+    // #94: a right-click on a word in the message box opened the dock
+    // panel's Hide Title menu as well as the Mac's own, and the panel's menu
+    // took the keyboard, so whatever was picked from the Mac's went nowhere.
+    #[gpui_kit::test]
+    fn a_right_click_in_a_text_field_opens_no_outer_menu(cx: &mut TestAppContext) {
+        use gpui_kit::{point, px, size, Bounds, MouseButton, Point, WindowBounds};
+        cx.update(gpui_kit::init);
+        let panel_menus = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = panel_menus.clone();
+        let (handle, panel) = cx.update(|cx| {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: size(px(400.), px(400.)),
+                })),
+                ..Default::default()
+            };
+            let mut panel = None;
+            let handle = gpui_kit::open_window(options, cx, |window, cx| {
+                let fields = cx.new(|cx| Fields {
+                    input: cx.new(|cx| InputState::new(window, cx)),
+                    textarea: cx.new(|cx| TextareaState::new(window, cx)),
+                    editor: cx.new(|cx| EditorState::new(window, cx)),
+                });
+                let view = cx.new(|_| Panel {
+                    fields,
+                    panel_menus: counted,
+                });
+                panel = Some(view.clone());
+                view
+            })
+            .unwrap();
+            (handle, panel.unwrap())
+        });
+        let places = cx
+            .update_window(handle, |_, window, cx| {
+                let fields = panel.read(cx).fields.clone();
+                let (input, textarea, editor) = {
+                    let f = fields.read(cx);
+                    (f.input.clone(), f.textarea.clone(), f.editor.clone())
+                };
+                input.update(cx, |s, cx| s.set_value("first", window, cx));
+                textarea.update(cx, |s, cx| s.set_value("second", window, cx));
+                editor.update(cx, |s, cx| s.set_value("third", window, cx));
+                window.render_frame(cx);
+                [
+                    input.read(cx).range_to_bounds(&(0..5)),
+                    textarea.read(cx).range_to_bounds(&(0..6)),
+                    editor.read(cx).range_to_bounds(&(0..5)),
+                ]
+                .map(|b| b.expect("the field's words are drawn").center())
+            })
+            .unwrap();
+        for at in places {
+            // The press alone: the panel's menu opens on it, the field's own
+            // (a real NSMenu) only on the release.
+            cx.update_window(handle, |_, window, cx| {
+                window.pointer_move(at, None, cx);
+                window.pointer_down(at, MouseButton::Right, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                panel_menus.get(),
+                0,
+                "a right-click on a text field at {at:?} opened the panel's menu too"
+            );
+        }
+        // Off the fields, the panel's own menu still opens.
+        let blank = point(px(350.), px(350.));
+        cx.update_window(handle, |_, window, cx| {
+            window.pointer_move(blank, None, cx);
+            window.pointer_down(blank, MouseButton::Right, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(panel_menus.get(), 1, "the panel's own menu didn't open");
+    }
 }

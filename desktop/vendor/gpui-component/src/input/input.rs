@@ -780,6 +780,11 @@ impl RenderOnce for Input {
                     // before an outer ContextMenu resolves the selection owner;
                     // render-time registration still names the previous input.
                     sync_focused_input_registry(&state, window, cx);
+                    // The input's own menu comes up on mouse up. Let the press
+                    // go on and a dock panel's ContextMenu opens too, takes the
+                    // focus, and whatever is picked from the input's menu goes
+                    // to the panel's instead (mikecann/threadbear#94).
+                    cx.stop_propagation();
                 }
             })
             .when(disabled, |this| {
