@@ -1262,19 +1262,20 @@ asks before edits puts up a card first). It runs on this Mac; its
 conversation stays in a Coordinators section below Starred by default, while routine helpers
 run as hidden sessions out of the inbox and appear on the Activity tab.
 The project home has **Conversation**, **Activity**, **Tasks** and **Threads**
-tabs. On a narrow window the tabs move below the bar. Tasks shows the
-coordinator's work items, their progress and any ungrouped tasks. Select a task
-to see what's happening, what counts as done and where the work came from.
-Use the Add box to send the coordinator a request.
+tabs. On a narrow window the tabs move below the bar. **Tasks** shows a
+Linear-style list grouped by urgency (**Needs you**, **In progress**,
+**Waiting & scheduled** and a collapsed **Done** section), with filters, a
+**Group: Status / Work item** toggle and an **Add task** bar. Select a task to
+open its slide-in detail sheet, step through tasks one by one with the up/down
+arrows, answer decisions, mark your step **Done**, postpone with **Not now**
+(tomorrow at 9 a.m., a date you pick or once another task is done), confirm
+finished work with **Got it, close**, or **Undo** a close.
 
-Highlights shows the same tasks under **Needs you**, **In flight** and
-**Ready to close**. Answer a decision or mark your step done from either view.
-**Not now** can bring a decision back tomorrow at 9 a.m., on a date you pick
-or once another task is done. **Got it, close** confirms that work is finished,
-and **Undo** reopens it.
-
-The **Project brief** holds state, goals and links. Open the **Agent memory**
-drawer to see and edit the raw notes the coordinator and its helpers use. If
+Beside the conversation sits the **Project brief**: a calm, read-only living
+document the coordinator keeps up to date with where the project stands,
+followed by **Active now** (clicking any item jumps straight to it in Tasks),
+links and collapsible **Goals** and **Agent memory** sections. Hover or
+double-click **State**, **Goals** or **Agent memory** to edit them directly. If
 another thread changed a field while you were editing, your draft stays open so
 you can merge it. Helpers report to the coordinator, which checks their results
 and brings you decisions it cannot settle. Ask it for a side job that isn't part of the

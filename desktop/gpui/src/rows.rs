@@ -2,7 +2,7 @@
 // themselves come from the reducer in threadbear-core; this is the look, in the
 // order RowContent lists them. The work lines are in work.rs, diffs in diff.rs,
 // cards in cards.rs and pictures in images.rs.
-mod cards;
+pub(crate) mod cards;
 pub(crate) mod diff;
 mod export;
 mod images;

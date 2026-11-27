@@ -191,6 +191,10 @@ impl Threadbear {
             .rounded(px(7.))
             .bg(style::primary_opacity(cx, 0.075))
             .role(Role::TabList);
+        let tasks_count = coordinator
+            .task_board
+            .as_deref()
+            .map_or(0, |board| board.open_count());
         for tab in Tab::ALL {
             let active = self.coordinators.tab == tab;
             let mut label = h_flex().gap(px(6.)).items_center().child(tab.title());
@@ -200,6 +204,13 @@ impl Threadbear {
                         .text_size(px(11.))
                         .text_color(style::needs_you_text(cx))
                         .child(count.to_string()),
+                );
+            } else if tab == Tab::Tasks && tasks_count > 0 {
+                label = label.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(style::secondary_text(cx))
+                        .child(tasks_count.to_string()),
                 );
             }
             segments = segments.child(
@@ -261,6 +272,10 @@ impl Threadbear {
             .gap(px(23.))
             .border_b_1()
             .border_color(cx.theme().border);
+        let tasks_count = coordinator
+            .task_board
+            .as_deref()
+            .map_or(0, |board| board.open_count());
         for tab in Tab::ALL {
             let active = self.coordinators.tab == tab;
             let ink = if active {
@@ -279,6 +294,13 @@ impl Threadbear {
                             .child(count.to_string()),
                     );
                 }
+            } else if tab == Tab::Tasks && tasks_count > 0 {
+                label = label.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(style::secondary_text(cx))
+                        .child(tasks_count.to_string()),
+                );
             }
             tabs = tabs.child(
                 crate::highlights::tipped(
@@ -396,30 +418,14 @@ impl Threadbear {
         let memory_open = self.agent_memory_open(&project.id);
         let memory = self.render_agent_memory(project, memory_open, window, cx);
         if coordinator.task_board.is_some() {
-            let work = self.render_task_highlights(coordinator, cx);
-            let content = if memory_open {
-                div()
-                    .id("coordinator-tasks-next-to-memory")
-                    .flex_none()
-                    .max_h(relative(0.28))
-                    .overflow_y_scroll()
-                    .child(work)
-            } else {
-                div()
-                    .id("coordinator-highlights-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.coordinators.document_scroll)
-                    .child(work)
-                    .child(self.render_project_brief(project, window, cx))
-            };
-            return v_flex()
-                .id("coordinator-living-document")
-                .size_full()
-                .child(content)
-                .child(memory)
-                .into_any_element();
+            return self.render_editorial_brief(
+                project,
+                coordinator,
+                memory_open,
+                memory,
+                window,
+                cx,
+            );
         }
         let work = self.render_open_loops(project, coordinator, memory_open, window, cx);
         let mut pane = v_flex()
@@ -438,6 +444,202 @@ impl Threadbear {
             );
         }
         pane.child(memory).into_any_element()
+    }
+
+    fn render_editorial_brief(
+        &mut self,
+        project: &Project,
+        coordinator: &Coordinator,
+        memory_open: bool,
+        memory: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let header = h_flex()
+            .flex_none()
+            .w_full()
+            .h(px(38.))
+            .px(px(16.))
+            .gap(px(7.))
+            .items_center()
+            .border_b_1()
+            .border_color(style::hairline(cx))
+            .child(
+                icons::symbol("doc.plaintext")
+                    .with_size(px(13.))
+                    .text_color(style::secondary_text(cx)),
+            )
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground)
+                    .child("Project brief"),
+            );
+
+        if memory_open {
+            return v_flex()
+                .id("coordinator-living-document")
+                .size_full()
+                .child(header)
+                .child(memory)
+                .into_any_element();
+        }
+
+        let mut body = v_flex()
+            .w_full()
+            .gap(px(16.))
+            .px(px(16.))
+            .py(px(16.))
+            .child(self.render_text_section(project, TextField::State, window, cx))
+            .child(div().w_full().h(gpui_kit::px(1.)).bg(style::hairline(cx)))
+            .child(self.render_task_highlights(coordinator, cx));
+
+        if !project.links.is_empty() {
+            let text = project
+                .links
+                .iter()
+                .map(|l| format!("[{}]({})", l.title, l.url))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            body = body
+                .child(div().w_full().h(gpui_kit::px(1.)).bg(style::hairline(cx)))
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(style::secondary_text(cx))
+                                .child("Links"),
+                        )
+                        .child(crate::open_gate::reading_markdown_view(
+                            SharedString::from(format!("coordinator-links-{}", project.id)),
+                            text,
+                            crate::open_gate::Origin::ThisMac,
+                            project.folders.first().map_or("", String::as_str),
+                        )),
+                );
+        }
+
+        let goals = self.render_brief_goals(project, window, cx);
+        v_flex()
+            .id("coordinator-living-document")
+            .size_full()
+            .child(header)
+            .child(
+                div()
+                    .id("coordinator-highlights-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.coordinators.document_scroll)
+                    .child(body),
+            )
+            .child(v_flex().flex_none().w_full().child(goals).child(memory))
+            .into_any_element()
+    }
+
+    fn render_brief_goals(
+        &mut self,
+        project: &Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.goals_open(&project.id);
+        let editing_goals = self
+            .projects
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.project == project.id && e.field == TextField::Goals);
+        let project_id = project.id.clone();
+        let preview = project
+            .goals
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::trim)
+            .unwrap_or("Add project goals")
+            .to_owned();
+
+        let toggle = crate::highlights::tipped(
+            h_flex()
+                .id("coordinator-brief-goals-toggle")
+                .role(Role::Button)
+                .flex_none()
+                .w_full()
+                .items_center()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(10.))
+                .border_t_1()
+                .border_color(style::hairline(cx))
+                .bg(style::primary_opacity(cx, 0.02))
+                .when(!editing_goals, |s| {
+                    s.cursor_pointer()
+                        .hover(|s| s.bg(style::hover_fill(cx)))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.toggle_goals(&project_id, cx)
+                        }))
+                }),
+            if open {
+                "Hide project goals"
+            } else {
+                "Show project goals"
+            },
+        )
+        .child(
+            icons::symbol("scope")
+                .with_size(px(13.))
+                .text_color(style::secondary_text(cx)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(cx.theme().foreground)
+                .child("Goals"),
+        )
+        .when(!open, |row| {
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.5))
+                    .text_color(style::faint_text(cx))
+                    .child(format!("· {preview}")),
+            )
+        })
+        .when(open, |row| row.child(div().flex_1()))
+        .child(
+            icons::symbol(if open {
+                "chevron.down"
+            } else {
+                "chevron.right"
+            })
+            .with_size(px(12.))
+            .text_color(style::faint_text(cx)),
+        );
+
+        if !open {
+            return toggle.into_any_element();
+        }
+        v_flex()
+            .flex_none()
+            .w_full()
+            .child(toggle)
+            .child(
+                div()
+                    .w_full()
+                    .px(px(16.))
+                    .pb(px(14.))
+                    .bg(style::primary_opacity(cx, 0.02))
+                    .child(self.render_text_section(project, TextField::Goals, window, cx)),
+            )
+            .into_any_element()
     }
 
     fn render_open_loops(

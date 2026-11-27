@@ -188,6 +188,27 @@ pub enum Highlight {
     ReadyToClose,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusBucket {
+    NeedsYou,
+    InProgress,
+    Waiting,
+    Done,
+}
+
+impl StatusBucket {
+    pub const ALL: [Self; 4] = [Self::NeedsYou, Self::InProgress, Self::Waiting, Self::Done];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NeedsYou => "Needs you",
+            Self::InProgress => "In progress",
+            Self::Waiting => "Waiting & scheduled",
+            Self::Done => "Done",
+        }
+    }
+}
+
 impl WorkTask {
     pub fn mark(&self) -> Mark {
         match (self.state, self.kind, &self.owner) {
@@ -207,6 +228,40 @@ impl WorkTask {
             _ => Some(Highlight::InFlight),
         }
     }
+
+    pub fn status_bucket(&self) -> StatusBucket {
+        match self.state {
+            State::Done => StatusBucket::Done,
+            State::Postponed => StatusBucket::Waiting,
+            _ if self.owner == Owner::User || self.needs_you => StatusBucket::NeedsYou,
+            State::Waiting => StatusBucket::Waiting,
+            State::Working | State::Todo | State::ReadyToClose => StatusBucket::InProgress,
+        }
+    }
+
+    fn urgency_rank(&self) -> u8 {
+        match self.status_bucket() {
+            StatusBucket::NeedsYou => match self.kind {
+                Kind::Decision => 0,
+                Kind::Action => 1,
+            },
+            StatusBucket::InProgress => match self.state {
+                State::Working => 2,
+                State::ReadyToClose => 3,
+                _ => 4,
+            },
+            StatusBucket::Waiting => match self.state {
+                State::Waiting => 5,
+                _ => 6,
+            },
+            StatusBucket::Done => 7,
+        }
+    }
+}
+
+pub struct StatusGroup<'a> {
+    pub bucket: StatusBucket,
+    pub tasks: Vec<&'a WorkTask>,
 }
 
 pub struct TaskRow<'a> {
@@ -307,6 +362,80 @@ impl TaskBoard {
             groups.push(Group::from_tasks(None, ungrouped, &mut children));
         }
         groups
+    }
+
+    pub fn work_item_title(&self, task: &WorkTask) -> Option<&str> {
+        let id = task.work_item_id.as_deref()?;
+        self.work_items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.title.as_str())
+    }
+
+    pub fn subtask_progress(&self, task_id: &str) -> Option<Progress> {
+        let mut done = 0;
+        let mut total = 0;
+        for task in &self.tasks {
+            if task.parent_task_id.as_deref() == Some(task_id) {
+                total += 1;
+                if task.state == State::Done {
+                    done += 1;
+                }
+            }
+        }
+        (total > 0).then_some(Progress { done, total })
+    }
+
+    fn root_tasks(&self) -> Vec<&WorkTask> {
+        let roots: HashSet<&str> = self
+            .tasks
+            .iter()
+            .filter(|task| task.parent_task_id.is_none())
+            .map(|task| task.id.as_str())
+            .collect();
+        self.tasks
+            .iter()
+            .filter(|task| {
+                task.parent_task_id
+                    .as_deref()
+                    .is_none_or(|parent| !roots.contains(parent))
+            })
+            .collect()
+    }
+
+    pub fn open_count(&self) -> usize {
+        self.root_tasks()
+            .into_iter()
+            .filter(|task| task.state != State::Done)
+            .count()
+    }
+
+    pub fn status_groups(&self) -> Vec<StatusGroup<'_>> {
+        let roots = self.root_tasks();
+        StatusBucket::ALL
+            .into_iter()
+            .map(|bucket| {
+                let mut tasks: Vec<&WorkTask> = roots
+                    .iter()
+                    .copied()
+                    .filter(|task| task.status_bucket() == bucket)
+                    .collect();
+                tasks.sort_by_key(|task| task.urgency_rank());
+                StatusGroup { bucket, tasks }
+            })
+            .filter(|group| !group.tasks.is_empty())
+            .collect()
+    }
+
+    pub fn active_pulse(&self) -> Vec<&WorkTask> {
+        let mut active: Vec<&WorkTask> = self
+            .root_tasks()
+            .into_iter()
+            // Put off on purpose: back in the brief once it comes due.
+            .filter(|task| !matches!(task.state, State::Done | State::Postponed))
+            .collect();
+        active.sort_by_key(|task| task.urgency_rank());
+        active
     }
 
     pub fn dependencies<'a>(&'a self, task_id: &str) -> Vec<&'a WorkTask> {
@@ -634,6 +763,48 @@ mod tests {
                 "coordinators.addToCoordinator",
                 json!({"projectId":"p","text":"Check prices"})
             )
+        );
+    }
+
+    #[test]
+    fn status_groups_order_by_urgency_and_count_subtasks() {
+        let board = board();
+        let groups = board.status_groups();
+        let summary: Vec<(StatusBucket, Vec<&str>)> = groups
+            .into_iter()
+            .map(|g| {
+                (
+                    g.bucket,
+                    g.tasks.into_iter().map(|t| t.id.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (StatusBucket::NeedsYou, vec!["decision", "user"]),
+                (StatusBucket::InProgress, vec!["close", "queued"]),
+                (StatusBucket::Waiting, vec!["person", "later"]),
+                (StatusBucket::Done, vec!["done", "orphan"]),
+            ]
+        );
+        assert_eq!(
+            board
+                .active_pulse()
+                .into_iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["decision", "user", "close", "queued", "person"]
+        );
+        assert_eq!(board.open_count(), 6);
+        assert_eq!(
+            board.subtask_progress("decision"),
+            Some(Progress { done: 0, total: 1 })
+        );
+        assert_eq!(board.subtask_progress("done"), None);
+        assert_eq!(
+            board.work_item_title(board.task("decision").unwrap()),
+            Some("Rollout")
         );
     }
 }

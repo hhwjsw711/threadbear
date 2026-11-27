@@ -45,6 +45,11 @@ const CIRCLE_ALERT_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" v
 const DIAMOND_X_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><mask id="m"><rect width="24" height="24" fill="white"/><path d="M8.9 8.9l6.2 6.2M15.1 8.9l-6.2 6.2" stroke="black" stroke-width="2.5" stroke-linecap="round"/></mask><path d="M12 .8L23.2 12 12 23.2.8 12z" fill="black" stroke="black" stroke-width="1.2" stroke-linejoin="round" mask="url(#m)"/></svg>"#;
 const TRIANGLE_ALERT_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><mask id="m"><rect width="24" height="24" fill="white"/><path d="M12 9.2v5.2" stroke="black" stroke-width="2.5" stroke-linecap="round"/><circle cx="12" cy="18" r="1.45" fill="black"/></mask><path d="M12 2.2L23 21.4H1z" fill="black" stroke="black" stroke-width="1.6" stroke-linejoin="round" mask="url(#m)"/></svg>"#;
 
+/// Task board status marks matching Linear's crisp circles: a ringed dot for a
+/// decision waiting on you, and a partial progress ring for active work.
+const TASK_DECISION: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="black" stroke="none"/></svg>"#;
+const TASK_PROGRESS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity="0.32"/><path d="M12 3a9 9 0 0 1 9 9"/></svg>"#;
+
 /// The done card's tick (`checkmark` at 14 pt): about 12 by 12 at 16.
 pub fn tall_checkmark() -> Icon {
     Icon::default().data(CHECKMARK_TALL)
@@ -305,6 +310,11 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
         "arrow.up.circle.fill" => IconName::CircleArrowUp,
         // A list panel row's switch when its patch names no icon.
         "power" => IconName::Power,
+        // Coordinator task board status marks and detail sheet navigation.
+        "task.decision" => return Some(Icon::default().data(TASK_DECISION)),
+        "task.progress" => return Some(Icon::default().data(TASK_PROGRESS)),
+        "arrow.left" => IconName::ArrowLeft,
+        "scope" => IconName::Target,
         _ => return None,
     };
     Some(Icon::new(lucide))

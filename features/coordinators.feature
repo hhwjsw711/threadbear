@@ -129,17 +129,23 @@ Feature: Project coordinators
     Then the coordinator's "Conversation" tab is open
 
   @coordinators.home @coordinators @swift-pending
-  Scenario: Tasks and Highlights act on the same work
+  Scenario: Highlights is a read-only brief and Tasks acts on the same work
     When I open the project "Threadbear"
     And the coordinator publishes a task board
-    And I press the task button "Done"
+    Then Highlights has no task action buttons
+    When I open "Reconfirm pickup with Barry" from Highlights
+    Then the coordinator's "Tasks" tab is open
+    When I press the task button "Done"
     Then the task "barry" is "Done"
-    When I press the task button "Got it, close"
+    When I close the task details
+    And I select the task "Read the one-page shot list"
+    And I press the task button "Got it, close"
     Then the task "shot-list" is "Done"
     When I press the task button "Undo"
     Then the task "shot-list" is "Ready to close"
-    When the window is 1440 by 960 points
-    And I open the coordinator's "Tasks" tab
+    When I close the task details
+    And the window is 1440 by 960 points
+    And I switch task grouping
     And I collapse the "Getting there" work item
     Then the task board saves "getting-there" collapsed with 2 of 5 done
     When I expand the "Getting there" work item
@@ -154,11 +160,14 @@ Feature: Project coordinators
 
 
   @coordinators.home @coordinators @swift-pending
-  Scenario: Answering from Highlights retires the open Conversation card
+  Scenario: Answering from the Tasks slide-in sheet retires the open Conversation card
     When I open the project "Threadbear"
     And the coordinator publishes a task board
     Then the Conversation decision card is open
+    When I open "Airport parking" from Highlights
+    Then the coordinator's "Tasks" tab is open
     When I press the task button "I’ll book it myself"
+    And I press the task button "Send choice"
     Then the task "parking" is "Done"
     And the Conversation decision card is gone
     And Highlights has no link to "Airport parking"
