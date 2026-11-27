@@ -1456,20 +1456,23 @@ impl App {
         })
     }
 
+    /// Runs `callback` and returns every entity it read, including ones read
+    /// earlier in the frame. A cached view keeps this set and the window
+    /// redraws the view when any of them notifies. Leaving out earlier reads
+    /// lost the view's own children once that earlier read stopped, so their
+    /// notify reached no window and the view replayed stale.
     pub(crate) fn detect_accessed_entities<R>(
         &mut self,
         callback: impl FnOnce(&mut App) -> R,
     ) -> (R, FxHashSet<EntityId>) {
-        let accessed_entities_start = self.entities.accessed_entities.get_mut().clone();
+        let outer = mem::take(self.entities.accessed_entities.get_mut());
         let result = callback(self);
-        let entities_accessed_in_callback = self
-            .entities
+        let inner = mem::replace(self.entities.accessed_entities.get_mut(), outer);
+        self.entities
             .accessed_entities
             .get_mut()
-            .difference(&accessed_entities_start)
-            .copied()
-            .collect::<FxHashSet<EntityId>>();
-        (result, entities_accessed_in_callback)
+            .extend(inner.iter().copied());
+        (result, inner)
     }
 
     pub(crate) fn record_entities_accessed(
