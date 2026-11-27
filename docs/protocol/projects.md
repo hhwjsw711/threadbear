@@ -777,7 +777,9 @@ lose it. A known helper may be
 resumed explicitly with `resumeHelper`. Otherwise a new helper starts from its
 saved checkpoint. Compaction (on CLIs that support `/compact`)
 waits for helpers to finish, retains the charter and rereads canonical project
-records after compaction.
+records after compaction. A slash command's completion does not schedule
+another compaction. If the CLI skips a compaction before a message, the
+message still goes ahead and the runner records the attempt as skipped.
 
 ### Tasks and work items
 

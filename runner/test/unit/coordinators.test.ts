@@ -1631,6 +1631,29 @@ test('idle coordinator compaction sends /compact on Claude/Codex and skips ACP p
   c.stop();
 });
 
+test('a coordinator does not repeat /compact when the CLI leaves context unchanged', async () => {
+  const { c, h, project, claude } = setup();
+  const { thread } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  const st = h.runner.mustGet(thread.id);
+  st.rec.contextTokens = 190_000;
+  claude.sessions.at(-1)!.result('completed');
+  h.clock.advance(0);
+  await tick();
+  const cli = claude.sessions.at(-1)!;
+  const attempts = () => claude.sessions.flatMap((s) => s.sent).filter((m) => m.text.startsWith('/compact')).length;
+  assert.equal(attempts(), 1);
+
+  // Claude can decline the command without failing its transport result.
+  cli.text('compact-refusal', 'Not enough messages to compact.');
+  cli.result('completed');
+  h.clock.advance(60 * 60_000);
+  await tick();
+  assert.equal(attempts(), 1);
+  assert.equal(st.rt.turn, undefined);
+  c.stop();
+});
+
 test('a turn finishing on a draining runner’s thread reaches the coordinator through the peer’s summary (THREADBEAR-2R)', async () => {
   const home = tmpDir();
   const projects = new Projects({ home, clock: new FakeClock(), log: nullLogger });

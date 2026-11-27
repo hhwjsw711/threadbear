@@ -71,7 +71,7 @@ export type Precompact = {
   tokens: number;
   idleMs: number;
   costBefore?: number; // sessionCostTotal when it was sent
-  noted?: boolean; // the CLI's own "Compacted" line was reworded
+  compacted?: boolean; // the CLI marked a compaction boundary
   // Mike's messages queued while it compacted, which would have steered, each
   // with the automatic inputs already queued when it came (turn ids).
   meanwhile?: { id: string; before: string[] }[];
@@ -203,7 +203,10 @@ export const coldCompactPart = {
     turn.precompact = undefined;
     turn.noSteer = false;
     const cost = r.totalCostUsd !== undefined && pre.costBefore !== undefined && r.totalCostUsd >= pre.costBefore ? r.totalCostUsd - pre.costBefore : undefined;
-    this.log.info('cold compaction done', { threadId: rec.id, outcome: r.outcome, tokens: pre.tokens, ...(cost !== undefined ? { costUsd: Math.round(cost * 1e4) / 1e4 } : {}), ...(r.error ? { error: r.error } : {}) });
+    // Claude can accept the command but decline to compact. Only its
+    // compaction boundary confirms that the conversation changed.
+    const outcome = r.outcome === 'completed' && !pre.compacted ? 'skipped' : r.outcome;
+    this.log.info('cold compaction done', { threadId: rec.id, outcome, tokens: pre.tokens, ...(cost !== undefined ? { costUsd: Math.round(cost * 1e4) / 1e4 } : {}), ...(r.error ? { error: r.error } : {}) });
     if (turn.interruptRequested) {
       turn.precompact = pre;
       this.keepHeldMessage(st);
@@ -211,9 +214,7 @@ export const coldCompactPart = {
       this.completeTurn(st, { ...r, outcome: 'interrupted' });
       return;
     }
-    if (r.outcome === 'completed') {
-      if (!pre.noted) this.emit(st, { type: 'system.note', text: this.coldNote(pre) }, turn.turnId);
-    } else {
+    if (r.outcome !== 'completed') {
       this.emit(st, { type: 'system.note', text: `Couldn't compact the conversation first, so this turn reads all of it${r.error ? `: ${r.error}` : '.'}` }, turn.turnId);
     }
     // Raised above its ceiling while it compacted (runner/ceiling.ts).

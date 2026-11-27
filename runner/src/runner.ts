@@ -3001,8 +3001,8 @@ export class Runner {
         this.seeWake(st, ev);
         // The CLI's own line for a compaction this runner asked for ahead of
         // the turn says why (runner/cold-compact.ts).
-        if (ev.type === 'system.note' && ev.text === 'Compacted the conversation' && rt.turn?.precompact && !rt.turn.precompact.noted) {
-          rt.turn.precompact.noted = true;
+        if (ev.type === 'system.note' && ev.text === 'Compacted the conversation' && rt.turn?.precompact && !rt.turn.precompact.compacted) {
+          rt.turn.precompact.compacted = true;
           ev = { ...ev, text: this.coldNote(rt.turn.precompact) };
         }
         // A Codex child's items carry its prefix (<child>/<id>); Claude's

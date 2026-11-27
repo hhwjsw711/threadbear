@@ -2157,7 +2157,11 @@ export class Coordinators {
       if (event.outcome === 'completed' && event.needs === 'you' && event.asks?.length && event.asks.every((ask) => !ask.taskId)) {
         this.bindAsks(threadId, event.asks, event.seq);
       }
-      this.scheduleCompaction(own);
+      // The runner publishes completion before dropping the active turn.
+      // A CLI can decline /compact without shrinking the context. A
+      // command finishing must not immediately schedule the same command.
+      const turn = this.deps.host.threads.get(threadId)?.rt.turn;
+      if (!turn?.command && !turn?.local) this.scheduleCompaction(own);
       return;
     }
     if (event.type !== 'turn.completed') return;

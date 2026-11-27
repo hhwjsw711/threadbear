@@ -220,6 +220,21 @@ test('a failed compaction says so and the message still goes', async () => {
   assert.ok(notes(h, id).some((t) => t.startsWith("Couldn't compact the conversation first")));
 });
 
+test('a completed /compact without a compaction boundary never claims it compacted', async () => {
+  const { h, id, s } = setup();
+  finish(s, 500_000);
+  h.clock.advance(2 * HOUR);
+  h.runner.send(id, 'Carry on');
+  await tick(8);
+  const cli = last(h);
+  assert.match(cli.sent.at(-1)!.text, /^\/compact /);
+  cli.text('compact-refusal', 'Not enough messages to compact.');
+  cli.result('completed');
+  await tick(8);
+  assert.ok(cli.sent.at(-1)!.text.includes('Carry on'));
+  assert.ok(!notes(h, id).some((text) => text.startsWith('Compacted the conversation')));
+});
+
 test('coldWake: only a resumed Claude session past both thresholds', () => {
   const rec = { provider: 'claude', contextTokens: 300_000, sessionUsed: true };
   const now = 10 * HOUR;
