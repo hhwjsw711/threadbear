@@ -22,10 +22,10 @@ export function pictureSrc(src: string, pictures?: Map<string, string>): Picture
 export function imageSourcePolicy(convexUrl?: string, siteUrl?: string): string {
   const origins = new Set<string>();
   for (const u of [convexUrl, siteUrl, convexUrl?.replace(/\.convex\.cloud(?=$|[/:])/, '.convex.site')]) {
-    if (!u) continue;
+    if (!u || /[\s;,]/u.test(u)) continue;
     try {
       const url = new URL(u);
-      if (url.protocol === 'https:' || url.protocol === 'http:') origins.add(url.origin);
+      if ((url.protocol === 'https:' || url.protocol === 'http:') && !/[\s;,]/u.test(url.origin)) origins.add(url.origin);
     } catch {
       // not a URL: left out, so the policy is stricter, never looser
     }

@@ -37,3 +37,23 @@ export function isLoopbackHost(hostname: string): boolean {
   const m = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
   return Boolean(m && m.slice(1).every((p) => Number(p) <= 255));
 }
+
+// Website links carry one-use sign-in codes. Reject invalid settings rather
+// than letting URL parsing repair a scheme, hide userinfo or inject CSP.
+// A blank string is an unset optional setting. Never echo rejected input.
+export function websiteUrl(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string') throw new Error('Website address must be a string.');
+  const text = raw.trim();
+  if (!text) return undefined;
+  const authority = /^https?:\/\/([^/?#]+)/i.exec(text)?.[1];
+  if (!authority || authority.includes('@') || /[\s;,\\"<>?#]/u.test(text)) throw new Error('Website address must be an https URL without userinfo, whitespace, query, fragment, commas or semicolons.');
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error('Website address is not a valid URL.');
+  }
+  if (!url.hostname || /[\s;,]/u.test(url.origin) || credentialUrlProblem(text)) throw new Error('Website address must be https, or http on loopback, without userinfo.');
+  return url.href.replace(/\/+$/, '');
+}

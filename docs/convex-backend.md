@@ -95,8 +95,8 @@ names and URLs; a regional deployment may include its region in the hostname.
 | | name | URL |
 |---|---|---|
 | prod | `demo-bear-123` | `https://demo-bear-123.ap-southeast-2.convex.cloud` |
-| dev | `earnest-puffin-640` | `https://earnest-puffin-640.ap-southeast-2.convex.cloud` |
-| local (e2e only) | `local-mikec-threadbear-1` | `http://127.0.0.1:3210` |
+| dev | `dev-bear-456` | `https://dev-bear-456.ap-southeast-2.convex.cloud` |
+| local (e2e only) | `local-example-threadbear-1` | `http://127.0.0.1:3210` |
 
 `.env.local` at the repo root (gitignored) selects the dev deployment, so
 `npx convex dev` pushes there and `npx convex deploy` ships prod.

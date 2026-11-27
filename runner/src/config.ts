@@ -9,7 +9,7 @@ import { RELEASE } from './release.ts';
 import { gatewayBase, gatewayUrlFrom } from './connectors.ts';
 import type { MailWatchSettings } from './mail-watch.ts';
 import type { ArchiveSettings } from './agent-archive.ts';
-import { credentialUrlProblem } from './secure-url.ts';
+import { credentialUrlProblem, websiteUrl } from './secure-url.ts';
 import { reviewerLists, type LabReviewer } from './lab-reviewers.ts';
 import { findGatewayClient } from './notion-tasks.ts';
 import { onPath } from './adapters/acp/agents.ts';
@@ -183,7 +183,7 @@ export type Config = {
   // THREADBEAR_SYNC=off turns it off for tests and dev runners.
   // urlRefused: why the configured url isn't used (plain http off this
   // Mac, secure-url.ts), so sync is off and tb status says why.
-  sync: { enabled: boolean; url?: string; urlRefused?: string; site?: string; name?: string; runnerId?: string; icon?: string; pastedPictures?: boolean; full?: boolean; usageWarning?: boolean };
+  sync: { enabled: boolean; url?: string; urlRefused?: string; site?: string; siteRefused?: string; name?: string; runnerId?: string; icon?: string; pastedPictures?: boolean; full?: boolean; usageWarning?: boolean };
   // The silent on-device secret check (src/secret-check.ts): off unless asked.
   secretCheck?: boolean;
   // Mike's Connectors gateway's base URL (connectors.ts), for the app's
@@ -580,8 +580,12 @@ function syncConfig(raw: RunnerJson['sync'], env: NodeJS.ProcessEnv): Config['sy
   // Where the website is, for a self-hosted backend, which serves it on a
   // port of its own (docs/self-hosting.md). A cloud deployment leaves it
   // out: its site is the .convex.site twin of url.
-  const site = nonEmpty(raw?.site);
-  if (site) out.site = site;
+  try {
+    const site = websiteUrl(raw?.site);
+    if (site) out.site = site;
+  } catch (e) {
+    out.siteRefused = (e as Error).message;
+  }
   const name = nonEmpty(raw?.name);
   if (name) out.name = name;
   const runnerId = nonEmpty(raw?.runnerId);

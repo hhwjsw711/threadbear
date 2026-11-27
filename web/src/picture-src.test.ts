@@ -40,3 +40,9 @@ test('the built page carries the policy in its head, ahead of every picture', ()
   assert.ok(meta > 0 && meta < out.indexOf('</head>') && meta < out.indexOf('<link rel="icon"'));
   assert.throws(() => withImagePolicy('<html><head></head><body><meta name="referrer"></body></html>', 'img-src none'));
 });
+
+test('CSP origins cannot contain directive separators or whitespace', () => {
+  for (const bad of ['https://x;sandbox', 'https://x,sandbox', 'https://x%3bsandbox', 'https://x%2csandbox', 'https://exa\nmple.com', 'https://example.com/path;bad', 'https://example.com/path,other']) {
+    assert.equal(imageSourcePolicy(bad, bad), "img-src 'self' data: blob:", bad);
+  }
+});

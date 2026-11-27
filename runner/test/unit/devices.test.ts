@@ -11,7 +11,7 @@ import type { Logger } from '../../src/log.ts';
 
 type Call = { kind: string; fn: string; args: Record<string, unknown> };
 
-function setup(opts: { url?: string; site?: string; key?: string; boxKey?: string; fail?: (fn: string) => Error | undefined } = {}) {
+function setup(opts: { url?: string; site?: string; siteRefused?: string; key?: string; boxKey?: string; fail?: (fn: string) => Error | undefined } = {}) {
   const h = makeHarness();
   const calls: Call[] = [];
   const logged: string[] = [];
@@ -43,7 +43,7 @@ function setup(opts: { url?: string; site?: string; key?: string; boxKey?: strin
     return null;
   };
   const sync = new ConvexSync({
-    config: { enabled: true, url: 'url' in opts ? opts.url : 'https://x.convex.cloud', runnerId: 'r1', ...(opts.site ? { site: opts.site } : {}) },
+    config: { enabled: true, url: 'url' in opts ? opts.url : 'https://x.convex.cloud', runnerId: 'r1', ...(opts.site ? { site: opts.site } : {}), ...(opts.siteRefused ? { siteRefused: opts.siteRefused } : {}) },
     key: 'key' in opts ? opts.key : 'k',
     runner: h.runner,
     version: '0.1.0+test',
@@ -108,6 +108,14 @@ test('pair: a browser gets a sign-in link with a one-use code in it, never a tok
   assert.equal(calls.filter((c) => c.fn === 'sync:issueToken').length, 0, 'a reusable token was issued for a link');
   assert.deepEqual(calls.filter((c) => c.fn === 'sync:issuePairingCode').map((c) => c.args)[1], { key: 'k', name: 'Chrome', days: 30, kind: 'browser' });
   assert.ok(!logged.some((l) => l.includes('tb_secret') || l.includes('tbp_')), 'a token or code was logged');
+});
+
+test('a refused website never issues a browser sign-in code or falls back', async () => {
+  for (const opts of [{ siteRefused: 'Invalid configured website.' }, { site: 'javascript:alert(1)' }, { site: 'http://example.com' }, { site: 'https://exa mple.com' }]) {
+    const { methods, calls } = setup(opts);
+    await assert.rejects(async () => methods['devices.pair']({ kind: 'browser' }), /website/);
+    assert.equal(calls.length, 0, 'a code was issued before validating the website');
+  }
 });
 
 test('pair: a backend on this Mac only (setup --self-hosted --local) signs a browser in but never issues a phone a link to 127.0.0.1', async () => {

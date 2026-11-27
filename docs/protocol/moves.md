@@ -679,6 +679,11 @@ The website address is `sync.site` in runner.json when set, including a
 custom HTTP Actions domain; otherwise it is `sync.url` with `.convex.cloud`
 changed to `.convex.site`. The terminal browser sign-in uses the same rule.
 The phone's pairing address stays the Convex API URL (`sync.url`).
+Website addresses must be HTTPS, or HTTP on loopback, without userinfo,
+query, fragment, embedded whitespace, commas or semicolons. Hostnames and
+default ports are normalized and trailing slashes removed. An invalid
+configured site prevents browser sign-in before any code is issued; sync
+continues using its API address. A blank site uses the cloud twin.
 
 ```ts
 type Device = {

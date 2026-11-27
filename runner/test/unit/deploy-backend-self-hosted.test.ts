@@ -15,7 +15,11 @@ const test = testSkippedOnWindows("deploy-backend.mjs deploys Mike's own Convex 
 const repo = path.resolve(import.meta.dirname, '../../..');
 
 function deploy(home: string, ...args: string[]) {
-  return spawnSync(process.execPath, [path.join(repo, 'runner/scripts/deploy-backend.mjs'), '--home', home, '--repo', repo, ...args], { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } });
+  return deployWithEnv(home, {}, ...args);
+}
+
+function deployWithEnv(home: string, env: NodeJS.ProcessEnv, ...args: string[]) {
+  return spawnSync(process.execPath, [path.join(repo, 'runner/scripts/deploy-backend.mjs'), '--home', home, '--repo', repo, ...args], { encoding: 'utf8', env: { ...process.env, VITE_CONVEX_SITE_URL: undefined, ...env, PATH: '/usr/bin:/bin' } });
 }
 
 function selfHostedHome(): string {
@@ -34,6 +38,29 @@ test('a self-hosted backend is deployed with its admin URL, never a deploy key',
   assert.match(r.stdout, /self-hosted backend at http:\/\/127\.0\.0\.1:13210/);
   assert.doesNotMatch(r.stdout + r.stderr, /convex-self-hosted\|x/, 'the admin key is never printed');
   assert.equal(fs.existsSync(path.join(home, 'backend.json')), false, 'nothing deployed');
+});
+
+test('website rebuilds compare normalized sites, including inherited configuration', () => {
+  const home = selfHostedHome();
+  const api = 'https://mac.tail1.ts.net:3210';
+  const saved = { functions: { tree: treeOf(['convex', 'convex.json', 'package.json', 'package-lock.json', 'vendor']) }, site: { tree: treeOf(['web', 'package.json', 'package-lock.json', 'vendor']), url: api, address: 'https://site.example.com' } };
+  fs.writeFileSync(path.join(home, 'backend.json'), JSON.stringify(saved));
+  const config = (site?: unknown) => fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ sync: { url: api, site } }));
+  const inherited = { VITE_CONVEX_SITE_URL: ' HTTPS://SITE.EXAMPLE.COM:443/// ' };
+  config();
+  assert.match(deployWithEnv(home, inherited, '--dry-run').stdout, /up to date/);
+  assert.match(deployWithEnv(home, { VITE_CONVEX_SITE_URL: 'https://new-site.example.com' }, '--dry-run').stdout, /Would deploy the website at/);
+  config(' ');
+  assert.match(deployWithEnv(home, inherited, '--dry-run').stdout, /up to date/);
+  config(' HTTPS://SITE.EXAMPLE.COM:443/// ');
+  assert.match(deployWithEnv(home, { VITE_CONVEX_SITE_URL: 'https://ignored.example.com' }, '--dry-run').stdout, /up to date/);
+  for (const bad of [123, 'https://x;sandbox']) {
+    config(bad);
+    const out = deployWithEnv(home, inherited, '--dry-run');
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /Website address/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'backend.json'), 'utf8')), saved);
+  }
 });
 
 test('a deploy key and a self-hosted key together stop the deploy', () => {

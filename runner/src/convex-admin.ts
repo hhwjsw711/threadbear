@@ -13,7 +13,7 @@
 // built-ins only, as setup runs it before any packages are installed.
 import fs from 'node:fs';
 import path from 'node:path';
-import { isLoopbackHost } from './secure-url.ts';
+import { isLoopbackHost, websiteUrl } from './secure-url.ts';
 
 export const DEPLOY_ENV_FILE = 'convex-deploy.env';
 export const SELF_HOSTED_ENV_FILE = 'convex-self-hosted.env';
@@ -118,8 +118,23 @@ export function localOnly(url: string | undefined): boolean {
 // Where the website is: runner.json's sync.site when set (a self-hosted
 // backend serves it on a port of its own), else a cloud deployment's
 // .convex.site twin of its .convex.cloud URL. Anything else has none.
-export function siteOf(url: string | undefined, site?: string): string | undefined {
-  if (site?.trim()) return site.trim().replace(/\/+$/, '');
-  if (!url || !url.includes('.convex.cloud')) return undefined;
-  return url.replace(/\/+$/, '').replace('.convex.cloud', '.convex.site');
+export function siteOf(url: string | undefined, site?: unknown): string | undefined {
+  try {
+    const configured = websiteUrl(site);
+    if (configured) return configured;
+    const cloud = websiteUrl(url);
+    if (!cloud) return undefined;
+    const parsed = new URL(cloud);
+    if (!parsed.hostname.endsWith('.convex.cloud')) return undefined;
+    parsed.hostname = parsed.hostname.slice(0, -'.convex.cloud'.length) + '.convex.site';
+    return websiteUrl(parsed.href);
+  } catch {
+    return undefined;
+  }
+}
+
+// The same normalized value is used for CSP, the rebuild decision and the
+// recorded deployment state. An explicit invalid setting fails the deploy.
+export function websiteBuildAddress(site: unknown, inherited?: string): string | undefined {
+  return websiteUrl(site) ?? websiteUrl(inherited);
 }

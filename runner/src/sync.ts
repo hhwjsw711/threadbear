@@ -153,6 +153,7 @@ export type SyncConfig = {
   enabled: boolean;
   url?: string;
   site?: string;
+  siteRefused?: string;
   // Why runner.json's (or THREADBEAR_SYNC_URL's) url wasn't used (config.ts):
   // the off reason in place of "no sync.url".
   urlRefused?: string;
@@ -2118,7 +2119,7 @@ export class ConvexSync {
 
   /** The website's address, while sync is on (src/convex-admin.ts, siteOf). */
   site(): string | undefined {
-    return this.off ? undefined : siteOf(this.deps.config.url, this.deps.config.site);
+    return this.off || this.deps.config.siteRefused ? undefined : siteOf(this.deps.config.url, this.deps.config.site);
   }
 
   async issueToken(args: { kind: DeviceKind; name: string; days?: number }): Promise<{ id: string; token: string; expiresAt: string }> {

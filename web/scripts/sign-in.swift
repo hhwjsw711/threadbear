@@ -20,17 +20,34 @@ import CoreImage
 // Production uses runner.json's sync.site for a custom domain or a
 // self-hosted website. Otherwise use the deployment's .convex.site twin.
 // The dev deployment still comes from the repo's .env.local.
-func siteOf(_ cloud: String?, site: String? = nil) -> String? {
-    if let site = site?.trimmingCharacters(in: .whitespacesAndNewlines), !site.isEmpty {
-        return site.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    }
-    guard let cloud, cloud.contains(".convex.cloud") else { return nil }
-    return cloud.replacingOccurrences(of: ".convex.cloud", with: ".convex.site").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+// Use the runner's validator itself, so Swift and WHATWG URL parsing cannot
+// disagree about where a sign-in code is sent. Node is also needed by npx below.
+func siteOf(_ cloud: String?, site: Any? = nil) -> String? {
+    var values: [String: Any] = [:]
+    if let cloud { values["cloud"] = cloud }
+    if let site { values["site"] = site }
+    guard let input = try? JSONSerialization.data(withJSONObject: values) else { return nil }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["node", "--input-type=module", "-e", "import { readFileSync } from 'node:fs'; const { siteOf } = await import(process.argv[1]); const c = JSON.parse(readFileSync(0, 'utf8')); const site = siteOf(c.cloud, c.site); if (site) process.stdout.write(site);", root.appendingPathComponent("runner/src/convex-admin.ts").absoluteString]
+    let stdin = Pipe(), stdout = Pipe()
+    process.standardInput = stdin
+    process.standardOutput = stdout
+    process.standardError = FileHandle.nullDevice
+    do { try process.run() } catch { return nil }
+    stdin.fileHandleForWriting.write(input)
+    try? stdin.fileHandleForWriting.close()
+    let data = stdout.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { return nil }
+    let address = String(decoding: data, as: UTF8.self)
+    return address.isEmpty ? nil : address
 }
 let dataDir = ProcessInfo.processInfo.environment["THREADBEAR_HOME"] ?? (NSHomeDirectory() + "/Library/Application Support/Threadbear")
 let runnerJson = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: dataDir + "/runner.json")))) as? [String: Any]
 let sync = runnerJson?["sync"] as? [String: Any]
-let prodURL = siteOf(sync?["url"] as? String, site: sync?["site"] as? String)
+let prodURL = siteOf(sync?["url"] as? String, site: sync?["site"])
 let envLocal = (try? String(contentsOfFile: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path + "/.env.local", encoding: .utf8)) ?? ""
 let devURL = siteOf(envLocal.split(separator: "\n").first { $0.hasPrefix("CONVEX_URL=") }.map { String($0.dropFirst("CONVEX_URL=".count)).components(separatedBy: " ").first ?? "" })
 
@@ -44,7 +61,6 @@ func value(_ flag: String, _ fallback: String) -> String {
 }
 let name = value("--name", qr ? "web-qr" : "web-mac") + (prod ? "" : "-dev")
 let days = Int(value("--days", "90")) ?? 90
-let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 guard let site = local ? "http://localhost:5181" : prod ? prodURL : devURL else {
     fail(prod ? "No website address in \(dataDir)/runner.json. Set sync.site or run ./threadbear setup first." : "No CONVEX_URL in the repo's .env.local.")
 }
@@ -52,6 +68,11 @@ guard let site = local ? "http://localhost:5181" : prod ? prodURL : devURL else 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
     exit(1)
+}
+
+// Check the destination before requesting a sign-in code.
+guard let siteURL = URL(string: site + "/"), var linkParts = URLComponents(url: siteURL, resolvingAgainstBaseURL: false) else {
+    fail("The website address is not a valid URL. Check sync.site in runner.json.")
 }
 
 var issue = ["npx", "convex", "run", "tokens:issueCode", "{\"name\":\"\(name)\",\"days\":\(days),\"kind\":\"browser\"}"]
@@ -72,7 +93,9 @@ guard let json = output.range(of: #"\{[\s\S]*\}"#, options: .regularExpression).
       let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
       let code = object["code"] as? String else { fail("Couldn't read the code from tokens:issueCode") }
 
-let link = "\(site)/#code=\(code)"
+linkParts.fragment = "code=\(code)"
+guard let linkURL = linkParts.url else { fail("Couldn't make the website sign-in link.") }
+let link = linkURL.absoluteString
 
 if qr {
     let filter = CIFilter(name: "CIQRCodeGenerator")!
@@ -92,9 +115,8 @@ if qr {
     // The default browser, as Settings > Phone & browser > Open signed in
     // uses: this once always picked Chrome when it was installed, so someone
     // on Dia or Arc got a signed-in Chrome instead of their own browser.
-    let url = URL(string: link)!
     let done = DispatchSemaphore(value: 0)
-    NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { _, _ in done.signal() }
+    NSWorkspace.shared.open(linkURL, configuration: NSWorkspace.OpenConfiguration()) { _, _ in done.signal() }
     done.wait()
     print("Opened \(site) signed in as \"\(name)\" (\(days) days).")
 }

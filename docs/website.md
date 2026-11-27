@@ -265,6 +265,10 @@ or with `npm run web:sign-in`. The automatic backend deploy rebuilds the
 website when `sync.site` changes, adding that address to its image policy
 through `VITE_CONVEX_SITE_URL`. For a manual website build, set that variable
 to the custom address so shared pictures also work through the original host.
+When `sync.site` is unset, the automatic deploy also honors a validated
+`VITE_CONVEX_SITE_URL` from its environment. Both settings require HTTPS
+(or loopback HTTP), with no userinfo, query, fragment or embedded whitespace.
+Commas and semicolons are refused so an address cannot change the image policy.
 
 ## Not done
 

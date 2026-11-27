@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ConvexAdminError, convexEnv, envValue, prodArgs, readConvexAdmin, siteOf } from '../../src/convex-admin.ts';
+import { ConvexAdminError, convexEnv, envValue, prodArgs, readConvexAdmin, siteOf, websiteBuildAddress } from '../../src/convex-admin.ts';
 
 function home(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-convex-admin-'));
@@ -79,4 +79,18 @@ test('siteOf prefers sync.site, else the cloud twin', () => {
   assert.equal(siteOf('https://mac.tail1.ts.net:3210', 'https://mac.tail1.ts.net:3211/'), 'https://mac.tail1.ts.net:3211');
   assert.equal(siteOf('https://mac.tail1.ts.net:3210'), undefined);
   assert.equal(siteOf(undefined), undefined);
+});
+
+test('website addresses follow the shared runner and Swift cases', () => {
+  const cases: { cloud?: string; site?: unknown; expected: string | null }[] = JSON.parse(fs.readFileSync(new URL('../fixtures/website-urls.json', import.meta.url), 'utf8'));
+  for (const c of cases) assert.equal(siteOf(c.cloud, c.site), c.expected ?? undefined, JSON.stringify(c));
+});
+
+test('website builds honor validated inherited sites unless sync.site overrides them', () => {
+  assert.equal(websiteBuildAddress(undefined, ' HTTPS://SITE.EXAMPLE.COM:443/// '), 'https://site.example.com');
+  assert.equal(websiteBuildAddress(' ', 'https://site.example.com/'), 'https://site.example.com');
+  assert.equal(websiteBuildAddress('https://custom.example.com/', 'javascript:bad'), 'https://custom.example.com');
+  assert.equal(websiteBuildAddress(' ', ' '), undefined);
+  assert.throws(() => websiteBuildAddress(123, 'https://site.example.com'), /must be a string/);
+  assert.throws(() => websiteBuildAddress(undefined, 'http://site.example.com'), /https/);
 });

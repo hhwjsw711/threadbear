@@ -591,6 +591,22 @@ test('sync.url has to be https, or plain http to this Mac; anything else leaves 
   }
 });
 
+test('sync.site is normalized or refused without disabling the API connection', () => {
+  const home = tmpDir();
+  for (const site of ['https://exa mple.com', 'http://example.com', 'file:///tmp/site', 123, null]) {
+    fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ sync: { url: 'https://x.convex.cloud', site } }));
+    const config = loadConfig({ THREADBEAR_HOME: home, THREADBEAR_PORT: '0', THREADBEAR_CLAUDE_MAIN_JSON: path.join(home, 'none.json') }).sync;
+    assert.equal(config.url, 'https://x.convex.cloud');
+    assert.equal(config.site, undefined);
+    assert.ok(config.siteRefused);
+    const { sync } = setup({ config });
+    assert.equal(sync.site(), undefined);
+    assert.equal(sync.offReason(), undefined);
+  }
+  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ sync: { site: ' HTTPS://THREADS.EXAMPLE.COM:443/app/// ' } }));
+  assert.equal(loadConfig({ THREADBEAR_HOME: home, THREADBEAR_PORT: '0', THREADBEAR_CLAUDE_MAIN_JSON: path.join(home, 'none.json') }).sync.site, 'https://threads.example.com/app');
+});
+
 test('a refused sync.url is the reason sync is off, and nothing is sent', async () => {
   const reason = 'sync.url in runner.json is plain http to x.convex.cloud, so its keys would go in the clear';
   const { h, sync, calls } = setup({ config: { url: undefined, urlRefused: reason } });

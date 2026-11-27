@@ -15,13 +15,33 @@ test('web sign-in uses sync.site, with the cloud twin as its fallback', { skip: 
   try {
     const scripts = path.join(dir, 'web/scripts');
     fs.mkdirSync(scripts, { recursive: true });
+    fs.symlinkSync(path.join(root, 'runner'), path.join(dir, 'runner'), 'dir');
     fs.writeFileSync(path.join(dir, 'runner.json'), JSON.stringify({ sync: { url: 'https://demo-bear-123.convex.cloud', site: 'https://threads.example.com/' } }));
     fs.writeFileSync(path.join(dir, '.env.local'), 'CONVEX_URL=https://dev-bear-456.convex.cloud\n');
     const file = path.join(scripts, 'sign-in.swift');
-    fs.writeFileSync(file, source.slice(0, source.indexOf('let args =')) + '\nprint(prodURL ?? "missing")\nprint(devURL ?? "missing")\nprint(siteOf("https://demo-bear-123.convex.cloud/") ?? "missing")\n');
-    const out = spawnSync('swift', [file], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, THREADBEAR_HOME: dir } });
+    const fixtures = JSON.parse(fs.readFileSync(path.join(root, 'runner/test/fixtures/website-urls.json'), 'utf8')) as { expected: string | null }[];
+    const cases = path.join(dir, 'cases.json');
+    fs.writeFileSync(cases, JSON.stringify(fixtures));
+    fs.writeFileSync(file, source.slice(0, source.indexOf('let args =')) + `
+print(prodURL ?? "missing")
+print(devURL ?? "missing")
+print(siteOf("https://demo-bear-123.convex.cloud/") ?? "missing")
+let cases = try! JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: ${JSON.stringify(cases)}))) as! [[String: Any]]
+let results: [Any] = cases.map { siteOf($0["cloud"] as? String, site: $0["site"]) as Any? ?? NSNull() }
+print(String(decoding: try! JSONSerialization.data(withJSONObject: results), as: UTF8.self))
+`);
+    const out = spawnSync('swift', [file], { encoding: 'utf8', timeout: 120_000, env: { ...process.env, THREADBEAR_HOME: dir } });
     assert.equal(out.status, 0, out.stderr);
-    assert.deepEqual(out.stdout.trim().split('\n'), ['https://threads.example.com', 'https://dev-bear-456.convex.site', 'https://demo-bear-123.convex.site']);
+    const lines = out.stdout.trim().split('\n');
+    assert.deepEqual(lines.slice(0, 3), ['https://threads.example.com', 'https://dev-bear-456.convex.site', 'https://demo-bear-123.convex.site']);
+    assert.deepEqual(JSON.parse(lines[3]), fixtures.map((c) => c.expected));
+    // Exercise the actual guard before code issuance, with a poisoned config.
+    fs.writeFileSync(path.join(dir, 'runner.json'), JSON.stringify({ sync: { url: 'https://demo-bear-123.convex.cloud', site: 'https://exa mple.com' } }));
+    fs.writeFileSync(file, source.slice(0, source.indexOf('var issue =')) + '\nfatalError("reached code issuance")\n');
+    const refused = spawnSync('swift', [file], { encoding: 'utf8', timeout: 120_000, env: { ...process.env, THREADBEAR_HOME: dir } });
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /website address/);
+    assert.doesNotMatch(refused.stderr, /reached code issuance/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

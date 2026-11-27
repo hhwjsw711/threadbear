@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { ConvexAdminError, convexEnv, prodArgs, readConvexAdmin } from '../src/convex-admin.ts';
+import { ConvexAdminError, convexEnv, prodArgs, readConvexAdmin, websiteBuildAddress } from '../src/convex-admin.ts';
 import { Fail, stepRetryingNetwork } from './deploy-steps.mjs';
 import { backfillsAt, lastJson, rearmCursor, STEPPING_FILE, withStepping } from './backend-stones.mjs';
 
@@ -235,7 +235,7 @@ function main(argv) {
   // Deploys from before the API URL was recorded aren't redone for that alone.
   const syncConfig = readJson(path.join(home, 'runner.json')).sync;
   const siteUrl = syncConfig?.url;
-  const siteAddress = syncConfig?.site;
+  const siteAddress = websiteBuildAddress(syncConfig?.site, process.env.VITE_CONVEX_SITE_URL);
   const todo = {
     // A stepping-stone deploy left live (an interrupted run) is never up to
     // date, whatever the tree says: its machine is off until the deploy ends.
