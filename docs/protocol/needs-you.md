@@ -195,8 +195,10 @@ sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks.
   from Mike answered since (`unansweredItems`: a card answer naming the
   ask, a message with its words, or his pick in a show_options review the
   ask links to; not the runner's, a schedule's or
-  another agent's, and nothing an edit cut out), leaving it to the agent
-  which still matter. A card that archives, snoozes or waits on threads or
+  another agent's, and nothing an edit cut out; items an earlier note
+  already listed before a plain Done turn are dropped unless raised
+  again later, as the agent saw them and judged them settled), leaving
+  it to the agent which still matter. A card that archives, snoozes or waits on threads or
   the app restarting is left alone, and so is a sub-agent's call, as it
   isn't in the thread's events (a Codex sub-agent's, which runs through the
   same handler, is capped at one note a turn in memory). Turns an edit cut

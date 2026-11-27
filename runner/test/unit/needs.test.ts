@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { PersistedEvent } from '../../src/protocol.ts';
 import { AGENT_MESSAGE_PREFIX } from '../../src/protocol.ts';
-import { handsOverAStep, offersToTakeItBack, PLAIN_CARD_NUDGE, plainCardNudge, plainCardNudged, wantsPlainCard, TRY_IT_FIRST, tryFirstNudge, archiveFromTool, snoozeFromTool, bylineFromTool, endedThisTurn, CODEX_END_TURN_DESCRIPTION, CODEX_ONE_REPLY_DESCRIPTION, END_TURN_DESCRIPTION, END_TURN_FULL_NAME, endTurnDescription, needsFromText, needsFromTool, ONE_REPLY_DESCRIPTION, replyAsks, replyAsksNudge, replyWithoutRepeat, splitReplySection, summaryFromTool, summaryMarkdown, turnReply, unansweredItems } from '../../src/needs.ts';
+import { handsOverAStep, offersToTakeItBack, PLAIN_CARD_NUDGE, plainCardNudge, plainCardNudged, wantsPlainCard, TRY_IT_FIRST, tryFirstNudge, archiveFromTool, snoozeFromTool, bylineFromTool, endedThisTurn, CODEX_END_TURN_DESCRIPTION, CODEX_ONE_REPLY_DESCRIPTION, END_TURN_DESCRIPTION, END_TURN_FULL_NAME, endTurnDescription, needsFromText, needsFromTool, ONE_REPLY_DESCRIPTION, replyAsks, replyAsksNudge, replyWithoutRepeat, splitReplySection, projectStepNudge, summaryFromTool, summaryMarkdown, turnReply, unansweredItems } from '../../src/needs.ts';
 import { END_TURN_TOOL } from '../../src/needs.ts';
 import { SERVER_NAME } from '../../src/threadbear-mcp.ts';
 import { ClaudeNormalizer, fileContext } from '../../src/adapters/claude/normalize.ts';
@@ -794,6 +794,75 @@ test('unansweredItems: cards Mike saw, less what he answered by card, words or a
   assert.deepEqual(unansweredItems(events), ['Email Peter the link', 'Send it to the list now?']);
   // A card answer names the ask; what the new card already carries isn't listed again.
   assert.deepEqual(unansweredItems([...events, said('x', { answers: [{ action: 'Send it to the list now?', answer: 'Wait' }] })], ['Email Peter the link']), []);
+});
+
+test('unansweredItems: items an earlier project-step note listed before a Done turn are dropped unless raised again', () => {
+  let seq = 0;
+  const ev = (body: Record<string, unknown>) => ({ seq: ++seq, ts: '', threadId: 't', turnId: 'x', ...body }) as unknown as PersistedEvent;
+  const started = () => ev({ type: 'turn.started' });
+  const asks = (list: { action: string }[]) => ev({ type: 'turn.completed', outcome: 'completed', durationMs: 1, needs: 'you', asks: list });
+  const done = (next: string[] = []) => ev({ type: 'turn.completed', outcome: 'completed', durationMs: 1, needs: 'nothing', next });
+  const note = (open: string[], prefix = '') => ev({ type: 'tool.result', itemId: `n${seq}`, ok: false, text: `${prefix}${projectStepNudge([{ title: 'Home', state: 'Plugs' }], open)}`, truncated: false, images: [] });
+
+  // Turn 1 asks a question; Mike replies in other words ("Microwave").
+  const base = [
+    started(),
+    asks([{ action: 'What should the new plug be called?' }, { action: 'Check "Plug" wiring' }]),
+    ev({ type: 'user.message', text: 'Microwave', images: [] }),
+  ];
+
+  // Turn 2 gets the note, heeds it by asking instead of saying Done: still open.
+  const heeded = [...base, started(), note(['What should the new plug be called?']), asks([{ action: 'Pick a room' }])];
+  assert.deepEqual(unansweredItems(heeded), ['What should the new plug be called?', 'Check "Plug" wiring', 'Pick a room']);
+
+  // Turn 2 gets the note, heeds it by snoozing instead of plain Done: still open.
+  const snoozed = [
+    ...base,
+    started(),
+    note(['What should the new plug be called?']),
+    ev({ type: 'tool.call', itemId: 's1', name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input: { needs: 'nothing', snooze: '2h' } }),
+    ev({ type: 'tool.result', itemId: 's1', ok: true, text: 'Noted.', truncated: false, images: [] }),
+    done(),
+  ];
+  assert.deepEqual(unansweredItems(snoozed), ['What should the new plug be called?', 'Check "Plug" wiring']);
+
+  const acceptDone = (input: Record<string, unknown> = { needs: 'nothing' }) => {
+    const id = `d${seq}`;
+    return [
+      ev({ type: 'tool.call', itemId: id, name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input }),
+      ev({ type: 'tool.result', itemId: id, ok: true, text: 'Noted.', truncated: false, images: [] }),
+    ];
+  };
+
+  // Turn 2 gets the note and stops without an accepted second Done call: still open.
+  const refusedOnly = [...base, started(), note(['What should the new plug be called?']), done()];
+  assert.deepEqual(unansweredItems(refusedOnly), ['What should the new plug be called?', 'Check "Plug" wiring']);
+
+  // Turn 2 gets the note (including Antigravity's error prefix) and still says Done: dropped,
+  // while items not listed in that note stay open.
+  const settled = [...base, started(), note(['What should the new plug be called?'], 'Encountered error in step execution: '), ...acceptDone(), done()];
+  assert.deepEqual(unansweredItems(settled), ['Check "Plug" wiring']);
+
+  // If the same item is asked again in a later turn, it is open again.
+  const raisedAgain = [...settled, started(), asks([{ action: 'What should the new plug be called?' }])];
+  assert.deepEqual(unansweredItems(raisedAgain), ['Check "Plug" wiring', 'What should the new plug be called?']);
+
+  // A project state mentioning an item in quotes doesn't count as listing it in the earlier-items clause.
+  const inStateOnly = [
+    ...base,
+    started(),
+    ev({ type: 'tool.result', itemId: 'p1', ok: false, text: projectStepNudge([{ title: 'Home', state: 'Decide "What should the new plug be called?"' }], []), truncated: false, images: [] }),
+    ...acceptDone(),
+    done(),
+  ];
+  assert.deepEqual(unansweredItems(inStateOnly), ['What should the new plug be called?', 'Check "Plug" wiring']);
+
+  // A rewound Done turn doesn't settle items.
+  const rewoundEvents = [...settled];
+  const fromSeq = base.at(-1)!.seq + 1;
+  const toSeq = rewoundEvents.at(-1)!.seq;
+  rewoundEvents.push(ev({ type: 'thread.rewound', fromSeq, toSeq, files: {} }));
+  assert.deepEqual(unansweredItems(rewoundEvents), ['What should the new plug be called?', 'Check "Plug" wiring']);
 });
 
 test('plainCardNudged recognizes Antigravity-prefixed tool errors too', () => {

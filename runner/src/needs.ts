@@ -722,18 +722,37 @@ function givesAnInstruction(action: string): boolean {
 // and leaves it to the agent which still matter: Mike didn't want old
 // questions carried forward by rule, as some no longer apply.
 export const PROJECT_STEP_NUDGE = "Not ended: this card says Done, and this thread is part of a project that isn't finished.";
+const PROJECT_STEP_EARLIER_HEAD = ' Earlier in this thread you asked or suggested these, and no answer to them came back: ';
+const PROJECT_STEP_EARLIER_TAIL = '. Keep any that still matter, as an ask or in next, and leave out ones that were settled another way or no longer apply.';
+const ACP_ERROR_PREFIX = 'Encountered error in step execution: ';
 const MAX_STATE_CHARS = 400;
 const MAX_OPEN_ITEMS = 6;
 export function projectStepNudge(projects: { title: string; state: string }[], open: string[]): string {
   const cut = (t: string) => (t.length > MAX_STATE_CHARS ? `${t.slice(0, MAX_STATE_CHARS).replace(/\s+\S*$/, '')}…` : t);
   const which = projects.map((p) => `"${p.title}"${p.state.trim() ? ` (its state: "${cut(p.state.trim().replace(/\s+/g, ' '))}")` : ''}`).join(' and ');
-  const earlier = open.length
-    ? ` Earlier in this thread you asked or suggested these, and no answer to them came back: ${open.map((o) => `"${o}"`).join('; ')}. Keep any that still matter, as an ask or in next, and leave out ones that were settled another way or no longer apply.`
-    : '';
+  const earlier = open.length ? `${PROJECT_STEP_EARLIER_HEAD}${open.map((o) => `"${o}"`).join('; ')}${PROJECT_STEP_EARLIER_TAIL}` : '';
   return `${PROJECT_STEP_NUDGE} It's in ${which}. Done means the user can archive the thread: the whole job, not this step. If the next step is theirs (looking at what you made, sending it to someone, a decision), put it on the card as an ask with needs "you". If it's yours to do later, book it with schedule_message, which runs you then.${earlier} If this thread's part really is finished, call end_turn again as you were: this note comes once a turn.`;
 }
 export function projectStepNudged(events: PersistedEvent[]): boolean {
   return nudgedSince(events, PROJECT_STEP_NUDGE);
+}
+
+function isNudgeText(text: string, note: string): boolean {
+  return text.startsWith(note) || text.startsWith(`${ACP_ERROR_PREFIX}${note}`);
+}
+
+function notedEarlierItems(text: string): string | undefined {
+  if (!isNudgeText(text, PROJECT_STEP_NUDGE)) return undefined;
+  const start = text.indexOf(PROJECT_STEP_EARLIER_HEAD);
+  if (start < 0) return undefined;
+  const from = start + PROJECT_STEP_EARLIER_HEAD.length;
+  const end = text.indexOf(PROJECT_STEP_EARLIER_TAIL, from);
+  return end < 0 ? undefined : text.slice(from, end);
+}
+
+function listedInEarlier(earlier: string, item: string): boolean {
+  const quoted = `"${item}"`;
+  return earlier === quoted || earlier.startsWith(`${quoted}; `) || earlier.endsWith(`; ${quoted}`) || earlier.includes(`; ${quoted}; `);
 }
 
 // The asks and follow-ups (next) on this thread's earlier cards that no
@@ -747,6 +766,9 @@ export function projectStepNudged(events: PersistedEvent[]): boolean {
 // however late: one sent into the running turn too. Only Mike's
 // messages answer (fromMike: not the runner's, a schedule's or another
 // agent's), and what an edit cut out (thread.rewound) never happened.
+// Items an earlier project-step note already listed before a plain Done
+// turn are dropped unless raised again later: the agent saw them and
+// judged them settled (e.g. answered in other words, David Clark, 24 Nov).
 // What `now` already lists is left out.
 const plainKey = (t: string) => t.toLowerCase().replace(/\s+/g, ' ').trim();
 export function unansweredItems(events: PersistedEvent[], now: string[] = []): string[] {
@@ -754,20 +776,53 @@ export function unansweredItems(events: PersistedEvent[], now: string[] = []): s
   // Each open item's words, and the show_options reviews its ask links to:
   // picking in the review window answers it, with words of its own.
   const open = new Map<string, { text: string; reviews: string[] }>();
+  let notedThisTurn: string[] = [];
+  const endCalls = new Map<string, Record<string, unknown>>();
+  let doneAfterNote = false;
   for (const e of events) {
     if (cuts.some((c) => e.seq >= c.from && e.seq <= c.to)) continue;
-    if (e.type === 'turn.completed') {
+    if (e.type === 'turn.started') {
+      notedThisTurn = [];
+      endCalls.clear();
+      doneAfterNote = false;
+    } else if (e.type === 'tool.call' && (e.name === END_TURN_TOOL || e.name.endsWith(`__${END_TURN_TOOL}`))) {
+      endCalls.set(e.itemId, e.input);
+    } else if (e.type === 'tool.result') {
+      if (typeof e.text === 'string') {
+        const noted = notedEarlierItems(e.text);
+        if (noted) notedThisTurn.push(noted);
+      }
+      const call = endCalls.get(e.itemId);
+      if (notedThisTurn.length && call && endTurnTaken(e)) {
+        const deferred = Boolean(snoozeFromTool({ ...call, needs: 'nothing' }) || waitForFromTool(call)?.length);
+        const parsed = needsFromTool(call);
+        if (!deferred && (!parsed || parsed.needs === 'nothing')) doneAfterNote = true;
+      }
+    } else if (e.type === 'turn.completed') {
+      if (e.needs === 'nothing' && doneAfterNote) {
+        for (const [k, item] of [...open]) {
+          if (notedThisTurn.some((s) => listedInEarlier(s, item.text))) open.delete(k);
+        }
+      }
+      notedThisTurn = [];
+      endCalls.clear();
+      doneAfterNote = false;
       const items = e.needs === 'you' ? (e.asks ?? []).map((a) => ({ text: a.action, reviews: (a.links ?? []).flatMap((l) => (l.url.startsWith('review:') ? [l.url.slice('review:'.length)] : [])) })) : e.needs === 'nothing' ? (e.next ?? []).map((t) => ({ text: t, reviews: [] })) : [];
       for (const item of items) {
         open.delete(plainKey(item.text));
         open.set(plainKey(item.text), item);
       }
-    } else if (e.type === 'user.message' && (!e.origin || e.origin === 'phone') && !sentByAgent(e.text ?? '')) {
-      const said = plainKey(e.text ?? '');
-      const answered = new Set((e.answers ?? []).map((x) => plainKey(x.action)));
-      const review = e.reviewId;
-      for (const [k, item] of [...open]) {
-        if (answered.has(k) || (k && said.includes(k)) || (review && item.reviews.some((r) => r.length >= 8 && review.startsWith(r)))) open.delete(k);
+    } else if (e.type === 'user.message') {
+      notedThisTurn = [];
+      endCalls.clear();
+      doneAfterNote = false;
+      if ((!e.origin || e.origin === 'phone') && !sentByAgent(e.text ?? '')) {
+        const said = plainKey(e.text ?? '');
+        const answered = new Set((e.answers ?? []).map((x) => plainKey(x.action)));
+        const review = e.reviewId;
+        for (const [k, item] of [...open]) {
+          if (answered.has(k) || (k && said.includes(k)) || (review && item.reviews.some((r) => r.length >= 8 && review.startsWith(r)))) open.delete(k);
+        }
       }
     }
   }
@@ -805,7 +860,7 @@ function nudgedSince(events: PersistedEvent[], note: string): boolean {
     }
   }
   // Antigravity ACP prefixes thrown MCP tool errors with 'Encountered error in step execution: '.
-  return events.slice(start).some((e) => e.type === 'tool.result' && typeof e.text === 'string' && (e.text.startsWith(note) || e.text.startsWith(`Encountered error in step execution: ${note}`)));
+  return events.slice(start).some((e) => e.type === 'tool.result' && typeof e.text === 'string' && isNudgeText(e.text, note));
 }
 
 // What end_turn says, once a turn, to a card with answers to pick from. Mike

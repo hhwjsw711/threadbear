@@ -903,6 +903,10 @@ test("end_turn: a Done card in a project still going is told once of the project
   const child = codexEnd.formFor?.({ needs: 'nothing' }) ?? codexEnd;
   const first = await child.handler({ needs: 'nothing' }, {});
   assert.ok(first.content[0].text.startsWith(PROJECT_STEP_NUDGE), first.content[0].text);
+  // Turn 6 saw these two in its note and still said Done, so Turn 7 doesn't repeat them.
+  assert.doesNotMatch(first.content[0].text, /Draft an email|Neon suggested/);
+  // Turn 6 kept this follow-up in `next`, so it's still open until answered.
+  assert.match(first.content[0].text, /rest of Peter's photos/);
   const second = await child.handler({ needs: 'nothing' }, {});
   assert.ok(!second.content[0].text.startsWith(PROJECT_STEP_NUDGE), second.content[0].text);
 
