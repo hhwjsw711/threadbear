@@ -39,6 +39,7 @@ const artifactFrame = `(() => {
   let activeEntry;
   let activeFragment;
   let latestRequest = 0;
+  let restoring = false;
 
   const snapshot = () => {
     const offset = [window.scrollX, window.scrollY];
@@ -62,7 +63,7 @@ const artifactFrame = `(() => {
   };
 
   const reportPosition = () => {
-    if (window.location.hash !== activeFragment) return;
+    if (restoring || window.location.hash !== activeFragment) return;
     const offset = snapshot();
     positions.set(activeEntry, offset);
     window.parent.postMessage({ artifactPosition: offset, entry: activeEntry }, '*');
@@ -77,7 +78,7 @@ const artifactFrame = `(() => {
     reportPosition();
   }, true);
 
-  window.addEventListener('message', (event) => {
+  addEventListener.call(window, 'message', (event) => {
     if (event.source !== window.parent) return;
     const { artifactFragment, entry, offset, restart } = event.data ?? {};
     if (typeof artifactFragment !== 'string' || (artifactFragment !== '' && !artifactFragment.startsWith('#'))) return;
@@ -85,11 +86,12 @@ const artifactFrame = `(() => {
 
     elements ??= Array.from(querySelectorAll.call(document, '*'));
     const leaving = activeEntry !== undefined;
-    if (leaving && window.location.hash === activeFragment) positions.set(activeEntry, snapshot());
+    if (leaving) reportPosition();
     activeEntry = entry;
     activeFragment = artifactFragment;
     const request = ++latestRequest;
     const saved = restart ? undefined : positions.get(entry) ?? (validOffset(offset) ? offset : undefined);
+    restoring = saved !== undefined;
     if (artifactFragment || window.location.hash || leaving) {
       // Native navigation reveals hidden ancestors and sets :target. The
       // wrapper owns the entry, so replace the frame's fragment in place.
@@ -98,6 +100,7 @@ const artifactFrame = `(() => {
     requestAnimationFrame(() => {
       if (request !== latestRequest) return;
       if (saved) restore(saved);
+      restoring = false;
       reportPosition();
     });
   });
@@ -108,7 +111,8 @@ const artifactFrame = `(() => {
       (element instanceof HTMLAnchorElement || element instanceof HTMLAreaElement || element instanceof SVGAElement)
       && (element.hasAttribute('href') || element.hasAttributeNS(xlink, 'href')));
     if (!anchor || anchor.hasAttribute('download')) return;
-    const link = anchor.getAttribute('href') ?? anchor.getAttributeNS(xlink, 'href');
+    const link = (anchor.getAttribute('href') ?? anchor.getAttributeNS(xlink, 'href'))
+      ?.replace(/^[\\x00-\\x20]+|[\\x00-\\x20]+$/g, '').replace(/[\\t\\n\\r]/g, '');
     const target = anchor.getAttribute('target') ?? querySelector.call(document, 'base[target]')?.getAttribute('target');
     if (link?.startsWith('#') && (!target || target.toLowerCase() === '_self')
       && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
@@ -126,57 +130,92 @@ const artifactFrame = `(() => {
 const artifactViewer = `(() => {
   const externalUrl = ${externalUrl};
   const iframe = document.querySelector('iframe');
-  const frame = iframe.contentWindow;
+  let frame = iframe.contentWindow;
   const validOffset = ${positionShape};
   const bookmarkPrefix = 'threadbear-artifact-scroll:';
+  const bookmarkLimit = 24;
+  const bookmarks = new Map();
   let activeEntry;
   let activeLocation;
+  let ready = false;
 
   const locationKey = () => {
     let key = 2166136261;
     for (const unit of window.location.pathname + window.location.hash) key = Math.imul(key ^ unit.charCodeAt(0), 16777619);
     return key;
   };
-  const readOffset = () => {
+  const readBookmarks = () => {
     const name = window.name;
-    if (!name.startsWith(bookmarkPrefix) || name.length > 4096) return;
+    if (!name.startsWith(bookmarkPrefix) || name.length > 65536) return;
     try {
-      const [key, offset] = JSON.parse(name.slice(bookmarkPrefix.length));
-      if (key === locationKey() && validOffset(offset)) return offset;
+      const [entry, key, entries] = JSON.parse(name.slice(bookmarkPrefix.length));
+      // A tab that was open during an update may still have one old-style bookmark.
+      if (Number.isInteger(entry) && validOffset(key)) return { key: entry, offset: key };
+      if (!Array.isArray(entries) || entries.length > bookmarkLimit) return;
+      for (const item of entries) {
+        if (!Array.isArray(item) || item.length !== 3) continue;
+        const [id, location, offset] = item;
+        if (typeof id === 'string' && id.length <= 48 && Number.isInteger(location) && validOffset(offset)) {
+          bookmarks.set(id, [location, offset]);
+        }
+      }
+      if (typeof entry === 'string' && entry.length <= 48 && Number.isInteger(key)) return { entry, key };
     } catch {}
   };
-  const sendFragment = (offset, restart = false) => {
+  const saveBookmarks = () => {
+    const entries = Array.from(bookmarks, ([id, [key, offset]]) => [id, key, offset]);
+    const next = bookmarkPrefix + JSON.stringify([activeEntry, activeLocation, entries]);
+    if (window.name !== next) window.name = next;
+  };
+  const sendFragment = (initial, restart = false) => {
+    if (!ready) return;
+    const key = locationKey();
     let entry = history.state?.artifactEntry;
     if (!entry) {
-      entry = Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');
+      entry = (initial?.key === key && initial.entry) || Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');
       history.replaceState({ artifactEntry: entry }, '');
     }
     if (entry === activeEntry && !restart) return;
     activeEntry = entry;
-    activeLocation = locationKey();
+    activeLocation = key;
+    if (initial?.key === key && initial.offset) bookmarks.set(entry, [key, initial.offset]);
+    const bookmark = bookmarks.get(entry);
+    const offset = bookmark?.[0] === key ? bookmark[1] : undefined;
+    saveBookmarks();
     frame.postMessage({ artifactFragment: window.location.hash, entry, offset, restart }, '*');
   };
 
   window.addEventListener('load', () => {
     const loadType = performance.getEntriesByType('navigation')[0]?.type;
-    const offset = loadType === 'reload' || loadType === 'back_forward' ? readOffset() : undefined;
+    const initial = loadType === 'reload' || loadType === 'back_forward' ? readBookmarks() : undefined;
+    const initialize = () => {
+      ready = true;
+      sendFragment(initial);
+    };
     if (loadType === 'back_forward') {
       // A cold history restore can retain the old about:srcdoc fragment
-      // without the srcdoc document. Recreate the frame from the response.
-      iframe.addEventListener('load', () => sendFragment(offset), { once: true });
-      iframe.srcdoc = iframe.srcdoc;
+      // without the srcdoc document. A fresh iframe restores the document
+      // without adding a navigation to the existing frame's history.
+      const replacement = iframe.cloneNode();
+      replacement.addEventListener('load', initialize, { once: true });
+      iframe.replaceWith(replacement);
+      frame = replacement.contentWindow;
     } else {
-      sendFragment(offset);
+      initialize();
     }
     window.addEventListener('popstate', () => sendFragment());
     window.addEventListener('hashchange', () => sendFragment());
   }, { once: true });
   window.addEventListener('message', (event) => {
-    if (event.source !== frame || event.origin !== 'null') return;
-    const offset = event.data?.artifactPosition;
-    if (activeEntry !== undefined && event.data?.entry === activeEntry && validOffset(offset)) {
-      const next = bookmarkPrefix + JSON.stringify([activeLocation, offset]);
-      if (window.name !== next) window.name = next;
+    if (!ready || event.source !== frame || event.origin !== 'null') return;
+    const { artifactPosition: offset, entry } = event.data ?? {};
+    // The frame can send a final snapshot for the entry it just left.
+    const key = entry === activeEntry ? activeLocation : bookmarks.get(entry)?.[0];
+    if (key !== undefined && validOffset(offset)) {
+      bookmarks.delete(entry);
+      bookmarks.set(entry, [key, offset]);
+      if (bookmarks.size > bookmarkLimit) bookmarks.delete(bookmarks.keys().next().value);
+      saveBookmarks();
       return;
     }
     const fragment = event.data?.artifactFragmentLink;
