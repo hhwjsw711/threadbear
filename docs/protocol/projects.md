@@ -762,8 +762,15 @@ helper's permissions above that update's limit. Pausing ends that run and
 a later explicit resume uses its new brief.
 
 **Restarts.** A runner update (a handover or a plain restart), a crash or a
-reboot cuts off a helper mid-turn: its CLI is one of the coordinator's sessions, which never stay
-on a draining runner, as `coordinators.json` has one writer. The run is saved
+reboot cuts off a helper mid-turn. Coordinator and helper sessions never stay
+on a draining runner, as `coordinators.json` has one writer. During a handover,
+the runner saves their active turns as interrupted before closing their CLIs.
+The coordinator's own turn uses the normal restart recovery. If the CLI
+may still have had a user message waiting, the runner saves it for the next
+user message and holds automatic work. Queued user messages survive the
+restart and take priority. If a coordinator still has a user message to handle,
+it checks what the helper already did before deciding whether to resume it.
+A helper's run is saved
 `interrupted` and marked in the registry (not in `Run`) to be carried on, and
 the next runner does that by itself once it's listening (beside its own
 carry-on of threads stopped mid-turn, which leaves helpers alone): the same helper session gets

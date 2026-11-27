@@ -83,6 +83,8 @@ export type Play = {
   fail(error: string): void;
   /** Stop before the model received any tokens. */
   earlyStop(): void;
+  /** The runner stops this turn while handing a coordinator to a new release. */
+  stopForHandover(): Promise<void>;
   /** The thread's login ran out and the runner moved it to another (runner/pools.ts moveLogin). */
   loginMoved(): void;
   /** The quiet inbox archives the finished thread, as Opus guessed it a skip (runner/inbox-guess.ts quietArchive, experiment quietInboxMine). */
@@ -241,6 +243,7 @@ export async function playInto(post: Post, runner: { key: string; runnerId: stri
         h.runner.interrupt(thread.id, { byMike: true });
         s.result('interrupted', 0, undefined, { usage: { inputTokens: 0, outputTokens: 0 }, queuedTurns: 0 });
       },
+      stopForHandover: () => h.runner.stopThreadForHandover(h.runner.mustGet(thread.id)),
       loginMoved: () => {
         const st = h.runner.threads.get(thread.id)!;
         h.runner.moveLogin(st, { id: 'claude-1', title: 'alex@example.org', provider: 'claude' } as never, 'alex@example.net hit its 5-hour limit, back at 11:30 am');

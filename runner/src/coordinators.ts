@@ -15,7 +15,7 @@ import { ErrorCode, RpcError, sentByAgent } from './protocol.ts';
 import type { StartSessionOptions, SubagentUpdate } from './adapters/types.ts';
 import { atomicWriteFileSync, isDirectory } from './fsutil.ts';
 import { expandHome } from './config.ts';
-import { scheduledMessageId } from './runner/messages.ts';
+import { fromMike, scheduledMessageId } from './runner/messages.ts';
 import { above, ceilingMode, lowerMode } from './access.ts';
 import { loginOk, roomWait } from './pools.ts';
 import { providerName } from './providers.ts';
@@ -356,6 +356,9 @@ export class Coordinators {
   // Resume, which wakes it.
   private afterRestart(row: Coordinator): void {
     if (row.state !== 'active' || !this.deps.enabled() || this.stopped) return;
+    const coordinator = this.deps.host.threads.get(row.threadId);
+    const pendingUserMessage = coordinator && (coordinator.rec.interruptedMessages?.length || coordinator.rt.turn?.byMike ||
+      coordinator.rec.queue.some((q) => fromMike(q.text, q)));
     let reconcile = false;
     for (const task of row.tasks) {
       const run = task.run;
@@ -363,7 +366,7 @@ export class Coordinators {
       // Done since: the coordinator has dealt with it.
       if (task.state === 'done') { this.unmark(run); this.changed(row); continue; }
       const kind = run.restart;
-      const why = this.cannotCarryOn(row, task, kind);
+      const why = pendingUserMessage ? 'the coordinator has a user message to handle first' : this.cannotCarryOn(row, task, kind);
       const failed = why ? undefined : this.carryOn(row, task, kind);
       if (!why && !failed) continue;
       const reason = why ?? failed!;
@@ -463,12 +466,13 @@ export class Coordinators {
     // them in the drain.
     this.stop();
     // The new runner carries cut-off helpers on by itself (start()).
+    const threads: ThreadState[] = [];
     for (const row of this.rows.values()) {
       this.cutRuns(row, opts.afterError ? 'The runner restarted after an error partway through this helper’s turn.' : 'The runner updated partway through this helper’s turn.', opts.afterError ? 'stop' : 'update');
       this.changed(row);
-      const sessions = this.ownedSessions(row);
-      await Promise.all(sessions.map((s) => s.end({ hard: true })));
+      threads.push(...this.ownedThreads(row));
     }
+    await Promise.all(threads.map((st) => this.deps.host.stopThreadForHandover(st)));
   }
   // Marks the row's working runs as cut off by a planned stop, for the next
   // runner to carry on. Says whether there were any.
@@ -554,8 +558,13 @@ export class Coordinators {
     }
     return out;
   }
+  private ownedThreads(row: Coordinator): ThreadState[] {
+    const coordinator = this.deps.host.threads.get(row.threadId);
+    const helpers = this.helperThreads(row);
+    return coordinator ? [coordinator, ...helpers] : helpers;
+  }
   private ownedSessions(row: Coordinator) {
-    const sessions = [this.deps.host.threads.get(row.threadId)?.rt.session, ...this.helperThreads(row).map((st) => st.rt.session)];
+    const sessions = this.ownedThreads(row).map((st) => st.rt.session);
     return sessions.filter((s): s is NonNullable<typeof s> => Boolean(s));
   }
   projectForThread(threadId: string): string | undefined { return this.deps.enabled() ? this.forThread(threadId)?.projectId : undefined; }

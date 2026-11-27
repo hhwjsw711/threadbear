@@ -1326,8 +1326,8 @@ export const movesPart = {
     return this.runnerNames?.(runnerId) ?? runnerId;
   },
 
-  // Box mode: no turn starts in the thread while `reason` holds it
-  // (Runtime.holds); messages wait in its queue.
+  // No turn starts in the thread while `reason` holds it; messages wait
+  // in its queue. A handover's hold belongs only to the old runner.
   holdTurns(this: Runner, threadId: string, reason: TurnHold): void {
     const st = this.threads.get(threadId);
     if (!st) return;

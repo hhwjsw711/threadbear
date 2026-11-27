@@ -425,7 +425,7 @@ export type Turn = {
   wake?: WakeRead;
 };
 
-export type TurnHold = 'save' | 'setup' | 'broken' | 'token';
+export type TurnHold = 'save' | 'setup' | 'broken' | 'token' | 'handover';
 
 export type Runtime = {
   // On its way to another runner (runner/moves.ts): no turn starts.
@@ -1048,8 +1048,8 @@ export class Runner {
     for (const st of this.threads.values()) if (!st.rec.coordinatorHelperFor) this.catchUpInboxGuess(st, GUESS_CATCH_UP_MS);
     for (const st of this.threads.values()) {
       try {
-        const coordinatorReady = this.coordinators?.forThread(st.rec.id) && !this.coordinators.dispatchRefusal(st.rec.id);
-        if (st.rec.queue.some(q => q.reviewId || (coordinatorReady && q.origin === 'runner')) && this.bucket(st.rec) === 'inbox') this.kickQueue(st);
+        // Coordinators start their queues when the runner is listening.
+        if (!this.coordinators?.forThread(st.rec.id) && st.rec.queue.some(q => q.reviewId) && this.bucket(st.rec) === 'inbox') this.kickQueue(st);
       } catch (e) {
         this.recoveryFailed(st, e);
       }
@@ -1516,8 +1516,9 @@ export class Runner {
       this.markDirty(st);
       return false;
     }
-    const coordinatorInput = (q: QueuedSend) => Boolean(this.coordinators?.forThread(rec.id) && q.origin === 'runner');
-    const reviewQueue = rec.queue.filter(q => q.reviewId || (coordinatorInput(q) && !this.scheduledDelivery(st, q.turnId, 0, 'runner')?.started));
+    const coordinator = this.coordinators?.forThread(rec.id);
+    const coordinatorInput = (q: QueuedSend) => Boolean(coordinator && (q.origin === 'runner' || fromMike(q.text, q)));
+    const keptQueue = rec.queue.filter(q => q.reviewId || (coordinatorInput(q) && !this.scheduledDelivery(st, q.turnId, 0, q.origin ?? null)?.started));
     // A stale thread.json may still hold an input whose receipt is already
     // in the log. It was delivered; neither replay it nor call it unsent.
     rec.queue = rec.queue.filter(q => !q.reviewId && !coordinatorInput(q));
@@ -1529,7 +1530,7 @@ export class Runner {
       });
       rec.queue = [];
     }
-    rec.queue.push(...reviewQueue);
+    rec.queue.push(...keptQueue);
     this.markDirty(st);
     return midTurn && !ended;
   }
@@ -1556,40 +1557,64 @@ export class Runner {
     this.liveTimer?.cancel();
     this.limitRecheck?.stop();
     for (const off of this.unsubs.splice(0)) off();
-    for (const st of this.threads.values()) {
-      const { rt } = st;
-      rt.idleTimer?.cancel();
-      rt.deltaTimer?.cancel();
-      // A done card held back for the wake grace: no turn can come now, so
-      // it finishes (a review it's due is owed to the next runner), or a
-      // stop within those 15 s would leave it unfinished for good.
-      if (!rt.turn) this.settlePendingFinish(st);
-      rt.wakeTimer?.cancel();
-      this.flushDeltas(st);
-      // Output and exits from CLIs that are about to be killed no longer count.
-      this.cli(st, { kind: 'drop', forget: false });
-      if (rt.turn) this.stopTurn(st);
-      // Killing the CLIs kills their background shells and subagents too.
-      // Say so in the thread, as releaseSession does, or it would wait for
-      // a result that never comes with nothing to say why.
-      rt.finished = [];
-      this.stopSubagents(st);
-      if (rt.tasks.length) {
-        const what = rt.tasks.map((t) => t.description || t.type).join('; ');
-        this.rememberStoppedWork(st);
-        this.cli(st, { kind: 'stopTasks' });
-        try {
-          this.emit(st, { type: 'system.note', text: `Stopped background work when the runner stopped: ${what}` });
-        } catch (e) {
-          this.log.error('could not save a note', { threadId: st.rec.id, error: String(e) });
-        }
+    for (const st of this.threads.values()) this.prepareThreadForShutdown(st, false);
+    this.flush();
+  }
+
+  private prepareThreadForShutdown(st: ThreadState, forgetCli: boolean): void {
+    const { rt } = st;
+    rt.idleTimer?.cancel();
+    rt.deltaTimer?.cancel();
+    // A done card held back for the wake grace: no turn can come now, so
+    // it finishes (a review it's due is owed to the next runner), or a
+    // stop within those 15 s would leave it unfinished for good.
+    if (!rt.turn) this.settlePendingFinish(st);
+    rt.wakeTimer?.cancel();
+    this.flushDeltas(st);
+    // Output and exits from CLIs that are about to be killed no longer count.
+    this.cli(st, { kind: 'drop', forget: forgetCli });
+    if (rt.turn) this.stopTurn(st);
+    else if (forgetCli) this.expireApprovals(st, 'The runner stopped.');
+    // Killing the CLIs kills their background shells and subagents too.
+    // Say so in the thread, as releaseSession does, or it would wait for
+    // a result that never comes with nothing to say why.
+    rt.finished = [];
+    this.stopSubagents(st);
+    if (rt.tasks.length) {
+      const what = rt.tasks.map((t) => t.description || t.type).join('; ');
+      this.rememberStoppedWork(st);
+      this.cli(st, { kind: 'stopTasks' });
+      try {
+        this.emit(st, { type: 'system.note', text: `Stopped background work when the runner stopped: ${what}` });
+      } catch (e) {
+        this.log.error('could not save a note', { threadId: st.rec.id, error: String(e) });
       }
     }
-    this.flush();
   }
 
   // ------------------------------------------------------------- handovers
   // docs/protocol/updates.md, "Handovers".
+
+  // Coordinator threads must move together with their registry. Settle any
+  // active turn before closing its CLI so restart recovery can carry it on.
+  async stopThreadForHandover(st: ThreadState): Promise<void> {
+    this.holdTurns(st.rec.id, 'handover');
+    const { session, closing, turn } = st.rt;
+    if (turn && !st.rec.coordinatorHelperFor) {
+      // Output can confirm the only input when this provider sends no
+      // receipts. It cannot confirm a later message waiting in its queue.
+      const onlyInputWasRead = !turn.deliveryKnown && turn.modelOutput && turn.inputs?.size === 1;
+      const unread = onlyInputWasRead ? [] : turn.messages.filter(id => !turn.startedMessages?.has(id));
+      if (unread.length) {
+        this.saveInterruptedMessages(st, { outcome: 'interrupted', durationMs: 0, unreceived: unread }, true);
+      }
+    }
+    this.prepareThreadForShutdown(st, true);
+    if (closing) {
+      session?.kill();
+      await closing;
+    } else await session?.end({ hard: true });
+  }
 
   // ---------------------------------------------------- stopped background work
   // docs/protocol/updates.md, "Stopped background work". A handover or restart stops
@@ -1621,7 +1646,7 @@ export class Runner {
         turnId: turn.turnId,
         outcome: 'interrupted',
         durationMs: Math.max(0, this.clock.now() - turn.startedAt),
-        error: 'The runner stopped during this turn.',
+        error: turn.interruptRequested ? 'Interrupted.' : 'The runner stopped during this turn.',
       },
       turn.turnId,
     );
@@ -1630,7 +1655,8 @@ export class Runner {
     rec.turnId = undefined;
     rec.lastTurnCompletedSeq = ev.seq;
     rec.status = 'stopped';
-    rec.stoppedMidTurn = { turnId: turn.turnId, at: this.isoNow() };
+    if (turn.interruptRequested) delete rec.stoppedMidTurn;
+    else rec.stoppedMidTurn = { turnId: turn.turnId, at: this.isoNow() };
     rec.lastActivityAt = this.isoNow();
     this.markDirty(st);
   }
@@ -2089,7 +2115,7 @@ export class Runner {
     return delivery && 'seq' in delivery ? delivery : undefined;
   }
 
-  private scheduledDelivery(st: ThreadState, messageId: string, since: number, origin: MessageOrigin = 'schedule'): ScheduledDelivery | undefined {
+  private scheduledDelivery(st: ThreadState, messageId: string, since: number, origin: MessageOrigin | null = 'schedule'): ScheduledDelivery | undefined {
     // A schedule/request may have been timestamped by another runner.
     since = Math.max(0, since - 5 * 60_000);
     const log = this.store.log(st.rec.id);
@@ -2126,7 +2152,7 @@ export class Runner {
             started = true;
             if (message) return finish();
           }
-          if (e.type === 'user.message' && e.origin === origin) {
+          if (e.type === 'user.message' && e.origin === (origin ?? undefined)) {
             message = { seq: e.seq, started, text: e.text, images: e.images };
             return finish();
           }
@@ -3741,7 +3767,7 @@ export class Runner {
     if (!review && !asleep && p.owed && !rec.labReviewOwed) review = this.startLabReview(st, p.owed.turnId, p.owed.reply, p.owed.seq);
     if (review) this.waitOnReview(st, review);
     else if (!rec.labReviewOwed) this.markFinished(st, p.lastText);
-    if (review || rec.labReviewOwed || rec.archivedAt || asleep || this.stopping) return;
+    if (review || rec.labReviewOwed || rec.archivedAt || asleep || this.stopping || rt.holds?.has('handover')) return;
     if (rec.unarchivedBySchedule) {
       const by = rec.unarchivedBySchedule.by;
       this.park(st, { kind: 'scheduleRunEnded' });
@@ -4767,10 +4793,10 @@ export class Runner {
 
   // A zero-token interrupted result is not a receipt. Keep the original
   // log rows so their pictures and origin survive without duplicate user rows.
-  saveInterruptedMessages(st: ThreadState, result?: TurnResult): void {
+  saveInterruptedMessages(st: ThreadState, result?: TurnResult, forHandover = false): void {
     const { rec, rt } = st;
     const turn = rt.turn;
-    if (!turn?.interruptRequested || turn.local || rt.editing) return;
+    if (!turn || (!turn.interruptRequested && !forHandover) || turn.local || rt.editing) return;
     const unreceived = new Set(result?.unreceived);
     const usage = result?.own ? undefined : result?.usage;
     const zero = usage?.inputTokens === 0 && usage.outputTokens === 0 &&

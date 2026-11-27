@@ -56,6 +56,17 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: 'a coordinator turn stopped by a runner update',
+    shows: ['Use the canvas.', 'I saved your choice.'],
+    play: async (p) => {
+      p.coordinate('p_canvas');
+      p.endTurn({ needs: 'nothing' });
+      p.send('Use the canvas.');
+      p.say('I saved your choice.');
+      await p.stopForHandover();
+    },
+  },
+  {
     name: 'a message sent from the phone app',
     shows: ['The photo can wait until tomorrow.'],
     play: (p) => {

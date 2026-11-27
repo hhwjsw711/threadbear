@@ -34,7 +34,7 @@ export const stoppedWorkPart = {
   tellOneStoppedWork(this: Runner, st: ThreadState): void {
     const { rec } = st;
     const stopped = rec.stoppedWork;
-    if (!stopped) return;
+    if (!stopped || this.coordinators?.dispatchRefusal(rec.id)) return;
     delete rec.stoppedWork;
     this.markDirty(st);
     // Put away since: its next message would bring it back, and the note
@@ -66,7 +66,7 @@ export const stoppedWorkPart = {
   // "sorry I had to reboot, please continue"). main.ts calls this once
   // listening, after the restart's own resume and tellStoppedWork, so a
   // thread one of those already sent a message to isn't told twice. Not
-  // a thread put away, one with a message waiting, one stopped more than
+  // a thread put away, one with a queued or saved message, one stopped more than
   // STOPPED_CARRY_ON_MAX_AGE_MS ago, or a carry-on that was itself cut
   // off (a turn that crashes the runner mustn't loop). If the network
   // isn't back yet, the carry-on waits for it (onNetworkLost).
@@ -78,7 +78,7 @@ export const stoppedWorkPart = {
       if (threadId && st.rec.id !== threadId) continue;
       const { rec, rt } = st;
       const stopped = rec.stoppedMidTurn;
-      if (!stopped) continue;
+      if (!stopped || this.coordinators?.dispatchRefusal(rec.id)) continue;
       if (typeof stopped !== 'object' || typeof stopped.at !== 'string') {
         delete rec.stoppedMidTurn;
         this.markDirty(st);
@@ -86,7 +86,7 @@ export const stoppedWorkPart = {
       }
       delete rec.stoppedMidTurn;
       this.markDirty(st);
-      if (rt.deleted || rec.status !== 'stopped' || rt.turn || rec.queue.length || this.bucket(rec) !== 'inbox') continue;
+      if (rt.deleted || rec.status !== 'stopped' || rt.turn || rec.queue.length || rec.interruptedMessages?.length || this.bucket(rec) !== 'inbox') continue;
       const old = !(this.clock.now() - Date.parse(stopped.at) <= STOPPED_CARRY_ON_MAX_AGE_MS);
       if (old || rec.restartCarryOn === stopped.turnId) {
         left++;

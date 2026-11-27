@@ -16,7 +16,7 @@ import { CallerGate } from '../../src/rpc-gate.ts';
 import type { Account, PermissionMode, Schedule, ThreadSummary } from '../../src/protocol.ts';
 import type { Settings } from '../../src/settings.ts';
 import { buildThreadbearTools, type ProjectControl } from '../../src/threadbear-mcp.ts';
-import { CARRY_ON_HELPER_RESTART } from '../../src/runner/carry-on.ts';
+import { CARRY_ON_HELPER_RESTART, CARRY_ON_RESTART } from '../../src/runner/carry-on.ts';
 import { SessionNotFoundError } from '../../src/adapters/types.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
 
@@ -812,6 +812,13 @@ test('a runner handover ends coordinator and helper sessions and prevents the dr
   await c.handover();
   assert.equal(coordSession.endedHard, true);
   assert.equal(helperSession.endedHard, true);
+  for (const threadId of [coordinator.threadId, started.helperId]) {
+    assert.equal(h.runner.get(threadId).status, 'stopped');
+    const endings = h.runner.backlog(threadId).events.filter((e) => e.type === 'turn.completed');
+    assert.equal(endings.length, 1);
+    assert.equal(endings[0]?.outcome, 'interrupted');
+    assert.equal(endings[0]?.error, 'The runner stopped during this turn.');
+  }
   const view = c.get(project.id);
   assert.equal(view.state, 'active');
   assert.equal(view.tasks[0].run?.status, 'interrupted');
@@ -827,6 +834,119 @@ test('a runner handover ends coordinator and helper sessions and prevents the dr
   const replacement = new Coordinators({ home, host: h.runner, projects, clock: h.clock, enabled: () => true, log: nullLogger });
   assert.equal(replacement.get(project.id).tasks[0].run?.status, 'interrupted');
   replacement.stop();
+});
+
+test('a coordinator carries on a turn interrupted by a handover', async () => {
+  const { c, h, project, home, antigravity } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'antigravity-main' });
+  await tick();
+  const session = antigravity.sessions.at(-1)!;
+  session.init('coordinator-session', 'gemini-4-neon');
+  session.result();
+  h.runner.send(coordinator.threadId, 'Use the canvas.');
+  await tick();
+  const turnId = session.sent.at(-1)!.id;
+  session.delta('partial', 'I saved your choice.');
+  session.slowExit = true;
+  const handingOver = c.handover();
+  await tick();
+  // A late turn result while the CLI is closing must not replace the stop.
+  session.result();
+  session.exit();
+  await handingOver;
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+  const events = h.events(coordinator.threadId).filter((e) => e.turnId === turnId);
+  assert.ok(events.some((e) => e.type === 'assistant.text' && e.text === 'I saved your choice.'));
+  assert.deepEqual(events.filter((e) => e.type === 'turn.completed').map((e) => e.outcome), ['interrupted']);
+
+  const fresh = recoverFresh(h, home);
+  await tick();
+  assert.equal(fresh.antigravity.sessions.length, 1);
+  assert.equal(fresh.antigravity.sessions[0]?.opts.resume, true);
+  assert.equal(fresh.antigravity.sessions[0]?.sent.length, 1);
+  assert.ok(fresh.antigravity.sessions[0]?.sent[0]?.text.endsWith(CARRY_ON_RESTART));
+  fresh.c.stop();
+});
+
+test('handover saves a coordinator message the CLI may not have read', async () => {
+  const { c, h, project, home, antigravity } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'antigravity-main' });
+  await tick();
+  const session = antigravity.sessions.at(-1)!;
+  session.init('coordinator-session', 'gemini-4-neon');
+  session.result();
+  h.runner.send(coordinator.threadId, 'Prepare the deployment.');
+  await tick();
+  session.text('partial', 'Checking the branch.');
+  h.runner.send(coordinator.threadId, 'Cancel the deployment.');
+  await c.handover();
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+
+  const fresh = recoverFresh(h, home);
+  await tick();
+  assert.equal(fresh.antigravity.sessions.length, 0);
+  fresh.host.send(coordinator.threadId, 'Please continue.');
+  await tick();
+  assert.match(fresh.antigravity.sessions.at(-1)?.sent[0]?.text ?? '', /Cancel the deployment\.[\s\S]+Please continue\./);
+  fresh.c.stop();
+});
+
+test('handover does not resume a coordinator while coordinators are turned off', async () => {
+  const { c, h, project, home, claude } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  claude.last.init();
+  claude.last.text('partial', 'Checking the project.');
+  await c.handover();
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+
+  const fresh = recoverFresh(h, home, undefined, () => false);
+  await tick();
+  assert.equal(fresh.adapter.sessions.length, 0);
+  assert.equal(fresh.host.get(coordinator.threadId).status, 'stopped');
+  assert.ok(fresh.host.mustGet(coordinator.threadId).rec.stoppedMidTurn);
+  fresh.c.stop();
+});
+
+test('handover does not undo Stop while the coordinator CLI is still interrupting', async () => {
+  const { c, h, project, home, claude } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  claude.last.init();
+  claude.last.text('partial', 'Checking the project.');
+  h.runner.interrupt(coordinator.threadId, { byMike: true });
+  await c.handover();
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+
+  const fresh = recoverFresh(h, home);
+  await tick();
+  assert.equal(fresh.adapter.sessions.length, 0);
+  assert.equal(fresh.host.get(coordinator.threadId).status, 'stopped');
+  assert.equal(fresh.host.mustGet(coordinator.threadId).rec.stoppedMidTurn, undefined);
+  fresh.c.stop();
+});
+
+test('handover queues a coordinator correction while closing and delivers it before automatic work', async () => {
+  const { c, h, project, home, antigravity } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'antigravity-main' });
+  await tick();
+  const session = antigravity.sessions.at(-1)!;
+  session.init('coordinator-session', 'gemini-4-neon');
+  session.text('partial', 'Checking the branch.');
+  session.slowExit = true;
+  const handingOver = c.handover();
+  await tick();
+  h.runner.send(coordinator.threadId, 'Cancel the deployment.');
+  session.exit();
+  await handingOver;
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+
+  const fresh = recoverFresh(h, home);
+  await tick();
+  assert.equal(fresh.antigravity.sessions.length, 1);
+  assert.equal(fresh.antigravity.sessions[0]?.sent.length, 1);
+  assert.ok(fresh.antigravity.sessions[0]?.sent[0]?.text.endsWith('Cancel the deployment.'));
+  fresh.c.stop();
 });
 
 // A helper at work on the runner, whose session has an id to resume.
@@ -847,6 +967,22 @@ async function workingHelper(permissionMode?: PermissionMode) {
   const said = () => s.h.runner.events(coordinator.threadId, { limit: 10_000 }).events.filter((e) => e.type === 'user.message').length;
   return { ...s, coordinator, started, helperSession, saidBefore: said() };
 }
+
+test('handover leaves a helper stopped when its coordinator has a user message to handle', async () => {
+  const { c, h, project, home, coordinator, started } = await workingHelper();
+  h.runner.send(coordinator.threadId, 'Cancel the deployment.');
+  await c.handover();
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+
+  const fresh = recoverFresh(h, home);
+  await tick();
+  assert.equal(fresh.adapter.sessions.length, 0);
+  const run = fresh.c.get(project.id).tasks[0]?.run;
+  assert.equal(run?.helperThreadId, started.helperId);
+  assert.equal(run?.status, 'interrupted');
+  assert.match(run?.summary ?? '', /a user message to handle first/);
+  fresh.c.stop();
+});
 test('resumeHelper updates the exact running helper without replacing its run', async () => {
   const { c, h, project, projects, coordinator, started, helperSession, claude } = await workingHelper();
   const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, projectControl(projects), undefined, { coordinators: () => c })

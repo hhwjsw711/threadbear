@@ -98,7 +98,7 @@ export const labReviewPart = {
     // The review is owed instead, and the runner that has the thread next
     // starts it (startOwedReview). The caller doesn't mark it finished
     // meanwhile.
-    if (this.draining || this.refusing || this.stopping) {
+    if (this.draining || this.refusing || this.stopping || st.rt.holds?.has('handover')) {
       // Where its events end, so a long turn in between can't push them
       // out of turnChange's reach.
       rec.labReviewOwed = { turnId, seq: upTo ?? rec.lastSeq ?? 0, ...(reply ? { reply } : {}) };

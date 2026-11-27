@@ -708,7 +708,6 @@ async function main(): Promise<void> {
   runner.recheckWaitStates();
   runner.scheduleChecks = () => scheduler.localChecks();
   // The librarian needs both the loaded projects and the recovered threads.
-  if (!copyOfReal && !box) coordinators.start();
   const librarian = new Librarian({ host: runner, projects, models, clock: realClock, log, home: cfg.home, pocket: pocketControl });
   if (!copyOfReal && !box) librarian.start();
   // Background jobs that look stuck get their thread a message.
@@ -1984,6 +1983,7 @@ async function main(): Promise<void> {
       log.error(`startup step failed: ${name}`, { error: String(e) });
     }
   };
+  if (!copyOfReal && !box) step('start coordinators', () => coordinators.start());
   step('resume after restart', () => restarter.resumeAfterRestart());
   step('tell stopped work', () => runner.tellStoppedWork());
   step('carry on stopped', () => runner.carryOnStopped());
