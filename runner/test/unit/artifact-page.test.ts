@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 import { artifactPage, artifactSlug, MAX_ARTIFACT_BYTES } from '../../../convex/artifactPage.ts';
 
 const slug = '8fd09e30f5903a93471048c1c6c32d33';
@@ -39,7 +40,7 @@ test('the fragment base follows the opening tags of a full document', async () =
   assert.ok(page.includes('&lt;/script&gt;&lt;title&gt;Page'));
 });
 
-test('the browser permits only the two trusted link scripts', async () => {
+test('the browser permits only the two trusted viewer scripts', async () => {
   const artifact = { title: 'Artifact', html: '<script>console.log("Not trusted");</script>' };
   const response = artifactPage(artifact);
   const html = await response.text();
@@ -54,6 +55,78 @@ test('the browser permits only the two trusted link scripts', async () => {
   assert.deepEqual([...html.matchAll(/<script nonce="([^"]*)">/g)].map(([, token]) => token), [nonce]);
   assert.match(policy, /(?:^|; )sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox(?:;|$)/);
   assert.match(policy, /(?:^|; )script-src-attr 'none'(?:;|$)/);
+});
+
+test('the viewer passes its initial and changed fragments through the sandbox', async () => {
+  const html = await artifactPage({ title: 'Artifact', html: '<h2 id="cost">Cost</h2>' }).text();
+  const encodedFrame = html.match(/&lt;script nonce=&quot;[^&]+&quot;&gt;([^]*?)&lt;\/script&gt;/)?.[1];
+  const viewerScript = html.match(/<script nonce="[^"]+">([^]*?)<\/script>/)?.[1];
+  assert.ok(encodedFrame && viewerScript);
+  const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"' };
+  const frameScript = encodedFrame.replace(/&(amp|lt|gt|quot);/g, (_, name: string) => entities[name]);
+
+  const parent = new EventTarget();
+  const frame = new EventTarget();
+  const location = { hash: '#cost' };
+  const viewport = {
+    parent,
+    location: { hash: '' },
+    scrollX: 0,
+    scrollY: 0,
+    scrollTo({ top }: { top: number }) { viewport.scrollY = top; },
+    addEventListener: frame.addEventListener.bind(frame),
+  };
+  class Anchor {
+    constructor(top: number) { this.top = top; }
+    readonly top: number;
+    scrollIntoView() { viewport.scrollY = this.top; }
+  }
+  const history = {
+    state: null as { artifactEntry: string } | null,
+    replaceState(state: { artifactEntry: string }) { history.state = state; },
+  };
+  const document = Object.assign(new EventTarget(), {
+    getElementById: (name: string) => name === 'cost' ? new Anchor(1000) : null,
+    getElementsByName: (name: string) => name === 'detail ü' ? [new Anchor(2000)] : [],
+  });
+  const postMessage = (data: unknown, origin: string) => {
+    assert.equal(origin, '*'); // A sandboxed srcdoc has an opaque origin.
+    frame.dispatchEvent(Object.assign(new Event('message'), { source: parent, data }));
+  };
+  let nextEntry = 0;
+  runInNewContext(frameScript, {
+    window: viewport, document, HTMLAnchorElement: Anchor,
+    requestAnimationFrame: (callback: () => void) => callback(),
+  });
+  runInNewContext(viewerScript, {
+    window: { location, addEventListener: parent.addEventListener.bind(parent) },
+    history,
+    document: { querySelector: () => ({ contentWindow: { postMessage } }) },
+    crypto: { getRandomValues: () => [++nextEntry] },
+    performance: { getEntriesByType: () => [{ type: 'navigate' }] },
+  });
+
+  parent.dispatchEvent(new Event('load'));
+  assert.equal(viewport.scrollY, 1000);
+  const costEntry = history.state;
+  viewport.scrollY = 1350;
+  history.state = null;
+  location.hash = '#detail%20%C3%BC';
+  parent.dispatchEvent(new Event('hashchange'));
+  assert.equal(viewport.scrollY, 2000);
+
+  history.state = costEntry;
+  location.hash = '#cost';
+  parent.dispatchEvent(new Event('hashchange'));
+  assert.equal(viewport.scrollY, 1350);
+  frame.dispatchEvent(Object.assign(new Event('message'), { source: {}, data: { artifactFragment: '', entry: 'wrong-window' } }));
+  frame.dispatchEvent(Object.assign(new Event('message'), { source: parent, data: { artifactFragment: 'https://example.test', entry: 'invalid' } }));
+  assert.equal(viewport.scrollY, 1350);
+
+  history.state = null;
+  location.hash = '';
+  parent.dispatchEvent(new Event('hashchange'));
+  assert.equal(viewport.scrollY, 0);
 });
 
 test('missing and unpublished links return an uncached 404', async () => {
