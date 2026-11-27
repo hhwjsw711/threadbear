@@ -12,13 +12,15 @@ import { cliEnv } from '../../src/adapters/claude/adapter.ts';
 import { loadConfig } from '../../src/config.ts';
 import { defaultPools } from '../../src/pools.ts';
 
-const H = '/Users/someone';
+const rootPath = process.platform === 'win32' ? 'C:/' : '/';
+const H = `${rootPath}Users/someone`;
+const opt = `${rootPath}opt`;
 const parse = (raw: unknown) => parseClaudeLogins(raw, H);
 
 test('the id defaults to the folder name without its dot', () => {
   assert.deepEqual(parse([{ dir: '~/.claude-personal' }]), { logins: [{ id: 'claude-personal', dir: `${H}/.claude-personal` }], errors: [] });
   assert.deepEqual(parse([{ id: 'work', dir: '~/.claude-personal' }]).logins, [{ id: 'work', dir: `${H}/.claude-personal` }]);
-  assert.deepEqual(parse([{ dir: '/opt/claude-x' }]).logins, [{ id: 'claude-x', dir: '/opt/claude-x' }]);
+  assert.deepEqual(parse([{ dir: `${opt}/claude-x` }]).logins, [{ id: 'claude-x', dir: `${opt}/claude-x` }]);
 });
 
 test('only a leading tilde is expanded, the rest kept as written', () => {
@@ -26,12 +28,12 @@ test('only a leading tilde is expanded, the rest kept as written', () => {
     ['~/.x', `${H}/.x`],
     ['~/.x/', `${H}/.x/`],
     ['~/a//b', `${H}/a//b`],
-    ['/opt/~/x', '/opt/~/x'],
+    [`${opt}/~/x`, `${opt}/~/x`],
   ]) {
     assert.equal(parse([{ id: 'a', dir: given }]).logins[0]?.dir, want, given);
   }
   // HOME as the shell has it, trailing slash and all, as `~/x` in a shell gives.
-  assert.equal(parseClaudeLogins([{ id: 'a', dir: '~/.x' }], '/Users/s/').logins[0]?.dir, '/Users/s//.x');
+  assert.equal(parseClaudeLogins([{ id: 'a', dir: '~/.x' }], `${H}/`).logins[0]?.dir, `${H}//.x`);
 });
 
 test('a bad entry is left out, saying why; the rest are kept', () => {
@@ -51,7 +53,7 @@ test('a bad entry is left out, saying why; the rest are kept', () => {
     [{ id: 'y', dir: '~/' }, /home folder/],
     [{ id: 'bad id', dir: '~/.a' }, /id should be/],
     [{ id: '../up', dir: '~/.a' }, /id should be/],
-    [{ dir: '/' }, /id should be/],
+    [{ dir: rootPath }, /id should be/],
     [{ dir: '~/.claude.personal' }, /id should be/],
     [{ id: 'x'.repeat(65), dir: '~/.a' }, /id should be/],
     [{ id: 'constructor', dir: '~/.a' }, /pick another/],
@@ -193,18 +195,21 @@ test('a link made after the list was read still cannot lead home, to ~/.claude o
   fs.mkdirSync(cfg.claudeMainDir, { recursive: true });
   const inAccounts = path.join(cfg.accountsDir!, 'personal');
   fs.mkdirSync(inAccounts, { recursive: true });
-  fs.mkdirSync(path.join(cfg.userHome, 'sub'));
-  const links = { home: cfg.userHome, main: cfg.claudeMainDir, acct: inAccounts, sub: path.join(cfg.userHome, 'sub') };
+  const links = { home: cfg.userHome, main: cfg.claudeMainDir, acct: inAccounts };
   const claudeLogins = Object.entries(links).map(([id, target]) => {
     const dir = path.join(root, `link-${id}`);
     fs.symlinkSync(target, dir);
     return { id, dir };
   });
   claudeLogins.push({ id: 'direct', dir: inAccounts });
-  // The link's own parent, followed: home, though it reads as `root`. (The
-  // list never takes a `..`; this is discovery's own check.)
-  claudeLogins.push({ id: 'up', dir: path.join(root, 'link-sub') + '/..' });
-  claudeLogins.splice(claudeLogins.findIndex((l) => l.id === 'sub'), 1);
+  if (process.platform !== 'win32') {
+    // Unix follows the link before resolving `..`. Windows resolves `..` first.
+    const sub = path.join(cfg.userHome, 'sub');
+    const link = path.join(root, 'link-sub');
+    fs.mkdirSync(sub);
+    fs.symlinkSync(sub, link);
+    claudeLogins.push({ id: 'up', dir: `${link}/..` });
+  }
   const found = discoverAccounts({ ...cfg, claudeLogins, hiddenLogins: ['claude-main'] }).map((a) => a.id);
   assert.deepEqual(found, []);
 });
@@ -217,7 +222,7 @@ test('runner.json: with the experiment off the key is not read at all', () => {
     const warn = console.warn;
     console.warn = (...a: unknown[]) => void warned.push(a.join(' '));
     try {
-      return { cfg: loadConfig({ HOME: '/Users/someone', THREADBEAR_HOME: root }), warned: warned.filter((w) => w.includes('claudeLogins')) };
+      return { cfg: loadConfig({ HOME: H, THREADBEAR_HOME: root }), warned: warned.filter((w) => w.includes('claudeLogins')) };
     } finally {
       console.warn = warn;
     }
@@ -230,7 +235,7 @@ test('runner.json: with the experiment off the key is not read at all', () => {
     }
   }
   const on = load({ experiments: { claudeLogins: true }, claudeLogins: [{ dir: '~/.claude-personal' }, { id: 'claude-1', dir: '~/.x' }] });
-  assert.deepEqual(on.cfg.claudeLogins, [{ id: 'claude-personal', dir: '/Users/someone/.claude-personal' }]);
+  assert.deepEqual(on.cfg.claudeLogins, [{ id: 'claude-personal', dir: `${H}/.claude-personal` }]);
   assert.equal(on.warned.length, 1);
 });
 
