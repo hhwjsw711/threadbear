@@ -1002,12 +1002,30 @@ async function handle(client, { id, method, params = {} }) {
   return run();
 }
 
+let mockArtifacts;
+
 async function dispatch(client, method, p) {
   if (coordinatorRequest && (method.startsWith('coordinators.') || ['mock.coordinatorFinish', 'mock.coordinatorVerify', 'mock.coordinatorNotesChanged', 'mock.coordinatorAsk', 'mock.coordinatorTaskBoard'].includes(method))) {
     if (method.startsWith('coordinators.') && !settings.experiments.find((e) => e.id === 'coordinators')?.on) throw rpcError(-32602, 'The coordinator experiment is off.');
     return coordinatorRequest(method, p);
   }
   switch (method) {
+    case 'mock.artifacts':
+      mockArtifacts = new Map();
+      return {};
+    case 'artifacts.manage': {
+      if (!mockArtifacts) return { available: false };
+      let url = mockArtifacts.get(p.path) ?? null;
+      if (p.action === 'status' || p.expected !== url) return { available: true, url, changed: false };
+      if (p.action === 'publish') {
+        url ??= 'https://example.test/a/mock-artifact';
+        mockArtifacts.set(p.path, url);
+      } else {
+        mockArtifacts.delete(p.path);
+        url = null;
+      }
+      return { available: true, url, changed: true };
+    }
     case 'hello':
       // The Mac mini has two logins of its own and no pools, as the real one does,
       // so the pickers on its threads plainly aren't this Mac's.

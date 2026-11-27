@@ -192,6 +192,23 @@ When('I press Run them over the page in the pane', async function (this: Threadb
   await this.app.do({ cmd: 'preview', runScripts: true });
 });
 
+When('the owner runner can publish HTML', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'mock', method: 'artifacts', params: {} });
+});
+
+When('I choose to {word} the preview', async function (this: ThreadbearWorld, artifact: string) {
+  await this.until('the Publish controls', (d) => pane(d)?.artifactReady === true);
+  await this.app.do({ cmd: 'preview', artifact });
+});
+
+Then('the preview has a public link', async function (this: ThreadbearWorld) {
+  await this.until('the preview to show its share link', (d) => pane(d)?.artifactUrl === 'https://example.test/a/mock-artifact');
+});
+
+Then('the preview has no public link', async function (this: ThreadbearWorld) {
+  await this.until('the preview to have no public link', (d) => pane(d)?.artifactReady === true && pane(d)?.artifactUrl === null);
+});
+
 // A note in place of the file (one that only opens in its app, or one waiting
 // for the runner), as against the bar over a file (`the pane says`). On
 // Windows the app reads this Mac's own files itself, not through the runner

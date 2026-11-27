@@ -25,7 +25,7 @@ http.route({
   method: 'GET',
   handler: httpAction(async (ctx, request) => {
     const slug = artifactSlug(new URL(request.url).pathname);
-    return artifactPage(slug ? await ctx.runQuery(internal.artifacts.readPublished, { slug }) : null);
+    return artifactPage(slug ? await ctx.runQuery(internal.sync.hostedArtifact, { slug }) : null);
   }),
 });
 

@@ -964,6 +964,25 @@ pub fn digest(data: &[u8]) -> String {
 /// digest of what was read. None for anything but a regular file up to
 /// `MAX_BYTES`, opened without blocking so a FIFO named `.html` can't hang.
 pub fn scan(path: &Path) -> Option<(bool, String)> {
+    let data = read_page(path, MAX_BYTES)?;
+    Some((has_scripts(&data), digest(&data)))
+}
+
+/// Publish exactly the bytes the preview read, within the hosted size limit.
+pub fn read_for_publish(path: &Path, preview_digest: &str) -> Result<String, &'static str> {
+    let data = read_page(path, 64 * 1024).ok_or("Choose an HTML file up to 64 KiB.")?;
+    if digest(&data) != preview_digest {
+        return Err("The file changed. Reopen its preview to publish it.");
+    }
+    let html =
+        String::from_utf8(data).map_err(|_| "Save this file as UTF-8 before publishing it.")?;
+    if html.trim().is_empty() {
+        return Err("This HTML file is empty.");
+    }
+    Ok(html)
+}
+
+fn read_page(path: &Path, limit: u64) -> Option<Vec<u8>> {
     use std::io::Read as _;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -976,15 +995,15 @@ pub fn scan(path: &Path) -> Option<(bool, String)> {
     }
     let file = options.open(path).ok()?;
     let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() > MAX_BYTES {
+    if !meta.is_file() || meta.len() > limit {
         return None;
     }
     let mut data = vec![];
-    file.take(MAX_BYTES + 1).read_to_end(&mut data).ok()?;
-    if data.len() as u64 > MAX_BYTES {
+    file.take(limit + 1).read_to_end(&mut data).ok()?;
+    if data.len() as u64 > limit {
         return None;
     }
-    Some((has_scripts(&data), digest(&data)))
+    Some(data)
 }
 
 /// Which local pages Mike has let run their scripts: one digest per file, so a

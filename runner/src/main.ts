@@ -1398,6 +1398,22 @@ async function main(): Promise<void> {
     else if (n.method === 'thread.deleted') updates.threadChanged(n.params.threadId);
   });
   const methods = { ...restartMethods(restarter), ...scheduleMethods(scheduler), ...projectMethods(projects), ...coordinatorMethods(coordinators), ...drainProjectMethods(projects), ...librarianMethods(librarian), ...connectorsMethods(connectors), ...recipeMethods(recipes), ...settingsMethods(settings), ...instructionsMethods(instructions), ...modelMethods(models), ...devicesMethods(sync), ...usageStatsMethods({ tally, history: usageHistory, clock: realClock }), ...archiveMethods(agentArchive) };
+  methods['artifacts.manage'] = (p) => {
+    if (!experimentOn(cfg.home, 'artifactPublish')) return { available: false };
+    if (typeof p.path !== 'string' || !path.isAbsolute(p.path) || !/\.html?$/i.test(p.path) || p.path.length > 4096) {
+      throw new RpcError(ErrorCode.badParams, 'Choose a local HTML file.');
+    }
+    const source = crypto.createHash('sha256').update(p.path).digest('hex');
+    if (p.action === 'status') return sync.manageArtifact(source, { action: 'status' });
+    if (p.action === 'unpublish' && typeof p.expected === 'string') {
+      return sync.manageArtifact(source, { action: p.action, expected: p.expected });
+    }
+    if (p.action === 'publish' && (p.expected === null || typeof p.expected === 'string') && typeof p.html === 'string' && Buffer.byteLength(p.html) <= 64 * 1024) {
+      const title = Array.from(path.basename(p.path, path.extname(p.path))).slice(0, 60).join('').trim() || 'HTML page';
+      return sync.manageArtifact(source, { action: p.action, expected: p.expected, title, html: p.html });
+    }
+    throw new RpcError(ErrorCode.badParams, 'Choose a UTF-8 HTML file up to 64 KiB.');
+  };
   // runner.status carries the CLI statuses too (protocol, "runner.status").
   const restartStatus = methods['runner.status'];
   methods['runner.status'] = (p) => {

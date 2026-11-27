@@ -61,10 +61,12 @@ Built 28 Oct 2026 (thread 66935d23).
   from `runner.status`'s `sync.url` (`.convex.cloud` → `.convex.site`), so
   it only shows while sync is on.
 
-## Hosted artifact prototype
+## Hosted HTML artifacts
 
-On a development deployment with the prototype, run these from the repo
-root with the deployment selected in `.env.local`:
+The desktop app's **Publish HTML previews** experiment uploads a preview
+through the owner runner. Publishing via the deployment's signed-in
+Convex CLI also works. Run these from the repo root with the deployment
+selected in `.env.local`:
 
 ```sh
 node scripts/artifact.mjs publish trip.html "Trip plan"
@@ -82,7 +84,8 @@ embedded images work. The browser runs the page in a sandbox with scripts,
 forms and external resources blocked. The public route is
 `GET /a/<slug>`; it returns 404 for an unknown or unpublished link and
 its responses are never cached. There is no Threadbear sign-in on that
-page. Only deployment admins can publish, update or unpublish.
+page. Only the owner runner and deployment admins can publish, update or
+unpublish.
 
 ## Sharing
 

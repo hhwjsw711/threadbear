@@ -395,6 +395,8 @@ pub(crate) struct SidePane {
     /// The chosen section per thread (`panelChoice`).
     pub(crate) chosen: HashMap<String, String>,
     pub(crate) previews: HashMap<String, PanePreview>,
+    /// Each open gets a new number, even after closing the previous file.
+    preview_opened: u64,
     /// Each thread's section and open file as last left, saved across
     /// launches (pane_store.rs): a file comes back the first time its
     /// thread shows after a restart.
@@ -453,6 +455,7 @@ impl SidePane {
             collapsed: crate::highlights_store::load_collapsed(),
             chosen: HashMap::new(),
             previews: HashMap::new(),
+            preview_opened: 0,
             places: crate::pane_store::load(),
             restored: HashSet::new(),
             flags: HashMap::new(),
@@ -1014,7 +1017,8 @@ impl SidePane {
         self.stop_explaining(thread_id);
         // A file being worked on is saved before anything takes its place.
         self.leave_edit(thread_id, cx);
-        preview.opened = self.previews.get(thread_id).map_or(0, |p| p.opened) + 1;
+        self.preview_opened += 1;
+        preview.opened = self.preview_opened;
         // A Markdown file opens as its bar's menu last left it, and code and
         // plain text ready to type in, on this runner's machine
         // (`MarkdownView.opensRaw`).
@@ -1054,7 +1058,8 @@ impl SidePane {
             Some((last, rest)) => {
                 let mut previous = last.clone();
                 previous.back = rest.to_vec();
-                previous.opened = current.opened + 1;
+                self.preview_opened += 1;
+                previous.opened = self.preview_opened;
                 self.previews.insert(thread_id.to_owned(), previous);
                 if let Some(thread) = self.thread(cx) {
                     self.begin_preview(&thread, cx);

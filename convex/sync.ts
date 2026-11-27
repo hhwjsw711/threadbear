@@ -3,7 +3,7 @@
 // twice is harmless, and a runner that was offline writes each changed
 // row once when it's back.
 import { ConvexError, v } from 'convex/values';
-import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
+import { internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
 import { messageButton, resetHint, runnerDefaults, threadFields, updateFailedValidator, usagePool, usageResets, views } from './schema';
@@ -24,6 +24,22 @@ import { pushFailing, pushOff } from './pushHealth';
 import { archiveSoon } from './boxHooks';
 import { UPLOAD_CLAIM_MS, newClaim } from './uploads';
 import { issueToken as makeToken, issuePairingCode as makePairingCode, listTokens as allTokens, revokeToken as revokeOne, tokenInfo, tokenKind, MAX_DAYS } from './tokens';
+import { artifactChange, manageArtifact as manageHostedArtifact, readPublished as readPublishedArtifact } from './artifacts';
+
+export const manageArtifact = mutation({
+  args: { key: v.string(), source: v.string(), change: artifactChange },
+  returns: v.object({ url: v.union(v.string(), v.null()), changed: v.boolean() }),
+  handler: async (ctx, { key, source, change }) => {
+    await runnerAuth(ctx, key, 'manageArtifact');
+    return manageHostedArtifact(ctx, source, change);
+  },
+});
+
+export const hostedArtifact = internalQuery({
+  args: { slug: v.string() },
+  returns: v.union(v.null(), v.object({ title: v.string(), html: v.string() })),
+  handler: (ctx, { slug }) => readPublishedArtifact(ctx, slug),
+});
 
 // The second pass on anything a runner sends (docs/convex-backend.md, "Secret
 // scrubbing"): a runner scrubs first, but one on an older release doesn't, and

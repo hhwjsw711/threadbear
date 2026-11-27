@@ -5,6 +5,29 @@ use super::*;
 use std::fs;
 use std::path::PathBuf;
 
+#[test]
+fn publishing_reads_only_the_utf8_bytes_that_were_previewed() {
+    let folder = Folder::new();
+    let file = folder.dir.join("publish.html");
+    fs::write(&file, "<p>Before</p>").unwrap();
+    let (_, before) = scan(&file).unwrap();
+    assert_eq!(read_for_publish(&file, &before), Ok("<p>Before</p>".into()));
+    fs::write(&file, "<p>After</p>").unwrap();
+    assert!(read_for_publish(&file, &before)
+        .unwrap_err()
+        .contains("changed"));
+    fs::write(&file, [0xff]).unwrap();
+    let (_, invalid) = scan(&file).unwrap();
+    assert!(read_for_publish(&file, &invalid)
+        .unwrap_err()
+        .contains("UTF-8"));
+    fs::write(&file, vec![b'x'; 64 * 1024 + 1]).unwrap();
+    let (_, large) = scan(&file).unwrap();
+    assert!(read_for_publish(&file, &large)
+        .unwrap_err()
+        .contains("64 KiB"));
+}
+
 struct Folder {
     base: PathBuf,
     dir: PathBuf,

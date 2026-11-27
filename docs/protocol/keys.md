@@ -455,6 +455,7 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `otherRunnersThreads` | owner only | other runners' sidebars |
 | `threadIndexSince` | owner only | other runners' sidebars |
 | `issueToken` | owner only | a phone token reads everything and queues commands for every runner |
+| `manageArtifact` | owner only | publishes, changes or takes down a hosted HTML page |
 | `issuePairingCode` | owner only | a pairing code is traded for a phone token |
 | `listTokens` | owner only | |
 | `revokeToken` | owner only | |

@@ -173,7 +173,8 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 108;
+export const BACKEND_API_VERSION = 109;
+const ARTIFACTS_API_VERSION = 109;
 export const INDEX_POOL_API_VERSION = 101;
 export const COORDINATORS_API_VERSION = 102;
 export const NEXT_PICK_API_VERSION = 103;
@@ -2082,6 +2083,15 @@ export class ConvexSync {
   /** Why nothing can pair, or undefined while sync is on. */
   offReason(): string | undefined {
     return this.off;
+  }
+
+  async manageArtifact(source: string, change: Record<string, unknown>): Promise<unknown> {
+    const key = this.deps.key;
+    if (this.off || !key || !this.ownerKey() || (this.backendHeard && (this.backendApiVersion ?? 0) < ARTIFACTS_API_VERSION)) return { available: false };
+    // Before the first heartbeat, ask the deployment directly. A preview
+    // restored at launch can find its link without waiting for sync to wake.
+    const result = await this.backend('mutation', 'sync:manageArtifact', { key, source, change });
+    return { available: true, ...(result as { url: string | null; changed: boolean }) };
   }
 
   /**

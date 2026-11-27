@@ -267,7 +267,8 @@ export const appSchema = defineSchema({
     slug: v.string(),
     title: v.string(),
     html: v.string(),
-  }).index('by_slug', ['slug']),
+    source: v.optional(v.string()),
+  }).index('by_slug', ['slug']).index('by_source', ['source']),
   // One row per runner (the Mac, Tinker Desk later), written every minute.
   // A phone treats one not seen for 3 minutes as offline.
   runners: defineTable({

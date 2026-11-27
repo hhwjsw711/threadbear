@@ -180,6 +180,7 @@ export function ownsCard(c: Caller, card: { runnerId?: string }): boolean {
 //   shared: any key; nothing in it is another runner's to protect.
 export type Access = 'owner' | 'own' | 'shared';
 export const ACCESS: Record<string, Access> = {
+  manageArtifact: 'owner',
   upsertThreads: 'own',
   setPresence: 'own',
   removeThreads: 'own',

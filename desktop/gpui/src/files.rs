@@ -34,7 +34,7 @@ use gpui_kit::*;
 use crate::style::px;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 use threadbear_core::folders::{picture_size, FileRead};
 use threadbear_core::highlights::{self as core, Viewer};
 use threadbear_core::inbox::ThreadSummary;
@@ -234,6 +234,26 @@ pub(crate) struct LocalPage {
     /// A live page opened big from its card: the card's running page shows
     /// here (live_pages::pane_view), not the file's own preview.
     pub live: bool,
+    publication: Publication,
+}
+
+#[derive(Clone, Debug)]
+enum Publication {
+    Checking,
+    Unavailable,
+    Ready {
+        url: Option<String>,
+        error: Option<String>,
+        copied: bool,
+    },
+    Working,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PublishAction {
+    Status,
+    Publish,
+    Unpublish,
 }
 
 impl LocalPage {
@@ -517,6 +537,7 @@ impl SidePane {
                 scan: Some((false, String::new())),
                 allowed: false,
                 live: true,
+                publication: Publication::Unavailable,
             };
             self.files.open.insert(
                 thread.id.clone(),
@@ -530,6 +551,7 @@ impl SidePane {
             scan: None,
             allowed: false,
             live: false,
+            publication: Publication::Checking,
         };
         self.files.open.insert(
             thread.id.clone(),
@@ -560,12 +582,232 @@ impl SidePane {
                                 .allows(&page.real, digest)
                     });
                     page.scan = found;
+                    if page.scan.is_some() {
+                        pane.change_publication(&thread_id, opened, PublishAction::Status, cx);
+                    }
                 }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    fn change_publication(
+        &mut self,
+        thread_id: &str,
+        opened: u64,
+        action: PublishAction,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .previews
+            .get(thread_id)
+            .is_some_and(|preview| preview.opened == opened)
+        {
+            return;
+        }
+        let Some(open) = self
+            .files
+            .open
+            .get_mut(thread_id)
+            .filter(|file| file.opened == opened)
+        else {
+            return;
+        };
+        let FileBody::Page(page) = &mut open.body else {
+            return;
+        };
+        let Some((_, digest)) = page.scan.clone() else {
+            return;
+        };
+        let previous = match (&page.publication, action) {
+            (Publication::Checking, PublishAction::Status) => None,
+            (Publication::Ready { url, .. }, PublishAction::Publish) => url.clone(),
+            (Publication::Ready { url: Some(url), .. }, PublishAction::Unpublish) => {
+                Some(url.clone())
+            }
+            _ => return,
+        };
+        if action != PublishAction::Status {
+            page.publication = Publication::Working;
+        }
+        let (client, thread_id, real) =
+            (self.client.clone(), thread_id.to_owned(), page.real.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let params = match action {
+                PublishAction::Status => Ok(json!({ "action": "status", "path": real })),
+                PublishAction::Unpublish => Ok(json!({ "action": "unpublish", "path": real, "expected": previous })),
+                PublishAction::Publish => {
+                    let path = real.clone();
+                    cx.background_executor().spawn(async move {
+                        threadbear_core::local_preview::read_for_publish(Path::new(&path), &digest)
+                    }).await.map(|html| json!({ "action": "publish", "path": real, "html": html, "expected": previous }))
+                    .map_err(str::to_owned)
+                }
+            };
+            let result = match params {
+                Ok(params) => call(client, "artifacts.manage", params).await.map_err(|error| error.message),
+                Err(error) => Err(error),
+            };
+            this.update(cx, |this, cx| {
+                if !this.previews.get(&thread_id).is_some_and(|preview| preview.opened == opened) {
+                    return;
+                }
+                let Some(open) = this.files.open.get_mut(&thread_id).filter(|file| file.opened == opened) else { return };
+                let FileBody::Page(page) = &mut open.body else { return };
+                page.publication = match result {
+                    Ok(answer) if answer["available"] == true => Publication::Ready {
+                        url: answer["url"].as_str().map(str::to_owned),
+                        error: (action != PublishAction::Status && answer["changed"] != true)
+                            .then(|| "The published link changed. Check it and try again.".into()),
+                        copied: false,
+                    },
+                    Err(message) if action != PublishAction::Status => Publication::Ready { url: previous, error: Some(message), copied: false },
+                    _ => Publication::Unavailable,
+                };
+                cx.notify();
+            }).ok();
+        }).detach();
+    }
+
+    fn confirm_publish(
+        &mut self,
+        thread_id: String,
+        opened: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let buttons = [PromptButton::cancel("Cancel"), PromptButton::new("Publish")];
+        let answer = window.prompt(
+            PromptLevel::Info,
+            "Publish this HTML file?",
+            Some("Anyone with the link can read the file and its source. Only this file is uploaded."),
+            &buttons,
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if let Ok(1) = answer.await {
+                this.update(cx, |this, cx| {
+                    this.change_publication(&thread_id, opened, PublishAction::Publish, cx)
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn publish_bar(
+        &self,
+        page: &LocalPage,
+        thread_id: &str,
+        opened: u64,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        use crate::push_button::PushButton;
+        let (has_url, error, copied, working) = match &page.publication {
+            Publication::Ready { url, error, copied } => {
+                (url.is_some(), error.clone(), *copied, false)
+            }
+            Publication::Working => (false, None, false, true),
+            _ => return None,
+        };
+        let publish_thread = thread_id.to_owned();
+        let unpublish_thread = thread_id.to_owned();
+        let label = if working {
+            "Working…"
+        } else if has_url {
+            "Publish update"
+        } else {
+            "Publish"
+        };
+        let publish = PushButton::new(
+            "hl-page-publish",
+            label,
+            "Publish this file to a link anyone can open",
+        )
+        .busy(working)
+        .render(
+            cx,
+            cx.listener(move |this, _, window, cx| {
+                this.confirm_publish(publish_thread.clone(), opened, window, cx)
+            }),
+        );
+        let mut row = h_flex().gap(px(6.)).items_center().child(publish);
+        if has_url {
+            let copy_thread = thread_id.to_owned();
+            row = row
+                .child(
+                    PushButton::new(
+                        "hl-page-copy-link",
+                        if copied { "Copied" } else { "Copy link" },
+                        "Copy the link to the published page",
+                    )
+                    .render(
+                        cx,
+                        cx.listener(move |this, _, _, cx| {
+                            let Some(open) = this
+                                .files
+                                .open
+                                .get_mut(&copy_thread)
+                                .filter(|file| file.opened == opened)
+                            else {
+                                return;
+                            };
+                            let FileBody::Page(page) = &mut open.body else {
+                                return;
+                            };
+                            let Publication::Ready {
+                                url: Some(url),
+                                copied,
+                                ..
+                            } = &mut page.publication
+                            else {
+                                return;
+                            };
+                            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                            *copied = true;
+                            cx.notify();
+                        }),
+                    ),
+                )
+                .child(
+                    PushButton::new(
+                        "hl-page-unpublish",
+                        "Unpublish",
+                        "Take down the published page",
+                    )
+                    .render(
+                        cx,
+                        cx.listener(move |this, _, _, cx| {
+                            this.change_publication(
+                                &unpublish_thread,
+                                opened,
+                                PublishAction::Unpublish,
+                                cx,
+                            )
+                        }),
+                    ),
+                );
+        }
+        Some(
+            v_flex()
+                .flex_none()
+                .w_full()
+                .px(px(10.))
+                .py(px(6.))
+                .gap(px(4.))
+                .child(row)
+                .children(error.map(|message| {
+                    div()
+                        .text_size(px(style::size::SMALL))
+                        .text_color(p.secondary)
+                        .child(message)
+                }))
+                .into_any_element(),
+        )
     }
 
     /// Run them: these bytes of this page may run their scripts, from now
@@ -1562,6 +1804,7 @@ impl SidePane {
             FileBody::Page(page) => {
                 let page = page.clone();
                 let bar = page.asks().then(|| self.scripts_bar(&thread_id, p, cx));
+                let publish = self.publish_bar(&page, &thread_id, open.opened, p, cx);
                 // Until the scan's back nothing's made, so a page with scripts
                 // Mike already allowed doesn't load once without them first.
                 let body = if page.scan.is_none() {
@@ -1594,6 +1837,7 @@ impl SidePane {
                     .id("hl-page")
                     .size_full()
                     .children(bar)
+                    .children(publish)
                     .child(div().flex_1().min_h_0().child(body))
                     .into_any_element()
             }
@@ -1954,6 +2198,10 @@ impl SidePane {
                     FileBody::Page(page) => {
                         pane.insert("previewKind".into(), json!("web"));
                         pane.insert("previewText".into(), json!(path));
+                        if let Publication::Ready { url, .. } = &page.publication {
+                            pane.insert("artifactReady".into(), json!(true));
+                            pane.insert("artifactUrl".into(), json!(url));
+                        }
                         pane.insert(
                             "previewScripts".into(),
                             json!(if page.scripts_for().is_some() {
@@ -2138,6 +2386,24 @@ pub(crate) fn preview_command(
         return Ok(json!(format!("ok copied {format}")));
     }
     let id = thread.id.clone();
+    if let Some(action) = cmd["artifact"].as_str() {
+        let action = match action {
+            "publish" => PublishAction::Publish,
+            "unpublish" => PublishAction::Unpublish,
+            _ => return Err("choose publish or unpublish".into()),
+        };
+        let opened = side
+            .read(cx)
+            .files
+            .open
+            .get(&id)
+            .ok_or("no page is open")?
+            .opened;
+        side.update(cx, |pane, cx| {
+            pane.change_publication(&id, opened, action, cx)
+        });
+        return Ok(json!("ok artifact action"));
+    }
     // How the editor and the file on disk end, as the Swift app answers.
     let ends = |side: &Entity<SidePane>, cx: &App| -> String {
         let pane = side.read(cx);

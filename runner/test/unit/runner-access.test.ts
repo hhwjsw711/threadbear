@@ -38,6 +38,11 @@ test('a revoked runner key fails', () => {
   assert.equal(callerFrom('tbr_mac-mini', OWNER_KEY, { runnerId: MINI, revokedAt: 1 }), null);
 });
 
+test('only the deployment owner can manage a hosted artifact', () => {
+  assert.equal(mayCall(owner, 'manageArtifact'), true);
+  assert.equal(mayCall(mini, 'manageArtifact'), false);
+});
+
 test('keys are compared whole', () => {
   assert.equal(sameKey('abc', 'abc'), true);
   assert.equal(sameKey('abc', 'abd'), false);

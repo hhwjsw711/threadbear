@@ -32,6 +32,12 @@ No new external source is polled by this experiment. Coordinator identity is
 mirrored through the existing Convex sync; its private work registry stays on
 the owning runner.
 
+With **Publish HTML previews** on, the desktop app checks the bytes of the
+one file you choose to publish and passes them to the local owner runner.
+It posts that HTML, a title and a hash of the file's path to your own Convex
+deployment. No files beside the HTML are uploaded. Visiting the public link
+serves only the uploaded file in a sandbox. Unpublish deletes that copy.
+
 ## What setup and install add
 
 - **Git remotes** (`scripts/setup.mjs`, "Your copy"): Mike's repo becomes

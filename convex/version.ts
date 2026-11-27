@@ -521,4 +521,5 @@
 //    a backend of 107 or later; older phones ignore them.
 // 108: a runner request's claim requires a completed requests.confirmStart
 //    command from the runner that still held its approval card.
-export const API_VERSION = 108;
+// 109: the owner runner can publish, look up and remove hosted HTML artifacts.
+export const API_VERSION = 109;
