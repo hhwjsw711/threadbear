@@ -967,6 +967,9 @@ Coordinator read-only and helper non-escalation boundaries are enforced in each
 adapter before Full access (Claude `PreToolUse`, Codex read-only sandbox and
 approval refusal, ACP `session/request_permission` and Cursor `ask` mode), plus
 hidden helper suppression of user approval and question cards.
+When the runner blocks a coordinator or helper's ACP permission request, the
+transcript shows the policy reason even if the agent sends no final tool result.
+ACP sends the agent the usual rejected permission outcome.
 Claude coordinator sessions explicitly offer the built-in file search tools
 Grep and Glob. Native Claude Code builds otherwise offer Bash for those searches.
 

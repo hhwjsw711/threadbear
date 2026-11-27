@@ -30,7 +30,7 @@ import { SessionNotFoundError, SessionUsageLimitError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
 import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, failureNote, genericRpcMessage, isFatalExecutionError, laterFailure, outOfUsage, textFromUpdate, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
 import { AcpMcpServer } from './mcp-http.ts';
-import { AcpNormalizer, absolutePath, diffsAgreeWithInput, hasEditContent, hasOddPatchHeader, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpToolCall } from './normalize.ts';
+import { AcpNormalizer, absolutePath, diffsAgreeWithInput, hasEditContent, hasOddPatchHeader, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpOutput, type AcpToolCall } from './normalize.ts';
 
 // Where an execute call can say it runs (OpenCode's bash tool: workdir).
 const FOLDER_KEYS = ['workdir', 'cwd', 'workingDirectory', 'directory', 'dir'];
@@ -1036,7 +1036,7 @@ export class AcpSession implements AgentSession {
     });
   }
 
-  private emit(outs: AdapterOutput[]): void {
+  private emit(outs: AcpOutput[]): void {
     for (const o of outs) {
       if (this.mcpOwnsEndTurn && o.kind === 'event') {
         if (o.event.type === 'tool.call' && o.event.name === END_TURN_FULL_NAME) {
@@ -1044,10 +1044,16 @@ export class AcpSession implements AgentSession {
           continue;
         }
         if (o.event.type === 'tool.result' && this.suppressedToolIds.delete(o.event.itemId)) {
+          // A policy refusal here prevented end_turn from reaching MCP, so
+          // there is no MCP row to explain it.
+          if (o.toolRefusal) this.sink.output({ kind: 'event', event: { type: 'system.note', text: o.toolRefusal } });
           continue;
         }
       }
-      this.sink.output(o);
+      if (o.kind === 'event' && o.event.type === 'tool.result' && o.toolRefusal) {
+        const { itemId, images } = o.event;
+        this.sink.output({ kind: 'event', event: { type: 'tool.result', itemId, ok: false, text: o.toolRefusal, truncated: false, images } });
+      } else this.sink.output(o);
     }
   }
 
@@ -1123,12 +1129,13 @@ export class AcpSession implements AgentSession {
   // allow" is kept by the runner instead (EDIT_RULE and commandRule).
   // `call`: the request's tool call id in the normalizer (noteCall), which
   // learns whether it went ahead.
-  private answer(id: RequestId, options: PermissionOption[], allow: boolean, call?: string): void {
+  private answer(id: RequestId, options: PermissionOption[], allow: boolean, call?: string, refusal?: string): void {
     const kind = allow ? 'allow_once' : 'reject_once';
     const optionId = options.find((o) => o?.kind === kind)?.optionId;
-    if (call !== undefined) this.normalizer.answered(call, allow && optionId !== undefined);
+    if (call !== undefined) this.normalizer.answered(call, allow && optionId !== undefined, refusal);
     // No plain allow or reject on offer: nothing ever goes ahead by default.
     this.proc.respond(id, optionId ? { outcome: { outcome: 'selected', optionId } } : { outcome: { outcome: 'cancelled' } });
+    this.syncQuotaDeadline();
   }
 
   // One of Agent Archive's read tools, by name, with every frame of the call
@@ -1165,7 +1172,11 @@ export class AcpSession implements AgentSession {
           .map((q) => ({ question: String(q.question), header: typeof q.header === 'string' ? q.header : 'Helper question', options: Array.isArray(q.options) ? q.options.filter((o): o is { label: string; description?: string } => isPlainObject(o) && typeof o.label === 'string') : [], multiSelect: Boolean(q.multiSelect ?? q.is_multi_select) }));
         if (qs.length) coord.helperQuestion?.(this.opts.threadId, qs);
       }
-      if (refused) return this.answer(id, options, false, seen.id);
+      if (refused) {
+        // ACP has no reason field for a rejected permission. Keep the
+        // reason on our row even if the agent calls it a user decision.
+        return this.answer(id, options, false, seen.id, `Threadbear blocked this tool call. ${refused}`);
+      }
     }
     // Read at the moment it's asked, not when the turn began.
     if (this.mode === 'full') return this.answer(id, options, true, seen.id);

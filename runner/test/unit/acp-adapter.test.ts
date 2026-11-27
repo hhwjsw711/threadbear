@@ -143,6 +143,7 @@ test('Ask: denying a card stops the write', async () => {
   await turn(r, s, `write ${file} hi`);
   assert.equal(fs.existsSync(file), false);
   assert.deepEqual((r.log().find((l) => l.answered) as { answered: unknown }).answered, { outcome: { outcome: 'selected', optionId: 'reject' } });
+  assert.deepEqual(r.outputs.flatMap((o) => o.kind === 'event' && o.event.type === 'tool.result' ? [o.event.text] : []), ['rejected']);
 });
 
 // The test Mike asked for: without the row's env the pretend agent, like the
@@ -1289,6 +1290,58 @@ test('Antigravity: no read goes ahead for an MCP tool, or with a line number tha
 const frame = (s: AcpSession, update: Record<string, unknown>) =>
   (s as unknown as { proc: { onNotification: (m: string, p: unknown) => void } }).proc.onNotification('session/update', { update: { sessionUpdate: 'tool_call', ...update } });
 
+test('ACP coordinator refusals show the policy reason, including when the agent never reports a result', async () => {
+  const r = rig({ mode: 'full', opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } } });
+  const s = r.start();
+  await ready(r, s);
+  const shell = { toolCallId: 'shell-1', kind: 'execute', name: 'shell', rawInput: { command: 'echo hello' } };
+  frame(s, { ...shell, status: 'in_progress' });
+  const refused = fakeRequest(r, s, shell);
+  assert.equal(s['normalizer'].hasRunningTools(), false);
+  const provider = { ...shell, sessionUpdate: 'tool_call_update', status: 'failed', rawOutput: 'The user declined this tool call' };
+  frame(s, provider);
+  frame(s, provider);
+  const skill = { toolCallId: 'skill-1', kind: 'other', name: 'skill' };
+  const noUpdate = fakeRequest(r, s, skill, []);
+  frame(s, { ...skill, sessionUpdate: 'tool_call_update', rawInput: { name: 'example' }, rawOutput: 'The user declined this tool call' });
+  assert.equal(events(r.outputs, 'tool.call').length, 1, 'the policy refusal waits for a terminal frame or turn cleanup');
+  await turn(r, s, 'next', 'next');
+  assert.deepEqual(refused, [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  assert.deepEqual(noUpdate, [{ outcome: { outcome: 'cancelled' } }]);
+  assert.equal(r.cards.length, 0);
+  const toolRows = r.outputs.flatMap((o) => o.kind === 'event' && o.event.type === 'tool.call' ? [o.event.itemId] : []);
+  assert.deepEqual(toolRows, ['shell-1', 'skill-1']);
+  const denied = r.outputs.flatMap((o) => o.kind === 'event' && o.event.type === 'tool.result' ? [{ id: o.event.itemId, ok: o.event.ok, text: o.event.text }] : []);
+  assert.deepEqual(denied.map((o) => [o.id, o.ok]), [['shell-1', false], ['skill-1', false]]);
+  for (const o of denied) assert.match(o.text, /^Threadbear blocked this tool call\..*startHelper/);
+});
+
+test('ACP shows the policy refusal when the end_turn MCP server never receives the call', async () => {
+  let calls = 0;
+  const paused = 'The coordinator is paused. Wait for Resume.';
+  const r = rig({
+    mode: 'full',
+    opts: { coordinator: { role: 'coordinator', checkTool: () => paused } },
+    toolsFor: () => [{ name: 'end_turn', description: 'End the turn', inputSchema: {}, handler: async () => {
+      calls++;
+      return { content: [{ type: 'text', text: 'Noted.' }] };
+    } }],
+  });
+  const s = r.start();
+  await ready(r, s);
+  const endTurn = { toolCallId: 'end-1', kind: 'other', name: 'mcp__threadbear__end_turn' };
+  const refused = fakeRequest(r, s, endTurn);
+  const repeated = fakeRequest(r, s, endTurn);
+  frame(s, { ...endTurn, sessionUpdate: 'tool_call_update', status: 'failed', rawOutput: 'The user declined this tool call' });
+  assert.deepEqual(refused, [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  assert.deepEqual(repeated, refused);
+  assert.equal(calls, 0);
+  assert.equal(r.cards.length, 0);
+  const notes = r.outputs.flatMap((o) => o.kind === 'event' && o.event.type === 'system.note' ? [o.event.text] : []);
+  assert.deepEqual(notes, [`Threadbear blocked this tool call. ${paused}`]);
+  assert.equal(events(r.outputs, 'tool.result').length, 0);
+});
+
 test('Antigravity: another MCP server\'s tool is never taken for a local command or edit, and no saved rule covers it', async () => {
   const r = agy({ deny: true });
   const s = r.start();
@@ -2162,6 +2215,29 @@ test('Antigravity: a fatal harness error followed by a separate failed status en
   r.start().send({ id: 'split-harness', text: 'split_harness', images: [] });
   await r.exited();
   assert.match(r.exitError()?.message ?? '', /Harness process exited unexpectedly/);
+});
+
+test('Antigravity: coordinator refusals preserve quota diagnostics and restore the idle deadline', { timeout: 15_000 }, async (t) => {
+  const r = agy({ mode: 'full', opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } } });
+  const s = r.start();
+  await ready(r, s);
+  s.send({ id: 'executor-429', text: 'hang', images: [] });
+  await until(() => r.log().some((entry) => typeof entry.prompt === 'string' && entry.prompt.endsWith('hang')));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const waiting = { toolCallId: 'shell-2', kind: 'execute', rawInput: { command: 'echo waiting' } };
+  frame(s, { ...waiting, status: 'in_progress' });
+  const shell = { toolCallId: 'shell-1', kind: 'execute', rawInput: { command: 'echo hello' } };
+  fakeRequest(r, s, shell);
+  frame(s, { ...shell, sessionUpdate: 'tool_call_update', rawOutput: 'Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")' });
+  frame(s, { ...shell, sessionUpdate: 'tool_call_update', status: 'failed' });
+  const toolResults = r.outputs.flatMap((o) => o.kind === 'event' && o.event.type === 'tool.result' ? [o.event.text] : []);
+  assert.equal(toolResults.length, 1);
+  assert.match(toolResults[0], /^Threadbear blocked this tool call\./);
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  assert.equal(r.exitError(), null, 'a pending tool gives the provider more time');
+  fakeRequest(r, s, waiting);
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  assert.match(r.exitError()?.message ?? '', /is out of Gemini usage.*Individual quota reached/i);
 });
 
 for (const status of ['success', 'failure', 'retry']) {

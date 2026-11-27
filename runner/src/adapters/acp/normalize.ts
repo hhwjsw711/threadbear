@@ -10,6 +10,10 @@ import { firstLineSafely } from '../../safe-cut.ts';
 import { truncateResultText, type NormalizerContext } from '../context.ts';
 import type { AdapterOutput } from '../types.ts';
 
+// The reason to show for a denied call. Keep the provider's result intact
+// in the adapter, which also reads it for executor and quota failures.
+export type AcpOutput = AdapterOutput & { toolRefusal?: string };
+
 export type AcpToolCall = {
   toolCallId?: string;
   title?: string;
@@ -53,6 +57,8 @@ type Tool = {
   ran?: boolean;
   // Whether the request was let go ahead, once it's answered.
   allowed?: boolean;
+  // Why Threadbear refused the request without asking the user.
+  refusal?: string;
   // The files the request named outright (namedFiles).
   askedFiles?: string[];
   // When a tool runs under a second ID, keep the approval link even if
@@ -339,9 +345,9 @@ export class AcpNormalizer {
     return t;
   }
 
-  handle(update: unknown): AdapterOutput[] {
+  handle(update: unknown): AcpOutput[] {
     if (!isPlainObject(update)) return [];
-    const out: AdapterOutput[] = [];
+    const out: AcpOutput[] = [];
     switch (update.sessionUpdate) {
       case 'agent_message_chunk':
         this.chunk(update, 'text', out);
@@ -453,9 +459,11 @@ export class AcpNormalizer {
 
   // How a request was answered: only one let go ahead can be the call an
   // agent then runs under another id.
-  answered(id: string, allowed: boolean): void {
+  answered(id: string, allowed: boolean, refusal?: string): void {
     const t = this.tools.get(id);
-    if (t) t.allowed = allowed;
+    if (!t || t.done) return;
+    t.allowed = allowed;
+    t.refusal = refusal;
   }
 
   // The row for a request that's getting a card, with its preview.
@@ -494,7 +502,7 @@ export class AcpNormalizer {
     return found;
   }
 
-  private toolUpdate(u: AcpToolCall, out: AdapterOutput[]): void {
+  private toolUpdate(u: AcpToolCall, out: AcpOutput[]): void {
     if (typeof u.toolCallId !== 'string' || !u.toolCallId) return;
     // Later frames may name the file after the tool's row is already out.
     const had = this.tools.get(u.toolCallId);
@@ -520,6 +528,9 @@ export class AcpNormalizer {
     // Agents can open a call with nothing filled in yet (OpenCode: title
     // "write", rawInput {}), so the row waits for its input or its start.
     const over = u.status === 'completed' || u.status === 'failed';
+    // An unseen refusal appears with its result, even when the provider
+    // sends some of the call's details first.
+    if (t.refusal && !t.emitted && !over) return;
     const under = u.status === 'in_progress' || over;
     // A use_tool call's row waits for the tool it names (its arguments can
     // stream in after it starts), or its row would be use_tool for good.
@@ -552,7 +563,7 @@ export class AcpNormalizer {
     }
   }
 
-  private emitResult(t: Tool, ok: boolean, out: AdapterOutput[]): void {
+  private emitResult(t: Tool, ok: boolean, out: AcpOutput[]): void {
     t.done = true;
     const texts: string[] = [];
     const images: ImageRef[] = [];
@@ -593,7 +604,11 @@ export class AcpNormalizer {
         }
       }
     }
-    out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images } });
+    out.push({
+      kind: 'event',
+      event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images },
+      ...(!ok && t.refusal ? { toolRefusal: t.refusal } : {}),
+    });
   }
 
   isNewToolWork(toolCallId: string, earlierIds: ReadonlySet<string>): boolean {
@@ -618,23 +633,28 @@ export class AcpNormalizer {
 
   hasRunningTools(): boolean {
     for (const tool of this.tools.values()) {
-      if (tool.ran && !tool.done) return true;
+      if (tool.ran && !tool.done && !tool.refusal) return true;
     }
     return false;
   }
 
   // The turn has ended, or the agent has gone: no more updates are coming
   // for anything still open.
-  closeOpen(reason: string): AdapterOutput[] {
-    const out = this.flush();
+  closeOpen(reason: string): AcpOutput[] {
+    const out: AcpOutput[] = this.flush();
     for (const t of this.tools.values()) {
       if (t.done) continue;
       t.done = true;
-      // Never shown (a request allowed without a card that didn't run): no
-      // row, and nothing later can take it over (askedFor).
+      // A refused request still needs an explanation if there was no final
+      // frame. Other calls never shown stay hidden (see askedFor).
+      if (t.refusal) this.emitCall(t, out);
       if (!t.emitted) continue;
       this.emitDiffs(t, out);
-      out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok: false, text: reason, truncated: false, images: [] } });
+      out.push({
+        kind: 'event',
+        event: { type: 'tool.result', itemId: t.row, ok: false, text: reason, truncated: false, images: [] },
+        ...(t.refusal ? { toolRefusal: t.refusal } : {}),
+      });
     }
     return out;
   }
