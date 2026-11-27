@@ -817,7 +817,7 @@ pub fn needs_you_count<'a>(
             t.review_waiting()
                 || t.needs_answer()
                 || t.waiting_on_mike()
-                || (t.needs_you && !t.working_in_background())
+                || (t.needs_you && !t.busy() && !t.working_in_background())
                 || !(t.busy() || t.working_in_background())
         })
         .count()
@@ -1022,7 +1022,7 @@ fn section_of_legacy(
     } else if t.review_waiting()
         || t.needs_answer()
         || t.waiting_on_mike()
-        || (t.needs_you && !t.working_in_background())
+        || (t.needs_you && !t.busy() && !t.working_in_background())
     {
         "inbox"
     } else if t.busy() || t.working_in_background() {

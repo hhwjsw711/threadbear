@@ -970,7 +970,7 @@ that isn't archived):
 | `sending` | Running | Only an app's own guess while a message is on its way; never sent. |
 | `card` | Inbox | Stuck on a card only Mike can answer. First in every order. |
 | `review` | Inbox | A design review waits on his pick, the turn over. |
-| `needsYou` | Inbox | The last turn asked him for something he hasn't done, read or not, or ended without saying and he hasn't read it, or it's marked unread. |
+| `needsYou` | Inbox | No turn or job going, and the last turn asked him for something he hasn't done, read or not, or ended without saying and he hasn't read it, or it's marked unread. A busy thread with an unread reply is `working` (Running) until its turn ends. |
 | `limit` | Inbox | Out of usage (`waitingForRoom`); carries on at the reset, but counts as wanting him. |
 | `done` | Inbox | Finished with nothing for him. |
 | `scheduled` | Hibernating | Idle, nothing for him, and a schedule will message it (never an active project coordinator, which stays awake as `done`). |

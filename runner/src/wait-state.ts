@@ -40,7 +40,7 @@ export const WAIT_STATES: Record<WaitState, StateInfo> = {
   sending: { section: 'running', description: "An app's own guess while a message the user sent is on its way and the runner hasn't started the turn. The runner never sends it." },
   card: { section: 'inbox', description: 'Its turn is stuck on a card only the user can answer (a permission, a question, ask_secret). It runs out, so it goes first in every order.' },
   review: { section: 'inbox', description: 'The turn is over and a design review (show_options) waits on his pick.' },
-  needsYou: { section: 'inbox', description: "The last turn asked the user for something he hasn't done yet, or ended without saying and he hasn't read it, or it's marked unread." },
+  needsYou: { section: 'inbox', description: "No turn or job is going, and the last turn asked the user for something he hasn't done yet, or ended without saying and he hasn't read it, or it's marked unread." },
   limit: { section: 'inbox', description: "Its login ran out of usage; it carries on by itself when the limit resets." },
   done: { section: 'inbox', description: 'Finished with nothing for the user (said nothing, or read). Follow-ups and open loose ends keep it here.' },
   scheduled: { section: 'hibernating', description: 'Idle with nothing for the user, and a schedule will message it.' },
@@ -143,7 +143,10 @@ export function waitStateOf(t: WaitInputs, opts: { now: number; scheduled: boole
   const background = Boolean(t.background?.length);
   if (t.status === 'waiting') return 'card';
   if ((t.pendingReviews ?? 0) > 0 && !busy && !background) return 'review';
-  if (waitingOnMike(t, busy) || (t.needsYou && !(background && !busy))) return 'needsYou';
+  // An unread reply waits for the turn and its jobs to end: a busy thread is
+  // under Running even then, and back in the Inbox once it's done (Mike, 27
+  // Nov 2026, after a review round's turn sat in the Inbox as "Working").
+  if (waitingOnMike(t, busy) || (t.needsYou && !busy && !background)) return 'needsYou';
   if (turn) return 'working';
   if (background || (opts.helpers ?? 0) > 0) return 'job';
   if (t.status === 'idle' && t.needs !== 'you' && !t.waitingForRoom && opts.scheduled) return 'scheduled';

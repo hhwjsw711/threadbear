@@ -39,7 +39,8 @@
     { "name": "Mike's own words snooze with commits unlanded", "thread": { "snoozedUntil": "2026-11-24T00:00:00Z", "wakeWhen": { "said": "when CI is green", "topic": "CI is green" }, "looseEnds": { "seq": 1, "ends": [{ "kind": "unlanded", "text": "1 commit isn't on main" }] } }, "state": "hibernating", "section": "hibernating", "urgency": 4, "counted": false },
     { "name": "a card left open while hibernating", "thread": { "status": "waiting", "snoozedUntil": "2026-11-24T00:00:00Z" }, "state": "hibernating", "section": "hibernating", "urgency": 4, "counted": false },
     { "name": "archived mid-turn", "thread": { "status": "running", "archivedAt": "2026-11-22T00:00:00Z" }, "state": "archived", "section": "archived", "urgency": 4, "counted": false },
-    { "name": "marked unread mid-turn", "thread": { "status": "running", "needsYou": true }, "state": "needsYou", "section": "inbox", "urgency": 2, "counted": true },
+    { "name": "marked unread mid-turn", "thread": { "status": "running", "needsYou": true }, "state": "working", "section": "running", "urgency": 4, "counted": false },
+    { "name": "busy again with an old reply unread", "thread": { "status": "running", "needsYou": true, "needs": "you", "asks": [{}] }, "state": "working", "section": "running", "urgency": 4, "counted": false },
     { "name": "starred and running", "thread": { "status": "running", "starredAt": "2026-11-20T00:00:00Z" }, "state": "working", "section": "starred", "urgency": 4, "counted": false },
     { "name": "starred and hibernating", "thread": { "snoozedUntil": "2026-11-24T00:00:00Z", "starredAt": "2026-11-20T00:00:00Z" }, "state": "hibernating", "section": "starred", "urgency": 4, "counted": false },
     { "name": "starred and archived", "thread": { "archivedAt": "2026-11-22T00:00:00Z", "starredAt": "2026-11-20T00:00:00Z" }, "state": "archived", "section": "archived", "urgency": 4, "counted": false }
