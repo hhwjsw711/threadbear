@@ -32,7 +32,7 @@ test('which variables are masked', () => {
   assert.deepEqual(valuesOfVariable('WEBHOOK', value), [value], 'random-looking, whatever it is called');
   assert.deepEqual(valuesOfVariable('API_KEY', 'short'), [], 'too short to mask safely');
   assert.deepEqual(valuesOfVariable('VITE_PUBLIC_KEY', value), [], 'ships in a client bundle');
-  assert.deepEqual(valuesOfVariable('CONVEX_URL', 'https://opulent-moose-249.ap-southeast-2.convex.cloud'), []);
+  assert.deepEqual(valuesOfVariable('CONVEX_URL', 'https://demo-bear-123.ap-southeast-2.convex.cloud'), []);
   assert.deepEqual(valuesOfVariable('CONVEX_DEPLOYMENT', 'dev:earnest-puffin-640'), []);
   assert.deepEqual(valuesOfVariable('DEBUG_LEVEL', 'verbose-but-ordinary-words'), []);
   // Fixed: a random one now and then doesn't look random enough, and this flaked.

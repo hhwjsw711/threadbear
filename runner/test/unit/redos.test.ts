@@ -139,7 +139,7 @@ test('F25: .env files for the secret mask parse as before', () => {
 
 test('F25: an address with a password in it still counts as a secret', () => {
   assert.equal(looksRandom('postgres://me:s3cretPassw0rd@db.example.com/x'), true);
-  assert.equal(looksRandom('https://opulent-moose-249.ap-southeast-2.convex.cloud'), false);
+  assert.equal(looksRandom('https://demo-bear-123.ap-southeast-2.convex.cloud'), false);
   assert.equal(looksRandom('https://a:@host.example.com/aaaaaaaaaaaaaaaa'), false, 'no password');
   assert.equal(looksRandom('https://:pw@host.example.com/aaaaaaaaaaaaaaaa1'), false, 'no user');
   const url = 'postgres://me:s3cretPassw0rd99@db.example.com/x';

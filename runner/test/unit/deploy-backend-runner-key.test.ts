@@ -13,8 +13,8 @@ test("a Mac with a runner key doesn't deploy the backend, deploy key or not", ()
   const home = tmpDir();
   fs.mkdirSync(path.join(home, 'secrets'), { recursive: true });
   fs.writeFileSync(path.join(home, 'secrets', 'convex-key'), 'tbr_mine\n');
-  fs.writeFileSync(path.join(home, 'secrets', 'convex-deploy.env'), 'CONVEX_DEPLOY_KEY=prod:opulent-moose-249|x\n');
-  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ sync: { url: 'https://opulent-moose-249.ap-southeast-2.convex.cloud' } }));
+  fs.writeFileSync(path.join(home, 'secrets', 'convex-deploy.env'), 'CONVEX_DEPLOY_KEY=prod:demo-bear-123|x\n');
+  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ sync: { url: 'https://demo-bear-123.ap-southeast-2.convex.cloud' } }));
   const repo = path.resolve(import.meta.dirname, '../../..');
   const r = spawnSync(process.execPath, [path.join(repo, 'runner/scripts/deploy-backend.mjs'), '--home', home, '--repo', repo], { encoding: 'utf8', env: { ...process.env, ...(IS_WINDOWS ? {} : { PATH: '/usr/bin:/bin' }) } });
   assert.equal(r.status, 0, r.stderr);

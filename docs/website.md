@@ -1,7 +1,8 @@
 # The website
 
 Threadbear in a browser, so a thread has a link you can paste anywhere:
-`https://opulent-moose-249.ap-southeast-2.convex.site/t/<threadId>`.
+`https://<your-deployment>.convex.site/t/<threadId>`, or your custom
+HTTP Actions domain followed by `/t/<threadId>`.
 Built 28 Oct 2026 (thread 66935d23).
 
 ## What it is
@@ -58,7 +59,8 @@ Built 28 Oct 2026 (thread 66935d23).
   page (below). Unknown paths fall back to `index.html`, so `/t/<id>`
   works cold.
 - The Mac app's thread `...` menu has **Open on the web**. It takes the site
-  from `runner.status`'s `sync.url` (`.convex.cloud` → `.convex.site`), so
+  from `runner.status`'s `sync.site` (configured in runner.json), falling
+  back to `sync.url` (`.convex.cloud` → `.convex.site`), so
   it only shows while sync is on.
 
 ## Hosted HTML artifacts
@@ -242,10 +244,30 @@ In a thread's worktree there's no `.env.local` (it isn't in git), and the
 upload says it "Could not reach component staticHosting": copy the main
 checkout's in for the upload and delete it after.
 
+## Custom domain
+
+Add your domain in the production deployment's **Settings > Custom Domains**
+with **HTTP Actions** as the request destination. Set the CNAME and verification
+TXT records shown there, then wait for verification and test HTTPS before
+changing any links. Override `CONVEX_SITE_URL` on that page and set `sync.site`
+in each runner's runner.json to `https://<your-domain>`. Runners read that
+configuration at startup. `npm run web:sign-in` uses `sync.site` too.
+
+The iPhone and Android apps get the website address from `phone:me.site`,
+which reads `CONVEX_SITE_URL`. Their Convex API address, and each runner's
+`sync.url`, stay on the `.convex.cloud` endpoint: a custom HTTP Actions domain
+does not serve the sync API. Keep both original domains enabled so existing
+links, paired devices and browser sessions continue working.
+
+Browser sign-in uses one-use pairing codes, with no external OAuth callback.
+A new origin has its own browser storage, so open it signed in from the Mac
+or with `npm run web:sign-in`. The automatic backend deploy rebuilds the
+website when `sync.site` changes, adding that address to its image policy
+through `VITE_CONVEX_SITE_URL`. For a manual website build, set that variable
+to the custom address so shared pictures also work through the original host.
+
 ## Not done
 
-- A custom domain (e.g. threadbear.mikecann.app) instead of the
-  `.convex.site` host.
 - Signing in from a browser without the Mac to hand (e.g. approve a new
   browser from the iPhone app). A QR code for another device's browser is
   still `npm run web:sign-in -- --qr`.

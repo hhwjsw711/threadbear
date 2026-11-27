@@ -9,7 +9,7 @@ import { runnerKeysCommand, remoteCommand, REMOTE_ADMIN_CHECK, convexScratchDir,
 import { spawnSync } from 'node:child_process';
 import { convexPoster } from '../../src/sync.ts';
 
-const URL_ = 'https://opulent-moose-249.ap-southeast-2.convex.cloud';
+const URL_ = 'https://demo-bear-123.ap-southeast-2.convex.cloud';
 
 const OWN_ID = 'laptop000001';
 
@@ -272,8 +272,8 @@ test('tb runner add warns when the other Mac also has a deploy key or a Convex l
   assert.match(out, /convex logout/);
   // Revoke on Convex's side first, by name, then rotate: deleting a file revokes nothing.
   assert.match(out, /[Rr]evoke/);
-  assert.match(out, /deployment token delete threadbear-panel-mac-mini-abc123 --deployment opulent-moose-249/);
-  assert.match(out, /https:\/\/dashboard\.convex\.dev\/d\/opulent-moose-249\/settings/);
+  assert.match(out, /deployment token delete threadbear-panel-mac-mini-abc123 --deployment demo-bear-123/);
+  assert.match(out, /https:\/\/dashboard\.convex\.dev\/d\/demo-bear-123\/settings/);
   assert.match(out, /rotate-owner/);
   // Where a CLI login likely came from, and that rotating isn't always needed.
   assert.match(out, /earlier npx convex login/);
@@ -302,7 +302,7 @@ test("tb runner check on a Mac with a runner key says if a deploy key is still t
   // The Convex panel's cached deploy keys count too.
   fs.rmSync(path.join(s.cfg.home, 'secrets', 'convex-deploy.env'));
   fs.mkdirSync(path.join(s.cfg.home, 'secrets', 'convex-panels'));
-  fs.writeFileSync(path.join(s.cfg.home, 'secrets', 'convex-panels', 'opulent-moose-249.json'), JSON.stringify({ name: 'threadbear-panel-mac-mini-ff00aa', adminKey: 'prod:secret' }));
+  fs.writeFileSync(path.join(s.cfg.home, 'secrets', 'convex-panels', 'demo-bear-123.json'), JSON.stringify({ name: 'threadbear-panel-mac-mini-ff00aa', adminKey: 'prod:secret' }));
   s.printed.length = 0;
   assert.equal(await runnerKeysCommand(s.cfg, ['check'], {}, s.deps), 1);
   assert.match(s.printed.join('\n'), /threadbear-panel-mac-mini-ff00aa/);
@@ -442,7 +442,7 @@ test("rotate-owner won't run while Convex lists a deploy key this Mac didn't mak
   const out = s.printed.join('\n');
   assert.match(out, /threadbear-runner-mac-mini/);
   assert.match(out, /threadbear-runner,/);
-  assert.match(out, /dashboard\.convex\.dev\/d\/opulent-moose-249\/settings/);
+  assert.match(out, /dashboard\.convex\.dev\/d\/demo-bear-123\/settings/);
   assert.match(out, /CLI login/);
   assert.doesNotMatch(out, /\u001b/);
   assert.doesNotMatch(out, /token delete x; curl/);

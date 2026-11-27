@@ -89,13 +89,12 @@ dashboard panel.
   reads back through the HTTP API and the phone queries. It skips
   without a local deployment in `.env.local`.
 
-**Deployments** (made 28 Oct, after Mike freed the team's deployment
-quota by deleting its 41 `temp-*`/`tmp-*` projects), all in Sydney
-(`aws-ap-southeast-2`):
+**Deployments.** These names are examples. Use your dashboard's deployment
+names and URLs; a regional deployment may include its region in the hostname.
 
 | | name | URL |
 |---|---|---|
-| prod | `opulent-moose-249` | `https://opulent-moose-249.ap-southeast-2.convex.cloud` |
+| prod | `demo-bear-123` | `https://demo-bear-123.ap-southeast-2.convex.cloud` |
 | dev | `earnest-puffin-640` | `https://earnest-puffin-640.ap-southeast-2.convex.cloud` |
 | local (e2e only) | `local-mikec-threadbear-1` | `http://127.0.0.1:3210` |
 

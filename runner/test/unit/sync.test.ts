@@ -574,7 +574,7 @@ test('sync.url has to be https, or plain http to this Mac; anything else leaves 
     fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ sync }));
     return loadConfig({ THREADBEAR_HOME: home, THREADBEAR_PORT: '0', THREADBEAR_CLAUDE_MAIN_JSON: path.join(home, 'none.json'), ...env }).sync;
   };
-  assert.equal(syncWith({ url: 'https://opulent-moose-249.ap-southeast-2.convex.cloud' }).url, 'https://opulent-moose-249.ap-southeast-2.convex.cloud');
+  assert.equal(syncWith({ url: 'https://demo-bear-123.ap-southeast-2.convex.cloud' }).url, 'https://demo-bear-123.ap-southeast-2.convex.cloud');
   assert.equal(syncWith({ url: 'http://127.0.0.1:3210' }).url, 'http://127.0.0.1:3210');
   // The e2e test's local backend.
   assert.equal(syncWith({}, { THREADBEAR_SYNC_URL: 'http://127.0.0.1:3210' }).url, 'http://127.0.0.1:3210');

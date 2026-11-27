@@ -58,7 +58,7 @@ test('revoking a token drops its phones and old rows of its name', () => {
 });
 
 test('the relay only calls back to a Convex cloud deployment address', () => {
-  assert.equal(convexSite('https://opulent-moose-249.ap-southeast-2.convex.site'), 'https://opulent-moose-249.ap-southeast-2.convex.site');
+  assert.equal(convexSite('https://demo-bear-123.ap-southeast-2.convex.site'), 'https://demo-bear-123.ap-southeast-2.convex.site');
   assert.equal(convexSite('https://happy-otter-123.convex.site/'), 'https://happy-otter-123.convex.site');
   for (const bad of [undefined, '', 'not a url', 'http://happy-otter-123.convex.site', 'https://happy-otter-123.convex.site:8443', 'https://happy-otter-123.convex.site/x', 'https://happy-otter-123.convex.site?x=1', 'https://u:p@happy-otter-123.convex.site', 'https://evil.com', 'https://convex.site.evil.com', 'https://a.b.c.convex.site', 'http://127.0.0.1:3211', 'https://-x.convex.site']) {
     assert.equal(convexSite(bad), null, String(bad));

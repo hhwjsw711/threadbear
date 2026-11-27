@@ -17,16 +17,20 @@
 import AppKit
 import CoreImage
 
-// The sites of this install's deployments: production from runner.json's
-// sync.url (what setup wrote), dev from the repo's .env.local. Both
-// .convex.cloud addresses turned into .convex.site, where the website is.
-func siteOf(_ cloud: String?) -> String? {
+// Production uses runner.json's sync.site for a custom domain or a
+// self-hosted website. Otherwise use the deployment's .convex.site twin.
+// The dev deployment still comes from the repo's .env.local.
+func siteOf(_ cloud: String?, site: String? = nil) -> String? {
+    if let site = site?.trimmingCharacters(in: .whitespacesAndNewlines), !site.isEmpty {
+        return site.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
     guard let cloud, cloud.contains(".convex.cloud") else { return nil }
     return cloud.replacingOccurrences(of: ".convex.cloud", with: ".convex.site").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
 }
 let dataDir = ProcessInfo.processInfo.environment["THREADBEAR_HOME"] ?? (NSHomeDirectory() + "/Library/Application Support/Threadbear")
 let runnerJson = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: dataDir + "/runner.json")))) as? [String: Any]
-let prodURL = siteOf((runnerJson?["sync"] as? [String: Any])?["url"] as? String)
+let sync = runnerJson?["sync"] as? [String: Any]
+let prodURL = siteOf(sync?["url"] as? String, site: sync?["site"] as? String)
 let envLocal = (try? String(contentsOfFile: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path + "/.env.local", encoding: .utf8)) ?? ""
 let devURL = siteOf(envLocal.split(separator: "\n").first { $0.hasPrefix("CONVEX_URL=") }.map { String($0.dropFirst("CONVEX_URL=".count)).components(separatedBy: " ").first ?? "" })
 
@@ -42,7 +46,7 @@ let name = value("--name", qr ? "web-qr" : "web-mac") + (prod ? "" : "-dev")
 let days = Int(value("--days", "90")) ?? 90
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 guard let site = local ? "http://localhost:5181" : prod ? prodURL : devURL else {
-    fail(prod ? "No sync.url in \(dataDir)/runner.json. Run ./threadbear setup first." : "No CONVEX_URL in the repo's .env.local.")
+    fail(prod ? "No website address in \(dataDir)/runner.json. Set sync.site or run ./threadbear setup first." : "No CONVEX_URL in the repo's .env.local.")
 }
 
 func fail(_ message: String) -> Never {

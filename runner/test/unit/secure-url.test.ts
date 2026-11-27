@@ -7,7 +7,7 @@ import { credentialUrlProblem, isLoopbackHost } from '../../src/secure-url.ts';
 
 test('https anywhere and plain http to this Mac may carry a credential', () => {
   for (const url of [
-    'https://opulent-moose-249.ap-southeast-2.convex.cloud',
+    'https://demo-bear-123.ap-southeast-2.convex.cloud',
     'https://mac-mini.tail1234.ts.net:8443/mcp',
     'HTTPS://X.Convex.Cloud',
     'http://127.0.0.1:3210',
@@ -28,7 +28,7 @@ test('https anywhere and plain http to this Mac may carry a credential', () => {
 
 test('plain http anywhere else, look-alike hosts, userinfo and other schemes are refused', () => {
   for (const url of [
-    'http://opulent-moose-249.ap-southeast-2.convex.cloud',
+    'http://demo-bear-123.ap-southeast-2.convex.cloud',
     'http://mac-mini.tail1234.ts.net:8443/mcp',
     'HTTP://evil.example',
     ' http://evil.example ',

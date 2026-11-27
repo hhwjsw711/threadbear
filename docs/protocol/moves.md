@@ -675,6 +675,10 @@ kind and an expiry, so each can be listed and revoked on its own. The
 Settings window's Phone & browser tab issues them through the runner,
 so nobody needs the Convex CLI (`ios/scripts/pair-qr.swift` and
 `web/scripts/sign-in.swift` still work from a terminal).
+The website address is `sync.site` in runner.json when set, including a
+custom HTTP Actions domain; otherwise it is `sync.url` with `.convex.cloud`
+changed to `.convex.site`. The terminal browser sign-in uses the same rule.
+The phone's pairing address stays the Convex API URL (`sync.url`).
 
 ```ts
 type Device = {
