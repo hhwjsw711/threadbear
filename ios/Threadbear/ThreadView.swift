@@ -26,6 +26,8 @@ struct ThreadView: View {
     @State private var renameTarget: PhoneThread?
     /// The share sheet (sharing by link) is open.
     @State private var shareShown = false
+    /// The model picker sheet (pool, provider, model, effort, login) is open.
+    @State private var modelPickerShown = false
     @State private var markedSeen = false
     /// The oldest seq when "Load earlier" was tapped, until older messages
     /// arrive (the oldest seq changes) or the runner says it couldn't.
@@ -125,6 +127,32 @@ struct ThreadView: View {
             // The live row, so the sheet follows the runner's answer.
             if let thread = detail?.thread { ShareThreadSheet(thread: model.shown(thread)) }
         }
+        .sheet(isPresented: $modelPickerShown) {
+            if let thread = detail?.thread {
+                let shownThread = model.shown(thread)
+                let ctx = model.modelPickerContext(for: shownThread)
+                ModelPickerSheet(
+                    context: ctx,
+                    now: model.now,
+                    initiallyExpandedLogin: model.expandsLoginAtLaunch,
+                    onPickModel: { row, column, provider in
+                        if let change = ctx.changeForPickingModel(row: row, column: column, provider: provider) {
+                            model.updateSettings(threadId: thread.threadId, change: change)
+                        }
+                    },
+                    onPickEffort: { level in
+                        if ctx.effectiveEffort != level || ctx.effort != level {
+                            model.updateSettings(threadId: thread.threadId, change: ctx.changeForEffort(level))
+                        }
+                    },
+                    onPickLogin: { accountId, column in
+                        if let change = ctx.changeForLogin(accountId: accountId, column: column) {
+                            model.updateSettings(threadId: thread.threadId, change: change)
+                        }
+                    }
+                )
+            }
+        }
         // model.connection in each id: a fresh Convex client after the app
         // comes back from the background, so these follow it, not the old one.
         .task(id: "\(threadId):\(model.connection)") { await follow() }
@@ -139,6 +167,11 @@ struct ThreadView: View {
                 for _ in 0..<50 where detail == nil { try? await Task.sleep(for: .milliseconds(100)) }
                 if let thread = detail?.thread, thread.share?.isOn != true { model.share(thread, .on) }
                 shareShown = true
+            }
+            if model.isFake, model.opensModelPickerAtLaunch {
+                for _ in 0..<50 where detail == nil { try? await Task.sleep(for: .milliseconds(100)) }
+                model.opensModelPickerAtLaunch = false
+                modelPickerShown = true
             }
             // For sim-shots.sh: a reply box with something typed in.
             if let text = model.draftText {
@@ -342,7 +375,13 @@ struct ThreadView: View {
                 if quick.voiceThreadId == threadId, !typing {
                     VoiceBar(threadId: threadId, afterSeq: messages.last?.seq ?? 0, working: thread.isBusy) { typing = true }
                 } else {
-                    Composer(text: $draft, placeholder: composerPlaceholder(thread), links: thread.links ?? [], threadId: thread.id, provider: thread.provider,
+                    let shownThread = model.shown(thread)
+                    Composer(text: $draft, placeholder: composerPlaceholder(thread), links: thread.links ?? [],
+                             modelContext: model.modelPickerContext(for: shownThread),
+                             modelPending: model.isChangingSettings(thread.threadId),
+                             canChangeModel: model.canChangeThreadSettings,
+                             onTapModel: { modelPickerShown = true },
+                             threadId: thread.id, provider: shownThread.provider,
                              running: thread.isBusy, stopping: model.isStopping(thread.threadId),
                              onStop: model.canStop ? { model.stop(threadId: thread.threadId) } : nil) { text, photos in
                         await send(text, photos: photos, to: thread)

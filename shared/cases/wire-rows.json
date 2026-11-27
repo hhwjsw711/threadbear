@@ -1657,6 +1657,139 @@
       "differs": {
         "android": "Android's PhoneIdentity reads site, but its WireRowsTest doesn't list it yet."
       }
+    },
+    {
+      "name": "thread row: pool, modelInUse, effort and effortInUse (API 107)",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-106",
+          "runnerId": "mac",
+          "title": "Model picker",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "poolId": "main",
+          "model": "sonnet",
+          "modelInUse": "claude-sonnet-5-5",
+          "effort": "xhigh",
+          "effortInUse": "high",
+          "status": "idle",
+          "needsYou": false,
+          "unread": false,
+          "preview": "Done.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "poolId": "main",
+        "model": "sonnet",
+        "modelInUse": "claude-sonnet-5-5",
+        "effort": "xhigh",
+        "effortInUse": "high"
+      }
+    },
+    {
+      "name": "runner row: usagePools and defaults (API 107)",
+      "input": {
+        "kind": "runner",
+        "row": {
+          "runnerId": "mac",
+          "name": "Mac",
+          "version": "1.0.0",
+          "lastSeenAt": "2026-11-20T01:00:00.000Z",
+          "usagePools": [
+            {
+              "id": "main",
+              "title": "Main",
+              "accountIds": [
+                "claude-main",
+                "codex-main"
+              ]
+            }
+          ],
+          "defaults": {
+            "poolId": "main",
+            "accountId": "claude-main",
+            "models": {
+              "claude": "opus"
+            },
+            "efforts": {
+              "claude": "high"
+            }
+          }
+        }
+      },
+      "expect": {
+        "usagePools.count": 1,
+        "usagePools.0.id": "main",
+        "usagePools.0.title": "Main",
+        "usagePools.0.accountIds.count": 2,
+        "usagePools.0.accountIds.0": "claude-main",
+        "defaults.poolId": "main",
+        "defaults.accountId": "claude-main",
+        "defaults.models.claude": "opus",
+        "defaults.efforts.claude": "high"
+      }
+    },
+    {
+      "name": "account row: note, plan, defaults, usage windows and model descriptions (API 107)",
+      "input": {
+        "kind": "account",
+        "row": {
+          "id": "claude-main",
+          "runnerId": "mac",
+          "provider": "claude",
+          "title": "alex@acme.example",
+          "note": "Primary",
+          "email": "alex@acme.example",
+          "plan": "Max",
+          "defaultModel": "opus",
+          "defaultEffort": "high",
+          "signedOut": false,
+          "planEnded": false,
+          "usage": {
+            "windows": [
+              {
+                "kind": "five_hour",
+                "title": "5-hour",
+                "remainingPercent": 82,
+                "resetsAt": "2026-11-20T05:00:00.000Z"
+              }
+            ],
+            "updatedAt": "2026-11-20T01:00:00.000Z",
+            "error": null
+          },
+          "models": [
+            {
+              "id": "opus",
+              "model": "claude-opus-5-5",
+              "title": "Opus 5.5",
+              "description": "Most capable",
+              "effortLevels": [
+                "low",
+                "high"
+              ],
+              "defaultEffort": "high"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "note": "Primary",
+        "email": "alex@acme.example",
+        "plan": "Max",
+        "defaultModel": "opus",
+        "defaultEffort": "high",
+        "signedOut": false,
+        "planEnded": false,
+        "usage.windows.count": 1,
+        "usage.windows.0.kind": "five_hour",
+        "usage.windows.0.remainingPercent": 82,
+        "usage.windows.0.resetsAt": 1795150800000,
+        "models.0.model": "claude-opus-5-5",
+        "models.0.description": "Most capable"
+      }
     }
   ]
 }

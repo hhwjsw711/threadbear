@@ -184,6 +184,8 @@ sealed interface CommandKey {
     data class Press(val threadId: String, val buttonId: String) : CommandKey
     /** Sharing by link: on, off or a new link (its value is a ShareAsk's). */
     data class Share(val threadId: String) : CommandKey
+    /** Model, effort, pool or login change on an existing thread (API 107). */
+    data class Settings(val threadId: String) : CommandKey
     /** An approval, question or secret card, by its approval id. */
     data class Card(val approvalId: String) : CommandKey
 }

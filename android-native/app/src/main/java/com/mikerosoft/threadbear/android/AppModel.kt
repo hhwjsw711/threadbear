@@ -9,6 +9,8 @@ import com.mikerosoft.threadbear.kit.CommandKey
 import com.mikerosoft.threadbear.kit.PendingCommand
 import com.mikerosoft.threadbear.kit.PendingCommands
 import com.mikerosoft.threadbear.kit.InboxSections
+import com.mikerosoft.threadbear.kit.ModelPickerContext
+import com.mikerosoft.threadbear.kit.NewThreadSettings
 import com.mikerosoft.threadbear.kit.WaitGuess
 import com.mikerosoft.threadbear.kit.Pairing
 import com.mikerosoft.threadbear.kit.PairingRequest
@@ -27,6 +29,7 @@ import com.mikerosoft.threadbear.kit.ShareAsk
 import com.mikerosoft.threadbear.kit.ShareLinks
 import com.mikerosoft.threadbear.kit.ShareSheet
 import com.mikerosoft.threadbear.kit.ThreadChange
+import com.mikerosoft.threadbear.kit.ThreadSettingsChange
 import com.mikerosoft.threadbear.kit.ThreadsView
 import com.mikerosoft.threadbear.kit.TransportError
 import com.mikerosoft.threadbear.kit.WaitingSends
@@ -424,6 +427,7 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         store.clear()
         pairingChanged(forget = true)
         commands.clear()
+        pendingSettings.clear()
         shell.clear()
         transport?.close()
         transport = null
@@ -431,6 +435,95 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         _pairing.value = null
         identityJob?.cancel()
         setIdentity(null)
+    }
+
+    // Model, effort, pool & login settings
+
+    /** Whether this backend accepts live thread settings changes and pool/account picks (API 107). */
+    val canChangeThreadSettings: Boolean get() = apiVersion >= BackendApi.MOBILE_PICKER
+
+    /** Optimistic settings changes in flight, keyed by threadId, paired with CommandKey.Settings(threadId). */
+    private val pendingSettings = HashMap<String, ThreadSettingsChange>()
+
+    fun runner(runnerId: String?, list: List<PhoneRunner> = runners.value): PhoneRunner? {
+        if (!runnerId.isNullOrEmpty()) return list.firstOrNull { it.runnerId == runnerId }
+        return list.firstOrNull { it.main == true } ?: list.firstOrNull()
+    }
+
+    /** Accounts scoped to a runner (falling back to all accounts if unscoped on older backends). */
+    private fun accountsForRunner(runnerId: String?, all: List<PhoneAccount> = accounts.value): List<PhoneAccount> {
+        if (runnerId.isNullOrEmpty()) return all
+        val scoped = all.filter { it.runnerId == runnerId }
+        return scoped.ifEmpty { all }
+    }
+
+    fun modelPickerContext(
+        thread: PhoneThread,
+        runnerList: List<PhoneRunner> = runners.value,
+        accountList: List<PhoneAccount> = accounts.value,
+    ): ModelPickerContext {
+        val r = runner(thread.runnerId, runnerList)
+        val scoped = accountsForRunner(thread.runnerId, accountList)
+        return ModelPickerContext(
+            pools = r?.usagePools.orEmpty(),
+            accounts = scoped,
+            defaults = r?.defaults,
+            accountId = thread.accountId,
+            provider = thread.provider,
+            poolId = thread.poolId,
+            model = thread.model,
+            modelInUse = thread.modelInUse,
+            effort = thread.effort,
+            effortInUse = thread.effortInUse,
+            isNew = false,
+        )
+    }
+
+    fun newThreadPickerContext(
+        settings: NewThreadSettings,
+        runnerId: String?,
+        runnerList: List<PhoneRunner> = runners.value,
+        accountList: List<PhoneAccount> = accounts.value,
+    ): ModelPickerContext {
+        val r = runner(runnerId, runnerList)
+        val scoped = accountsForRunner(r?.runnerId ?: runnerId, accountList)
+        val defaults = r?.defaults
+        val effectiveAccountId = settings.accountId ?: defaults?.accountId.orEmpty()
+        val effectivePoolId = if (settings.accountId != null) null else (settings.poolId ?: defaults?.poolId)
+        val effectiveProvider = settings.provider
+            ?: scoped.firstOrNull { it.id == effectiveAccountId }?.provider
+            ?: scoped.firstOrNull()?.provider
+            ?: "claude"
+        return ModelPickerContext(
+            pools = r?.usagePools.orEmpty(),
+            accounts = scoped,
+            defaults = defaults,
+            accountId = effectiveAccountId,
+            provider = effectiveProvider,
+            poolId = effectivePoolId,
+            model = settings.model,
+            modelInUse = null,
+            effort = settings.effort,
+            effortInUse = null,
+            isNew = true,
+        )
+    }
+
+    fun changingSettings(threadId: String, pending: Map<CommandKey, PendingCommands.Entry>): Boolean =
+        pending[CommandKey.Settings(threadId)]?.state?.locked == true
+
+    fun updateSettings(threadId: String, change: ThreadSettingsChange) {
+        val b = _backend.value ?: return
+        if (change.isEmpty || !canChangeThreadSettings) return
+        val key = CommandKey.Settings(threadId)
+        commands.forget(key)
+        pendingSettings[threadId] = change
+        commands.start(key, send = { b.update(threadId, ThreadChange.Settings(change)) }) { state ->
+            if (!state.holdsChange && pendingSettings[threadId] == change) {
+                pendingSettings.remove(threadId)
+            }
+            said(state, "The runner couldn't update that thread's model.")
+        }
     }
 
     // Changes, each showing at once
@@ -446,6 +539,7 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
             ThreadChange.Archive, is ThreadChange.ArchiveWithVerdict -> return shell.archive(threadId, change)
             is ThreadChange.Snooze, ThreadChange.SnoozeUntilRestart -> return shell.hibernate(threadId, change)
             is ThreadChange.Rename -> return rename(threadId, change.title)
+            is ThreadChange.Settings -> return updateSettings(threadId, change.settings)
             is ThreadChange.Star -> Triple(CommandKey.Star(threadId), if (change.on) "on" else "off", if (change.on) "star" else "unstar")
             ThreadChange.Wake -> Triple(CommandKey.Wake(threadId), null, "wake")
             ThreadChange.MarkSeen -> Triple(CommandKey.MarkSeen(threadId), null, "mark as read")
@@ -462,8 +556,8 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
     /**
      * A thread as this phone shows it: with the changes tapped here that the
      * runner hasn't made yet (a star, read, woken, back from the archive, a
-     * new title), at once and until it's done or refused. [pending] is
-     * [commands]' entries as the screen collected them, so it redraws.
+     * new title, or model/effort/pool/login), at once and until it's done or refused.
+     * [pending] is [commands]' entries as the screen collected them, so it redraws.
      */
     fun shown(thread: PhoneThread, pending: Map<CommandKey, PendingCommands.Entry>): PhoneThread {
         val id = thread.threadId
@@ -474,6 +568,11 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         if (held(CommandKey.Wake(id)) != null) t = WaitGuess.woken(t.copy(snoozedUntil = null, snoozedUntilRestart = null))
         if (held(CommandKey.Unarchive(id)) != null) t = WaitGuess.unarchived(t.copy(archivedAt = null))
         held(CommandKey.Rename(id))?.value?.let { t = t.copy(title = it) }
+        if (held(CommandKey.Settings(id)) != null) {
+            pendingSettings[id]?.let { change ->
+                t = modelPickerContext(t).applyingOptimistic(change, t)
+            }
+        }
         return t
     }
 

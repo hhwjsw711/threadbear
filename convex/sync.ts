@@ -6,7 +6,7 @@ import { ConvexError, v } from 'convex/values';
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { messageButton, resetHint, threadFields, updateFailedValidator, usagePool, usageResets, views } from './schema';
+import { messageButton, resetHint, runnerDefaults, threadFields, updateFailedValidator, usagePool, usageResets, views } from './schema';
 import { API_VERSION } from './version';
 import { endpointProblem } from './webPushEndpoint';
 import { clear, command, machines } from './machines';
@@ -1486,6 +1486,7 @@ export const heartbeat = mutation({
       draining: v.boolean(),
       threadCount: v.number(),
       usagePools: v.optional(v.array(usagePool)),
+      defaults: v.optional(runnerDefaults),
       icon: v.optional(v.string()),
       rpcUrl: v.optional(v.string()),
       pressure: v.optional(v.union(v.literal('memory'), v.literal('disk'))),
@@ -1522,6 +1523,17 @@ export const heartbeat = mutation({
     const caller = await runnerAuth(ctx, key, 'heartbeat', { housekeeping: held === true });
     runner = clean(runner);
     if (runner.usagePools) runner.usagePools = runner.usagePools.slice(0, 50).map((p) => ({ id: cutBytes(p.id, 128), title: cutBytes(p.title, 200), accountIds: p.accountIds.slice(0, 50).map((id) => cutBytes(id, 128)) }));
+    if (runner.defaults) {
+      const cutMap = (m?: Record<string, string>) =>
+        m ? Object.fromEntries(Object.entries(m).slice(0, 20).map(([k, val]) => [cutBytes(k, 64), cutBytes(val, 128)])) : undefined;
+      const d = runner.defaults;
+      runner.defaults = {
+        ...(d.poolId ? { poolId: cutBytes(d.poolId, 128) } : {}),
+        ...(d.accountId ? { accountId: cutBytes(d.accountId, 128) } : {}),
+        ...(d.models ? { models: cutMap(d.models) } : {}),
+        ...(d.efforts ? { efforts: cutMap(d.efforts) } : {}),
+      };
+    }
     // A runner key heartbeats as its own runner only: the row has the
     // rpcUrl other Macs' apps dial.
     await actAs(ctx, caller, runner.runnerId);
@@ -2261,12 +2273,13 @@ const accountDoc = v.object({
   email: v.optional(v.string()),
   plan: v.optional(v.string()),
   defaultModel: v.optional(v.string()),
-  // API 20: what the phone's new thread pickers offer.
-  models: v.optional(v.array(v.object({ id: v.string(), title: v.string(), effortLevels: v.optional(v.array(v.string())), defaultEffort: v.optional(v.string()) }))),
+  // API 20: what the phone's new thread pickers offer; model & description since API 107.
+  models: v.optional(v.array(v.object({ id: v.string(), model: v.optional(v.string()), title: v.string(), description: v.optional(v.string()), effortLevels: v.optional(v.array(v.string())), defaultEffort: v.optional(v.string()) }))),
   defaultEffort: v.optional(v.string()),
   // API 91: a Claude login's sign-in, for the Mac's Runners panel.
   loginEndsAt: v.optional(v.string()),
   signedOut: v.optional(v.boolean()),
+  planEnded: v.optional(v.boolean()), // since API 107
   yearToken: v.optional(v.object({ madeAt: v.optional(v.string()) })),
   // API 104: a Codex login's resets and the hint to use one.
   resetHint: v.optional(resetHint),
@@ -3245,12 +3258,16 @@ export const sharedUsage = query({
 
 // A runner key's accounts as they may be stored: each reading fitted
 // (fitUsage), too big ones left out, at most CAP.accounts.
-function fitAccount<T extends { usage?: UsageDoc }>(a: T, now: number): T | undefined {
-  if (docBytes(a) > CAP.accountDoc) return undefined;
-  if (!a.usage) return a;
-  const usage = fitUsage(a.usage, now);
-  if (usage) return { ...a, usage };
-  const { usage: _gone, ...rest } = a;
+function fitAccount<T extends { usage?: UsageDoc; models?: { description?: string }[] }>(a: T, now: number): T | undefined {
+  let out = a;
+  if (docBytes(out) > CAP.accountDoc && out.models?.some((m) => m.description !== undefined)) {
+    out = { ...out, models: out.models.map(({ description: _d, ...rest }) => rest) };
+  }
+  if (docBytes(out) > CAP.accountDoc) return undefined;
+  if (!out.usage) return out;
+  const usage = fitUsage(out.usage, now);
+  if (usage) return { ...out, usage };
+  const { usage: _gone, ...rest } = out;
   return rest as T;
 }
 

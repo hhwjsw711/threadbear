@@ -216,4 +216,6 @@ public enum CommandKey: Hashable, Sendable {
     case answer(String)
     /// Sharing it by link: on, off or a new link.
     case share(String)
+    /// Model, effort, pool or login change from the composer picker (API 107).
+    case settings(String)
 }

@@ -2,6 +2,7 @@ package com.mikerosoft.threadbear.kit
 
 import java.time.Instant
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -234,6 +235,14 @@ data class PhoneThread(
      * from a runner before 23 Nov 2026, which leaves the app's own rule.
      */
     val waitState: WaitState? = null,
+    /** The usage pool id when on auto pool rotation (backend API 107). */
+    val poolId: String? = null,
+    /** Model actually running on this thread (backend API 107). */
+    val modelInUse: String? = null,
+    /** Explicit effort level set on this thread (backend API 107). */
+    val effort: String? = null,
+    /** Effective effort level in use on this thread (backend API 107). */
+    val effortInUse: String? = null,
 ) {
     val id get() = threadId
     val isBusy get() = status == ThreadStatus.RUNNING || status == ThreadStatus.STARTING
@@ -330,6 +339,10 @@ data class PhoneThread(
             cardTurn = o.str("cardTurn"),
             share = PhoneShare.read(o.obj("share")),
             waitState = WaitState.of(o.str("waitState")),
+            poolId = o.str("poolId"),
+            modelInUse = o.str("modelInUse"),
+            effort = o.str("effort"),
+            effortInUse = o.str("effortInUse"),
         )
     }
 }
@@ -505,6 +518,10 @@ data class PhoneRunner(
     val draining: Boolean? = null,
     val placed: Boolean? = null,
     val main: Boolean? = null,
+    /** Usage pools configured on this runner (backend API 107). */
+    val usagePools: List<PhoneUsagePool>? = null,
+    /** Default pool, login, models and efforts on this runner (backend API 107). */
+    val defaults: PhoneRunnerDefaults? = null,
 ) {
     fun isOnline(now: Instant): Boolean = now.toEpochMilli() - lastSeenAt.toEpochMilli() < OFFLINE_AFTER_MS
 
@@ -520,6 +537,8 @@ data class PhoneRunner(
             draining = o.bool("draining"),
             placed = o.bool("placed"),
             main = o.bool("main"),
+            usagePools = o.arr("usagePools")?.lossy { PhoneUsagePool.read(it as JsonObject) },
+            defaults = o.obj("defaults")?.let { runCatching { PhoneRunnerDefaults.read(it) }.getOrNull() },
         )
     }
 }
@@ -575,6 +594,8 @@ object BackendApi {
      * phone:webPushKey for the VAPID key): the fdroid build's UnifiedPush.
      */
     const val WEB_PUSH = 93
+    /** From 107 the desktop-twin model picker (pools, usage, defaults, existing-thread settings). */
+    const val MOBILE_PICKER = 107
 }
 
 enum class CommandState { PENDING, TAKEN, DONE, FAILED }
@@ -621,6 +642,46 @@ enum class ThreadsView(val wire: String) { INBOX("inbox"), HIBERNATING("hibernat
 
 enum class ArchiveVerdict(val wire: String) { WORKED("worked"), DIDNT_WORK("didntWork"), NOT_NEEDED("notNeeded") }
 
+/** Three-state patch field for thread settings updates (API 107). */
+sealed interface SettingsField {
+    data object Keep : SettingsField
+    data object Clear : SettingsField
+    data class Set(val value: String) : SettingsField
+}
+
+/** Settings patch sent via phone:update (API 107). */
+data class ThreadSettingsChange(
+    val accountId: String? = null,
+    val poolId: SettingsField = SettingsField.Keep,
+    val provider: String? = null,
+    val model: SettingsField = SettingsField.Keep,
+    val effort: SettingsField = SettingsField.Keep,
+) {
+    val isEmpty: Boolean
+        get() = accountId == null && poolId == SettingsField.Keep && provider == null && model == SettingsField.Keep && effort == SettingsField.Keep
+
+    val json: JsonObject
+        get() = buildJsonObject {
+            accountId?.let { put("accountId", it) }
+            when (poolId) {
+                SettingsField.Keep -> {}
+                SettingsField.Clear -> put("poolId", JsonNull)
+                is SettingsField.Set -> put("poolId", poolId.value)
+            }
+            provider?.let { put("provider", it) }
+            when (model) {
+                SettingsField.Keep -> {}
+                SettingsField.Clear -> put("model", JsonNull)
+                is SettingsField.Set -> put("model", model.value)
+            }
+            when (effort) {
+                SettingsField.Keep -> {}
+                SettingsField.Clear -> put("effort", JsonNull)
+                is SettingsField.Set -> put("effort", effort.value)
+            }
+        }
+}
+
 sealed class ThreadChange {
     data class Snooze(val until: Instant) : ThreadChange()
     data object SnoozeUntilRestart : ThreadChange()
@@ -631,6 +692,7 @@ sealed class ThreadChange {
     data object MarkSeen : ThreadChange()
     data class Rename(val title: String) : ThreadChange()
     data class Star(val on: Boolean) : ThreadChange()
+    data class Settings(val settings: ThreadSettingsChange) : ThreadChange()
 
     val json: JsonElement
         get() = when (this) {
@@ -643,6 +705,7 @@ sealed class ThreadChange {
             MarkSeen -> buildJsonObject { put("markSeen", true) }
             is Rename -> buildJsonObject { put("title", title) }
             is Star -> buildJsonObject { put("star", on) }
+            is Settings -> settings.json
         }
 }
 

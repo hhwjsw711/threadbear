@@ -2,8 +2,9 @@ import SwiftUI
 import ThreadbearKit
 
 /// A new thread from the phone. It starts in the runner's default folder
-/// (Mike didn't want a folder picker on the phone, 31 Oct); the runner, model
-/// and effort can be picked, and the runner picks a login with room for them.
+/// (Mike didn't want a folder picker on the phone, 31 Oct); the runner, pool,
+/// provider, model, effort and login can be picked via desktop-style chips
+/// under the prompt box (Option A).
 /// The runner starts on the first one online in Mike's order (Settings), so
 /// the Mac asleep doesn't leave the phone nowhere to start one (6 Nov).
 /// It closes as soon as the backend has the request (7 Nov, Mike: waiting on
@@ -12,6 +13,7 @@ import ThreadbearKit
 struct NewThreadView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     /// With the create command's id, as the sheet closes.
     var onStarted: (String) -> Void
     @State private var text: String
@@ -25,14 +27,13 @@ struct NewThreadView: View {
         _text = State(initialValue: draft.text)
         _photos = State(initialValue: draft.photos)
         _runnerId = State(initialValue: draft.runnerId)
-        _modelId = State(initialValue: draft.modelId)
-        _effort = State(initialValue: draft.effort)
+        _settings = State(initialValue: draft.settings)
         self.onStarted = onStarted
     }
     /// Nil until the runners are in, then the first online in Mike's order.
     @State private var runnerId: String?
-    @State private var modelId: String?
-    @State private var effort: String?
+    @State private var settings: NewThreadSettings
+    @State private var modelPickerShown = false
     /// From the tap on Start until the command's queued. Without it Start
     /// looks dead (and can be tapped again, for a second thread) while the
     /// photos finish going up.
@@ -47,66 +48,71 @@ struct NewThreadView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    PastableTextField(text: $text, placeholder: "What should it do?", lines: 4...12,
-                                      onPasteImages: model.canSendPhotos ? { words.addPasted($0, model: model) } : nil,
-                                      photos: $photos, cursor: cursor, threadReference: { model.threadReference(pasted: $0) })
-                    HStack {
-                        if model.canSendPhotos {
-                            PhotoMenu(words: words) {
-                                Label("Add a photo", systemImage: "photo")
-                            }
-                        }
-                        Spacer()
-                        DictateButton(text: $text, dictation: dictation) {
-                            Label("Dictate", systemImage: "mic")
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    promptCard
+                        // The words are taken as Start is tapped: anything typed or
+                        // added while it goes would be lost (Mike, 7 Nov). The chips
+                        // below stay live, as start() reads them once the photos are up.
+                        .disabled(starting != nil)
+
+                    if model.canChooseRunner || !models.isEmpty {
+                        chipBar
                     }
-                    // Two buttons in one Form row: without this a tap anywhere
-                    // in the row fires both.
-                    .buttonStyle(.borderless)
-                    DictationNotes(dictation: dictation)
-                    if model.canSendPhotos, !photos.isEmpty || adding > 0 { PhotoStrip(words: words) }
-                }
-                // The words are taken as Start is tapped: anything typed or
-                // added while it goes would be lost (Mike, 7 Nov). The pickers
-                // below stay live, as start() reads them once the photos are up.
-                .disabled(starting != nil)
-                if model.canChooseRunner || !models.isEmpty {
-                    Section {
-                        if model.canChooseRunner {
-                            Picker("Runner", selection: $runnerId) {
-                                // Only with no runner placed and no main Mac known: the backend picks.
-                                if runnerId == nil { Text("Automatic").tag(String?.none) }
-                                ForEach(model.runners) { runner in
-                                    Text(runner.isOnline(at: model.now) ? runner.name : "\(runner.name), offline").tag(Optional(runner.runnerId))
-                                }
-                            }
-                        }
-                        if !models.isEmpty { modelPickers }
-                    }
-                    .onChange(of: modelId) {
-                        // Codex's Ultra on a Claude model, say: back to the model's own.
-                        if !NewThreadChoices.keeps(effort: effort, model: chosenModel) { effort = nil }
-                    }
-                    .onChange(of: runnerId) {
-                        // A model this runner has no login for: back to its default.
-                        if let modelId, !models.contains(where: { $0.id == modelId }) { self.modelId = nil }
-                        // No pickers on it (its logins aren't in yet): its own effort too.
-                        if models.isEmpty { effort = nil }
+
+                    if let offline = offlineText {
+                        Label("\(offline). It'll start when it's back.", systemImage: "moon.zzz")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
-                if let offline = offlineText {
-                    Section { Label("\(offline). It'll start when it's back.", systemImage: "moon.zzz").font(.footnote) }
-                }
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 24)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("New thread")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear(perform: pickRunner)
             .onChange(of: model.runners) { pickRunner() }
             // The backend's API version can come after the sheet's up.
             .onChange(of: model.canChooseRunner) { pickRunner() }
+            .onChange(of: runnerId) {
+                // Switching runners resets pool/account/model if they don't exist on the new runner.
+                let runner = chosenRunner
+                if let poolId = settings.poolId, !(runner?.usagePools ?? []).contains(where: { $0.id == poolId }) {
+                    settings.poolId = nil
+                }
+                if let accountId = settings.accountId,
+                   !model.accounts.contains(where: { $0.id == accountId && ($0.runnerId == nil || $0.runnerId == runner?.runnerId) }) {
+                    settings.accountId = nil
+                }
+                if let modelId = settings.model, !models.contains(where: { $0.id == modelId || $0.model == modelId }) {
+                    settings.model = nil
+                }
+                if models.isEmpty { settings.effort = nil }
+            }
+            .sheet(isPresented: $modelPickerShown) {
+                ModelPickerSheet(
+                    context: pickerContext,
+                    now: model.now,
+                    initiallyExpandedLogin: model.expandsLoginAtLaunch,
+                    onPickModel: { row, column, provider in
+                        settings = pickerContext.draftForPickingModel(settings, row: row, column: column, provider: provider)
+                    },
+                    onPickEffort: { level in
+                        settings = pickerContext.draftForEffort(settings, level: level)
+                    },
+                    onPickLogin: { accountId, column in
+                        settings = pickerContext.draftForLogin(settings, accountId: accountId, column: column)
+                    }
+                )
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -118,8 +124,10 @@ struct NewThreadView: View {
                     if starting != nil { ProgressView() } else {
                         // Not with a photo still on its way, which would be left behind.
                         // Nor with Whisper still to type out what was said.
-                        Button("Start", action: start).disabled((words.message.isEmpty && photos.isEmpty) || adding > 0
-                                                                || dictation.holdsWords)
+                        Button("Start", action: start)
+                            .fontWeight(.semibold)
+                            .disabled((words.message.isEmpty && photos.isEmpty) || adding > 0
+                                      || dictation.holdsWords)
                     }
                 }
             }
@@ -131,23 +139,122 @@ struct NewThreadView: View {
             #endif
             .task {
                 if photos.isEmpty, let load = model.loadSamplePhoto { words.add([load], model: model) }
+                if model.opensModelPickerAtLaunch, !models.isEmpty {
+                    model.opensModelPickerAtLaunch = false
+                    modelPickerShown = true
+                }
             }
         }
     }
 
-    @ViewBuilder private var modelPickers: some View {
-        Picker("Model", selection: $modelId) {
-            Text("Default").tag(String?.none)
-            ForEach(models) { Text($0.title).tag(Optional($0.id)) }
+    private var promptCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PastableTextField(text: $text, placeholder: "What should it do?", lines: 4...12,
+                              onPasteImages: model.canSendPhotos ? { words.addPasted($0, model: model) } : nil,
+                              photos: $photos, cursor: cursor, threadReference: { model.threadReference(pasted: $0) })
+                .padding(.horizontal, 14)
+                .padding(.top, 13)
+                .padding(.bottom, 8)
+                .frame(minHeight: 112, alignment: .topLeading)
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 0.5)
+
+            HStack {
+                if model.canSendPhotos {
+                    PhotoMenu(words: words) {
+                        Label("Add a photo", systemImage: "photo")
+                            .font(.subheadline)
+                    }
+                }
+                Spacer()
+                DictateButton(text: $text, dictation: dictation) {
+                    Label("Dictate", systemImage: "mic")
+                        .font(.subheadline)
+                }
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+
+            DictationNotes(dictation: dictation)
+                .padding(.horizontal, 14)
+            if model.canSendPhotos, !photos.isEmpty || adding > 0 {
+                PhotoStrip(words: words)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 12)
+            }
         }
-        Picker("Effort", selection: $effort) {
-            Text("Default").tag(String?.none)
-            ForEach(NewThreadChoices.efforts(for: chosenModel), id: \.self) { Text(NewThreadChoices.effortTitle($0)).tag(Optional($0)) }
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var chipBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if model.canChooseRunner {
+                    runnerChip
+                }
+                if !models.isEmpty {
+                    ModelChip(context: pickerContext) {
+                        modelPickerShown = true
+                    }
+                }
+            }
+            .padding(.horizontal, 2)
         }
+        .scrollClipDisabled()
+    }
+
+    private var runnerChip: some View {
+        Menu {
+            if runnerId == nil {
+                Button {
+                    runnerId = nil
+                } label: {
+                    Label("Automatic", systemImage: "checkmark")
+                }
+            }
+            ForEach(model.runners) { runner in
+                let online = runner.isOnline(at: model.now)
+                let label = online ? runner.name : "\(runner.name), offline"
+                Button {
+                    runnerId = runner.runnerId
+                } label: {
+                    if runnerId == runner.runnerId {
+                        Label(label, systemImage: "checkmark")
+                    } else {
+                        Text(label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "laptopcomputer")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(chosenRunner?.name ?? "Automatic")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.86) : .primary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.07), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Runner: \(chosenRunner?.name ?? "Automatic")")
     }
 
     private var models: [PhoneModelChoice] { model.newThreadModels(on: model.canChooseRunner ? runnerId : nil) }
     private var chosenRunner: PhoneRunner? { model.runners.first { $0.runnerId == runnerId } }
+    private var pickerContext: ModelPickerContext {
+        model.newThreadPickerContext(settings: settings, runnerId: model.canChooseRunner ? runnerId : nil)
+    }
 
     /// With a runner picked, whether that one's asleep; otherwise whether they all are.
     private var offlineText: String? {
@@ -169,7 +276,6 @@ struct NewThreadView: View {
         // Gone from the list: picked afresh, or the backend's choice.
         runnerId = NewThreadChoices.runner(model.runners, now: model.now)?.runnerId
     }
-    private var chosenModel: PhoneModelChoice? { models.first { $0.id == modelId } }
 
     private func start() {
         guard let backend = model.backend else { return }
@@ -186,10 +292,22 @@ struct NewThreadView: View {
                 // Picked now if the sheet never got to (the runners or the
                 // API version came in as Start was tapped).
                 if model.canChooseRunner, runnerId == nil { pickRunner() }
-                // Taken once: the pickers can still change while the request goes.
-                let draft = NewThreadDraft(text: typed, photos: photos, runnerId: model.canChooseRunner ? runnerId : nil, modelId: modelId, effort: effort)
+                // Taken once: the chips can still change while the request goes.
+                let wireSettings = model.canChangeThreadSettings
+                    ? settings
+                    : NewThreadSettings(model: settings.model, effort: settings.effort)
+                let draft = NewThreadDraft(
+                    text: typed,
+                    photos: photos,
+                    runnerId: model.canChooseRunner ? runnerId : nil,
+                    poolId: wireSettings.poolId,
+                    accountId: wireSettings.accountId,
+                    provider: wireSettings.provider,
+                    modelId: wireSettings.model,
+                    effort: wireSettings.effort
+                )
                 let commandId = try await backend.create(text: message, runnerId: draft.runnerId, cwd: nil, images: images,
-                                                         settings: NewThreadSettings(model: draft.modelId, effort: draft.effort))
+                                                         settings: wireSettings)
                 model.sent(photos)
                 model.started(commandId: commandId, message: message, draft: draft)
                 onStarted(commandId)

@@ -220,6 +220,8 @@ Queries:
   The phone's automatic pick is the first placed one online, else the main
   Mac, else none (it sends no `runnerId`), so a runner key's Mac is only
   picked for Mike once he's placed it.
+  Since API 107 also `usagePools?` and `defaults?` (`{ poolId?, accountId?,
+  models?, efforts? }`) for the mobile model picker.
 - `phone:wakes({ token })` (API 45) → `[{ scheduleId, threadId?, nextRunAt? }]`,
   a small row per active schedule, from `scheduleWakes`: what a sidebar needs
   all the time: the website's sidebar, and the iPhone's inbox (from the app
@@ -377,13 +379,16 @@ phone names must be one that has heartbeated (or `"any"`), else
   once the runner has finished it.
 - `phone:update({ token, threadId, change })` where `change` is one of
   `{ snooze: { until?, untilRestart? } }`, `{ wake: true }`, `{ archive:
-  true }`, `{ unarchive: true }`, `{ markSeen: true }`, `{ title }`.
+  true }`, `{ unarchive: true }`, `{ markSeen: true }`, `{ title }`,
+  `{ star }`, or (API 107) `{ accountId?, poolId?, provider?, model?,
+  effort? }`.
 - `phone:setRunnerOrder({ token, runnerIds })` (API 56): Mike's order for
   his runners, from the phone's Settings (or the Mac's, through its runner:
   `sync:runnerOrder` and `sync:setRunnerOrder`, API 58, the owner key only), at most 50 ids, kept in the one
   `runnerOrder` row. The phone's new thread sheet offers a runner, starting
   on the first one online in it.
-- `phone:create({ token, text, runnerId?, cwd?, accountId?, model? })`.
+- `phone:create({ token, text, runnerId?, cwd?, accountId?, poolId?,
+  provider?, model?, effort?, images? })`.
   With no `runnerId`, the first runner online and not draining in Mike's
   order (API 56); with no order, or none of it online, of the runners
   heartbeating with the owner key

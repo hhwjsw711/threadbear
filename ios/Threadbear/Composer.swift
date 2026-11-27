@@ -11,6 +11,11 @@ struct Composer: View {
     /// The thread's patch link buttons, in a row over the box as the Mac
     /// has its chips over its composer.
     var links: [PhoneLink] = []
+    /// The thread's model/pool/effort state for the desktop-style model chip.
+    var modelContext: ModelPickerContext? = nil
+    var modelPending = false
+    var canChangeModel = false
+    var onTapModel: (() -> Void)? = nil
     /// The thread it replies to, and its CLI, for the slash command
     /// palette; none for a box with no thread yet.
     var threadId: String? = nil
@@ -31,16 +36,37 @@ struct Composer: View {
     /// Each photo a chip in the words where it was put in, as on the Mac.
     private var words: PhotoWords { PhotoWords(text: $text, photos: $photos, adding: $adding, cursor: cursor) }
 
+    private var showsModelChip: Bool {
+        guard let modelContext else { return false }
+        return canChangeModel || modelContext.effectiveModel != nil
+    }
+
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 7) {
             // Over the box while what's typed is a command being typed.
             if let threadId, model.canUseSlashCommands, !hearing, let query = SlashPalette.query(in: text) {
                 SlashPaletteList(threadId: threadId, provider: provider, query: query) { command in
                     text = SlashPalette.fill(command, forArguments: !(command.argumentHint ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
-            if !links.isEmpty {
-                LinkChips(links: links)
+            if showsModelChip || !links.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        if let modelContext, showsModelChip {
+                            ModelChip(
+                                context: modelContext,
+                                pending: modelPending,
+                                interactive: canChangeModel && onTapModel != nil
+                            ) {
+                                onTapModel?()
+                            }
+                        }
+                        if !links.isEmpty {
+                            LinkChipButtons(links: links)
+                        }
+                    }
+                }
+                .scrollClipDisabled()
             }
             if !photos.isEmpty || adding > 0 {
                 PhotoStrip(words: words).disabled(sending)
@@ -184,23 +210,31 @@ struct LinkChips: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(Array(links.enumerated()), id: \.offset) { _, link in
-                    if let page = link.page {
-                        Link(destination: page) {
-                            Label(link.title, systemImage: UIImage(systemName: link.icon ?? "") == nil ? "arrow.up.right.square" : link.icon!)
-                                .font(.footnote)
-                                .lineLimit(1)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(Color(.secondarySystemBackground), in: Capsule())
-                        }
-                        .tint(.primary)
-                        .accessibilityHint("Opens \(page.host() ?? "the page") in the browser")
-                    }
-                }
+                LinkChipButtons(links: links)
             }
         }
         .scrollClipDisabled()
+    }
+}
+
+struct LinkChipButtons: View {
+    var links: [PhoneLink]
+
+    var body: some View {
+        ForEach(Array(links.enumerated()), id: \.offset) { _, link in
+            if let page = link.page {
+                Link(destination: page) {
+                    Label(link.title, systemImage: UIImage(systemName: link.icon ?? "") == nil ? "arrow.up.right.square" : link.icon!)
+                        .font(.footnote)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(.secondarySystemBackground), in: Capsule())
+                }
+                .tint(.primary)
+                .accessibilityHint("Opens \(page.host() ?? "the page") in the browser")
+            }
+        }
     }
 }
 

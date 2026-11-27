@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,11 +100,16 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
     val model = LocalModel.current
     val vm: ThreadViewModel = viewModel(key = threadId) { ThreadViewModel(model, threadId) }
     val loaded by vm.loaded.collectAsStateWithLifecycle()
+    val runners by model.runners.collectAsStateWithLifecycle()
+    val accounts by model.accounts.collectAsStateWithLifecycle()
     // The reply's words and photos (Composer.kt).
     val box = rememberPhotoBox()
-    val thread = (loaded as? Loaded.Here)?.detail?.thread
+    val rawThread = (loaded as? Loaded.Here)?.detail?.thread
     val pending by model.commands.entries.collectAsStateWithLifecycle()
+    val thread = rawThread?.let { model.shown(it, pending) }
     val gate = rememberLinkGate()
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    var pickerOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(thread?.isBusy) { if (thread?.isBusy == false) model.stopped(threadId) }
 
@@ -112,13 +118,26 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
     // thread's id becomes a route, the same rule as a notification's, as
     // "thread:a/b" made a route the navigation threw on (Codex review, 11 Nov).
     val push = remember(open) { { id: String -> Push.validThreadId(id)?.let(open) ?: model.note("That isn't a thread on this phone.") } }
+    val pickerContext = thread?.let { model.modelPickerContext(it, runners, accounts) }
+    val canChangeModel = model.canChangeThreadSettings
     CompositionLocalProvider(LocalPushThread provides push, LocalButtonThread provides threadId) {
     Scaffold(
         snackbarHost = { SnackbarHost(LocalSnackbar.current) },
         topBar = { ThreadBar(thread, back) },
         bottomBar = {
             if (thread != null) Column {
-                OverTheBox(thread, box.text.text.toString(), gate) { box.text.setTextAndPlaceCursorAtEnd(it) }
+                OverTheBox(
+                    thread = thread,
+                    draft = box.text.text.toString(),
+                    gate = gate,
+                    modelContext = pickerContext,
+                    modelPending = model.changingSettings(threadId, pending),
+                    canChangeModel = canChangeModel,
+                    onTapModel = {
+                        keyboard?.hide()
+                        pickerOpen = true
+                    },
+                ) { box.text.setTextAndPlaceCursorAtEnd(it) }
                 val offline = model.offlineRunner(thread)
                 Composer(
                     box = box,
@@ -156,16 +175,46 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
         }
     }
     }
+    if (pickerOpen && pickerContext != null && canChangeModel) {
+        ModelPickerSheet(
+            context = pickerContext,
+            onDismiss = { pickerOpen = false },
+            onPickModel = { row, column, pickedProvider ->
+                pickerContext.changeForPickingModel(row, column, pickedProvider)?.let {
+                    model.updateSettings(threadId, it)
+                }
+            },
+            onPickEffort = { level ->
+                pickerContext.changeForEffort(level)?.let {
+                    model.updateSettings(threadId, it)
+                }
+            },
+            onPickLogin = { pickedAccountId, column ->
+                pickerContext.changeForLogin(pickedAccountId, column)?.let {
+                    model.updateSettings(threadId, it)
+                }
+            },
+        )
+    }
     LinkGateDialog(gate)
 }
 
 /**
  * Over the reply box: the slash palette while what's typed is a command
- * being typed, and the thread's
- * patch link buttons, as the iPhone stacks them over its composer.
+ * being typed, and the horizontal chip row with the thread's ModelChip
+ * and patch link buttons, as the iPhone stacks them over its composer.
  */
 @Composable
-private fun OverTheBox(thread: PhoneThread, draft: String, gate: LinkGate, fill: (String) -> Unit) {
+private fun OverTheBox(
+    thread: PhoneThread,
+    draft: String,
+    gate: LinkGate,
+    modelContext: com.mikerosoft.threadbear.kit.ModelPickerContext?,
+    modelPending: Boolean,
+    canChangeModel: Boolean,
+    onTapModel: () -> Unit,
+    fill: (String) -> Unit,
+) {
     val model = LocalModel.current
     val extras = ThreadExtras.of(model, LocalContext.current)
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -175,7 +224,30 @@ private fun OverTheBox(thread: PhoneThread, draft: String, gate: LinkGate, fill:
                 fill(SlashPalette.fill(command, forArguments = !command.argumentHint.isNullOrBlank()))
             }
         }
-        LinkChips(thread.links.orEmpty()) { gate.decide(it) }
+        val chipContext = modelContext?.takeIf { canChangeModel || it.effectiveModel != null }
+        val hasLinks = thread.links.orEmpty().any { it.page != null }
+        if (chipContext != null || hasLinks) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (chipContext != null) {
+                    ModelChip(
+                        context = chipContext,
+                        pending = modelPending,
+                        interactive = canChangeModel,
+                        onClick = onTapModel,
+                    )
+                }
+                if (hasLinks) {
+                    LinkChipButtons(thread.links.orEmpty()) { gate.decide(it) }
+                }
+            }
+        }
     }
 }
 

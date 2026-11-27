@@ -2,16 +2,19 @@ package com.mikerosoft.threadbear.kit
 
 import java.time.Instant
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * One model an account offers (backend API 20), as the Mac's model picker
- * lists it: `id` is what a new thread sends.
+ * One model an account offers (backend API 20, enriched in API 107), as the
+ * Mac's model picker lists it: `id` is what a new thread or change sends.
  */
 data class PhoneModelChoice(
     val id: String,
     val title: String,
     val effortLevels: List<String>? = null,
     val defaultEffort: String? = null,
+    val model: String? = null,
+    val description: String? = null,
 ) {
     companion object {
         fun read(o: JsonObject) = PhoneModelChoice(
@@ -19,13 +22,88 @@ data class PhoneModelChoice(
             title = o.needStr("title"),
             effortLevels = o.strings("effortLevels"),
             defaultEffort = o.str("defaultEffort"),
+            model = o.str("model"),
+            description = o.str("description"),
+        )
+    }
+}
+
+/** One usage pool mirrored on a runner row (backend API 107). */
+data class PhoneUsagePool(
+    val id: String,
+    val title: String,
+    val accountIds: List<String> = emptyList(),
+) {
+    companion object {
+        fun read(o: JsonObject) = PhoneUsagePool(
+            id = o.needStr("id"),
+            title = o.str("title") ?: o.needStr("id"),
+            accountIds = o.strings("accountIds") ?: emptyList(),
+        )
+    }
+}
+
+/** A runner's default pool, login, and per-provider models & efforts (backend API 107). */
+data class PhoneRunnerDefaults(
+    val poolId: String? = null,
+    val accountId: String? = null,
+    val models: Map<String, String>? = null,
+    val efforts: Map<String, String>? = null,
+) {
+    companion object {
+        private fun stringMap(o: JsonObject?): Map<String, String>? {
+            if (o == null) return null
+            val out = LinkedHashMap<String, String>()
+            for ((k, v) in o) {
+                val s = (v as? JsonPrimitive)?.takeIf { it.isString }?.content
+                if (s != null) out[k] = s
+            }
+            return out
+        }
+
+        fun read(o: JsonObject) = PhoneRunnerDefaults(
+            poolId = o.str("poolId"),
+            accountId = o.str("accountId"),
+            models = stringMap(o.obj("models")),
+            efforts = stringMap(o.obj("efforts")),
+        )
+    }
+}
+
+/** One rate-limit window on a login's usage snapshot (backend API 107). */
+data class PhoneUsageWindow(
+    val kind: String,
+    val title: String,
+    val remainingPercent: Double,
+    val resetsAt: Instant? = null,
+) {
+    companion object {
+        fun read(o: JsonObject) = PhoneUsageWindow(
+            kind = o.needStr("kind"),
+            title = o.str("title") ?: o.needStr("kind"),
+            remainingPercent = o.needNum("remainingPercent"),
+            resetsAt = o.date("resetsAt"),
+        )
+    }
+}
+
+/** Usage summary mirrored on a phone:accounts row (backend API 107). */
+data class PhoneAccountUsage(
+    val windows: List<PhoneUsageWindow> = emptyList(),
+    val blocked: Boolean? = null,
+) {
+    companion object {
+        fun read(o: JsonObject) = PhoneAccountUsage(
+            windows = o.arr("windows")?.lossy { PhoneUsageWindow.read(it as JsonObject) } ?: emptyList(),
+            blocked = o.bool("blocked"),
         )
     }
 }
 
 /**
- * A row of phone:accounts: a login on one of the runners. Only what the
- * new thread pickers need; the rest of the row is left alone.
+ * A row of phone:accounts: a login on one of the runners.
+ * Enriched in API 107 with note, email, plan, defaultModel, defaultEffort,
+ * signedOut, planEnded and usage for the desktop-twin model picker.
  */
 data class PhoneAccount(
     val id: String,
@@ -33,7 +111,27 @@ data class PhoneAccount(
     val provider: String,
     val title: String,
     val models: List<PhoneModelChoice> = emptyList(),
+    val note: String? = null,
+    val email: String? = null,
+    val plan: String? = null,
+    val defaultModel: String? = null,
+    val defaultEffort: String? = null,
+    val signedOut: Boolean? = null,
+    val planEnded: Boolean? = null,
+    val usage: PhoneAccountUsage? = null,
 ) {
+    val providerId: String get() = provider.ifEmpty { "claude" }
+
+    /** Desktop parity display name: non-empty email, else title, else id. */
+    val displayName: String
+        get() {
+            val e = email?.trim()
+            if (!e.isNullOrEmpty()) return e
+            val t = title.trim()
+            if (t.isNotEmpty()) return t
+            return id
+        }
+
     companion object {
         fun read(o: JsonObject): PhoneAccount {
             val id = o.needStr("id")
@@ -44,6 +142,14 @@ data class PhoneAccount(
                 title = o.str("title") ?: id,
                 // A backend before API 20 has no models: no pickers, not a broken row.
                 models = o.arr("models")?.lossy { PhoneModelChoice.read(it as JsonObject) } ?: emptyList(),
+                note = o.str("note"),
+                email = o.str("email"),
+                plan = o.str("plan"),
+                defaultModel = o.str("defaultModel"),
+                defaultEffort = o.str("defaultEffort"),
+                signedOut = o.bool("signedOut"),
+                planEnded = o.bool("planEnded"),
+                usage = o.obj("usage")?.let { runCatching { PhoneAccountUsage.read(it) }.getOrNull() },
             )
         }
     }
@@ -51,10 +157,15 @@ data class PhoneAccount(
 
 /**
  * What a new thread from the phone can name. Null is the runner's usual.
- * No login: naming a model is enough for the runner to pick a login of its
- * provider with room (runner.ts, pickForNew), as on the Mac.
+ * API 107 adds optional `poolId`, `accountId`, and `provider` (sent with poolId).
  */
-data class NewThreadSettings(val model: String? = null, val effort: String? = null)
+data class NewThreadSettings(
+    val model: String? = null,
+    val effort: String? = null,
+    val poolId: String? = null,
+    val accountId: String? = null,
+    val provider: String? = null,
+)
 
 /**
  * The new thread screen's runner, model and effort pickers, from the

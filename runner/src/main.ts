@@ -951,6 +951,17 @@ async function main(): Promise<void> {
             listSchedules: () => scheduler.list(),
             listAccounts: () => runner.hello().accounts,
             listPools: () => runner.listPools(),
+            defaults: () => {
+              const d = runner.hello().defaults;
+              const models: Record<string, string> = { ...(d.models ?? {}) };
+              if (d.model && !models.claude) models.claude = d.model;
+              return {
+                ...(d.poolId ? { poolId: d.poolId } : {}),
+                ...(d.accountId ? { accountId: d.accountId } : {}),
+                ...(Object.keys(models).length ? { models } : {}),
+                ...(d.efforts && Object.keys(d.efforts).length ? { efforts: d.efforts } : {}),
+              };
+            },
           }),
       buttons: (id) => runner.listButtons(id).buttons,
     },

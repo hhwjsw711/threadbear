@@ -511,4 +511,12 @@
 //    carries each login sealed to that runner's key, never in the clear.
 // 106: design reviews send the agent's marks and the shots' video/sound to
 //    the phone; phone:respondReview takes the phone's own marks.
-export const API_VERSION = 106;
+// 107: mobile model picker parity with the Mac. Heartbeats can carry
+//    `defaults` ({ poolId?, accountId?, models?, efforts? }), phone:runners
+//    returns `usagePools` and `defaults`, accounts carry `planEnded` and
+//    each model's `model` and `description`, threads carry `poolId`,
+//    `modelInUse`, `effort` and `effortInUse`, phone:create takes `poolId`
+//    and `provider`, and phone:update takes `{ accountId?, poolId?,
+//    provider?, model?, effort? }`. A runner sends the new fields only to
+//    a backend of 107 or later; older phones ignore them.
+export const API_VERSION = 107;

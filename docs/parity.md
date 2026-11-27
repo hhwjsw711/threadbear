@@ -16,7 +16,7 @@ and "iPhone" read every thread through Convex, with the same functions (convex/p
 | Opening a tool's output | `threads.heldBody` | Yes | Yes | No: The iPhone shows a tool line, not its output. | No: Android shows a tool line, not its output. |
 | Sending a message, pictures too | `threads.send` | Yes | Yes | Yes | Yes |
 | Stop | `threads.interrupt` | Yes | Yes | Yes | Yes |
-| Rename, archive, star, hibernate, and from the Mac its login or model | `threads.update` | Yes | Yes | Yes | Yes |
+| Rename, archive, star, hibernate, and its pool, login, model or effort | `threads.update` | Yes | Yes | Yes | Yes |
 | Marking it read | `threads.markSeen` | Yes | Yes | Yes | Yes |
 | Sharing by link | `threads.share` | Yes | Yes | Yes | Yes |
 | Answering an approval or a question | `approvals.respond` | Yes | Yes | Yes | Yes |

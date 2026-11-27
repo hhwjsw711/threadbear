@@ -69,7 +69,20 @@ class WireRowsTest {
         }
         "detail" -> ThreadDetail.read(row).let { d -> under("thread", thread(d.thread)) + under("messages", list(d.messages, ::message)) }
         "runner" -> PhoneRunner.read(row).let { r ->
-            mapOf("runnerId" to r.runnerId, "name" to r.name, "version" to r.version, "lastSeenAt" to ms(r.lastSeenAt), "draining" to r.draining, "placed" to r.placed, "main" to r.main)
+            mutableMapOf<String, Any?>(
+                "runnerId" to r.runnerId, "name" to r.name, "version" to r.version, "lastSeenAt" to ms(r.lastSeenAt),
+                "draining" to r.draining, "placed" to r.placed, "main" to r.main,
+            ).also { m ->
+                m += under("usagePools", list(r.usagePools) { p ->
+                    mapOf("id" to p.id, "title" to p.title) + under("accountIds", list(p.accountIds) { mapOf("" to it) })
+                })
+                r.defaults?.let { d ->
+                    m["defaults.poolId"] = d.poolId
+                    m["defaults.accountId"] = d.accountId
+                    d.models?.forEach { (k, v) -> m["defaults.models.$k"] = v }
+                    d.efforts?.forEach { (k, v) -> m["defaults.efforts.$k"] = v }
+                }
+            }
         }
         "identity" -> PhoneIdentity.read(row).let { i -> mapOf("name" to i.name, "expiresAt" to ms(i.expiresAt), "apiVersion" to n(i.apiVersion), "pushOff" to i.pushOff) }
         "project" -> PhoneProject.read(row).let { p ->
@@ -87,10 +100,22 @@ class WireRowsTest {
             mapOf("id" to p.id, "title" to p.title, "text" to p.text, "place" to p.place, "icon" to p.icon, "threadId" to p.threadId, "source" to p.source, "updatedAt" to p.updatedAt)
         }
         "account" -> PhoneAccount.read(row).let { a ->
-            mapOf("id" to a.id, "runnerId" to a.runnerId, "provider" to a.provider, "title" to a.title) +
-                under("models", list(a.models) { m ->
-                    mapOf("id" to m.id, "title" to m.title, "defaultEffort" to m.defaultEffort) + under("effortLevels", list(m.effortLevels) { mapOf("" to it) })
+            mutableMapOf<String, Any?>(
+                "id" to a.id, "runnerId" to a.runnerId, "provider" to a.provider, "title" to a.title,
+                "note" to a.note, "email" to a.email, "plan" to a.plan,
+                "defaultModel" to a.defaultModel, "defaultEffort" to a.defaultEffort,
+                "signedOut" to a.signedOut, "planEnded" to a.planEnded,
+            ).also { m ->
+                a.usage?.let { u ->
+                    m += under("usage.windows", list(u.windows) { w ->
+                        mapOf("kind" to w.kind, "title" to w.title, "remainingPercent" to w.remainingPercent, "resetsAt" to ms(w.resetsAt))
+                    })
+                }
+                m += under("models", list(a.models) { mod ->
+                    mapOf("id" to mod.id, "model" to mod.model, "title" to mod.title, "description" to mod.description, "defaultEffort" to mod.defaultEffort) +
+                        under("effortLevels", list(mod.effortLevels) { mapOf("" to it) })
                 })
+            }
         }
         "wake" -> ScheduleWake.read(row).let { w -> mapOf("scheduleId" to w.scheduleId, "threadId" to w.threadId, "nextRunAt" to ms(w.nextRunAt)) }
         else -> fail("no row kind $kind")
@@ -99,7 +124,9 @@ class WireRowsTest {
     private fun thread(t: PhoneThread): Map<String, Any?> {
         val f = mutableMapOf<String, Any?>(
             "threadId" to t.threadId, "runnerId" to t.runnerId, "title" to t.title, "cwd" to t.cwd, "accountId" to t.accountId,
-            "provider" to t.provider, "model" to t.model, "status" to t.status.name.lowercase(), "needsYou" to t.needsYou,
+            "provider" to t.provider, "poolId" to t.poolId,
+            "model" to t.model, "modelInUse" to t.modelInUse, "effort" to t.effort, "effortInUse" to t.effortInUse,
+            "status" to t.status.name.lowercase(), "needsYou" to t.needsYou,
             "unread" to t.unread, "preview" to t.preview, "lastActivityAt" to ms(t.lastActivityAt), "snoozedUntil" to ms(t.snoozedUntil),
             "snoozedUntilRestart" to t.snoozedUntilRestart, "wakeNote" to t.wakeNote, "woke.at" to ms(t.woke?.at), "woke.since" to ms(t.woke?.since),
             "startedBy.kind" to t.startedBy?.kind, "startedBy.label" to t.startedBy?.label, "startedBy.icon" to t.startedBy?.icon,

@@ -434,6 +434,11 @@ public final class ConvexBackend: Backend, @unchecked Sendable {
 
     public func create(text: String, runnerId: String?, cwd: String?, images: [String], settings: NewThreadSettings) async throws -> String {
         var extra: [String: JSONValue] = ["text": .string(text)]
+        if let accountId = settings.accountId { extra["accountId"] = .string(accountId) }
+        if let poolId = settings.poolId {
+            extra["poolId"] = .string(poolId)
+            if let provider = settings.provider { extra["provider"] = .string(provider) }
+        }
         if let model = settings.model { extra["model"] = .string(model) }
         if let effort = settings.effort { extra["effort"] = .string(effort) }
         if !images.isEmpty { extra["images"] = .array(images.map { .string($0) }) }

@@ -30,9 +30,15 @@ final class AppModel {
     /// for checking it on the phone, where nothing can tap the button.
     var opensPocketAtLaunch = false
     var opensSettingsAtLaunch = false
+    /// `-ThreadbearOpenModelPicker`: open the model picker sheet on launch, for screenshots.
+    var opensModelPickerAtLaunch = false
+    /// `-ThreadbearExpandLogin`: expand the Login footer inside the model picker sheet.
+    var expandsLoginAtLaunch = false
     /// `-ThreadbearRunnerOrder`: Settings' runner order screen, for screenshots.
     let opensRunnerOrderAtLaunch = ProcessInfo.processInfo.arguments.contains("-ThreadbearRunnerOrder")
     private(set) var inbox: [PhoneThread] = []
+    /// Optimistic thread model/pool/effort/login changes until Convex catches up or the runner refuses.
+    private var pendingSettings: [String: [ThreadSettingsChange]] = [:]
     /// Every command sent from this phone and waited on (archive, hibernate,
     /// rename, star, wake, mark read, bring back, Stop, reply buttons, card
     /// answers), by what it's about: the one place a control reads whether
@@ -176,6 +182,48 @@ final class AppModel {
     /// for a thread's list (backend API 62, phone:slashCommands).
     var canUseSlashCommands: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.slashCommandsAPIVersion }
     var canStop: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.stopAPIVersion }
+    /// Whether an existing thread's model, effort, pool or login can be changed
+    /// from the phone (backend API 106).
+    var canChangeThreadSettings: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.mobilePickerAPIVersion }
+
+    func runner(for runnerId: String?) -> PhoneRunner? {
+        if let runnerId, let found = runners.first(where: { $0.runnerId == runnerId }) { return found }
+        return NewThreadChoices.runner(runners, now: now) ?? runners.first
+    }
+
+    func modelPickerContext(for thread: PhoneThread) -> ModelPickerContext {
+        ModelPickerContext.forThread(thread, runner: runner(for: thread.runnerId), accounts: accounts)
+    }
+
+    func newThreadPickerContext(settings: NewThreadSettings, runnerId: String?) -> ModelPickerContext {
+        ModelPickerContext.forNewThread(settings: settings, runner: runner(for: runnerId), accounts: accounts, now: now)
+    }
+
+    func isChangingSettings(_ threadId: String) -> Bool {
+        commands[.settings(threadId)].locked
+    }
+
+    /// Changes a thread's model, effort, pool or login optimistically (`shown`),
+    /// rolling back with an error if the runner refuses it.
+    func updateSettings(threadId: String, change: ThreadSettingsChange) {
+        guard backend != nil, canChangeThreadSettings else { return }
+        let key = CommandKey.settings(threadId)
+        if commands[key].holdsChange {
+            pendingSettings[threadId, default: []].append(change)
+            commands.forget(key)
+        } else {
+            pendingSettings[threadId] = [change]
+        }
+        let started = commands.start(key, send: { try await $0.update(threadId: threadId, change: .settings(change)) }) { [weak self] state in
+            if !state.holdsChange {
+                self?.pendingSettings.removeValue(forKey: threadId)
+            }
+            self?.said(state, failing: "The runner couldn't change that thread's model.")
+        }
+        if !started {
+            pendingSettings.removeValue(forKey: threadId)
+        }
+    }
     /// Each thread's slash commands once its runner has answered (SlashPaletteList).
     var slashCommands: [String: [SlashCommand]] = [:]
     /// Why a thread's list didn't come: its runner is away, or it failed.
@@ -429,6 +477,8 @@ final class AppModel {
         opensPocketAtLaunch = args.contains("-ThreadbearPocket")
         // `-ThreadbearSettings`: start on Settings, for screenshots.
         opensSettingsAtLaunch = args.contains("-ThreadbearSettings")
+        opensModelPickerAtLaunch = args.contains("-ThreadbearOpenModelPicker")
+        expandsLoginAtLaunch = args.contains("-ThreadbearExpandLogin")
         if args.contains("-ThreadbearFake") {
             // -ThreadbearSlowLoad: the lists answer after a few seconds, to see the loading rows.
             // -ThreadbearPictures: and a thread with pictures, "pics".
@@ -562,6 +612,11 @@ final class AppModel {
             t.waitState = nil
         }
         if commands[.rename(id)].holdsChange, let title = commands.value(.rename(id)) { t.title = title }
+        if commands[.settings(id)].holdsChange, let pending = pendingSettings[id] {
+            for item in pending {
+                t = modelPickerContext(for: t).applyingOptimistic(item, to: t, now: now)
+            }
+        }
         return t
     }
 
@@ -584,6 +639,7 @@ final class AppModel {
         case .archive, .archiveWithVerdict: return archive(threadId, change)
         case .snooze, .snoozeUntilRestart: return hibernate(threadId, change)
         case let .rename(title): return rename(threadId, to: title)
+        case let .settings(settings): return updateSettings(threadId: threadId, change: settings)
         }
         // Brought back: an archive of it from here that's done but not yet let go mustn't hide it.
         if case .unarchive = change { commands.forget(.archive(threadId)) }
@@ -1089,6 +1145,7 @@ final class AppModel {
         slidingOff = []
         sinking = []
         starting = []
+        pendingSettings = [:]
         pairing = nil
         authProblem = nil
         backendProblem = nil
@@ -1469,6 +1526,13 @@ struct NewThreadDraft {
     var photos: [PickedPhoto]
     /// Nil when the backend picks (only one runner).
     var runnerId: String?
+    var poolId: String?
+    var accountId: String?
+    var provider: String?
     var modelId: String?
     var effort: String?
+
+    var settings: NewThreadSettings {
+        NewThreadSettings(poolId: poolId, accountId: accountId, provider: provider, model: modelId, effort: effort)
+    }
 }

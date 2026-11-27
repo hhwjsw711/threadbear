@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FakeAccounts, FakeAdapter, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
-import { ConvexSync, forBackend, RELAY_CARDS_API_VERSION, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, NEXT_PICK_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
+import { ConvexSync, forBackend, RELAY_CARDS_API_VERSION, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, NEXT_PICK_API_VERSION, MOBILE_PICKER_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
 import type { ModelChoice, Project, ThreadSummary } from '../../src/protocol.ts';
 import { phoneCommands } from '../../src/handover.ts';
 import { Scheduler, type ScheduleBackend } from '../../src/schedules.ts';
@@ -1484,18 +1484,79 @@ test('an update from the main Mac changes the thread\'s login and model and says
   await tick();
   push([
     { commandId: 'l1', kind: 'update', threadId: t.id, args: { accountId: 'claude-3', model: 'claude-haiku-5-5', from: 'mac' }, createdAt: 1 },
-    { commandId: 'l2', kind: 'update', threadId: t.id, args: { accountId: 'claude-main' }, createdAt: 2 },
+    { commandId: 'l2', kind: 'update', threadId: t.id, args: { accountId: 'claude-main', effort: 'high' }, createdAt: 2 },
+    { commandId: 'l3', kind: 'update', threadId: t.id, args: { accountId: 'claude-3', carryOn: true }, createdAt: 3 },
   ]);
   await tick(20);
   const rec = h.runner.get(t.id);
-  assert.equal(rec.accountId, 'claude-3');
-  assert.equal(rec.model, 'claude-haiku-5-5');
+  assert.equal(rec.accountId, 'claude-main');
+  assert.equal(rec.effort, 'high');
   const finished = calls.filter((c) => c.fn === 'sync:finishCommand').map((c) => c.args);
   const done = finished.find((f) => f.commandId === 'l1');
   assert.equal(done?.ok, true);
   assert.deepEqual(JSON.parse(String(done?.result)), { accountId: 'claude-3', model: 'claude-haiku-5-5' });
-  const refused = finished.find((f) => f.commandId === 'l2');
-  assert.equal(refused?.ok, false, 'only the main Mac changes a login this way');
+  const fromPhone = finished.find((f) => f.commandId === 'l2');
+  assert.equal(fromPhone?.ok, true, 'phone can change login, model, effort or pool (API 107)');
+  const refused = finished.find((f) => f.commandId === 'l3');
+  assert.equal(refused?.ok, false, 'only the main Mac sends carryOn');
+});
+
+test('API 107: account descriptions/planEnded and thread poolId/effort/modelInUse are gated on MOBILE_PICKER_API_VERSION', () => {
+  const richAccount = toAccountDoc(
+    {
+      id: 'c',
+      provider: 'codex',
+      title: 'Codex',
+      configDir: '/c',
+      planEnded: true,
+      models: [{ id: 'g', model: 'gpt-x', title: 'G', description: 'long words', effortLevels: ['low', 'high'], defaultEffort: 'low' }],
+    },
+    MOBILE_PICKER_API_VERSION,
+  );
+  assert.equal(richAccount.planEnded, true);
+  assert.deepEqual(richAccount.models, [{ id: 'g', model: 'gpt-x', title: 'G', description: 'long words', effortLevels: ['low', 'high'], defaultEffort: 'low' }]);
+  const olderAccount = toAccountDoc(
+    {
+      id: 'c',
+      provider: 'codex',
+      title: 'Codex',
+      configDir: '/c',
+      planEnded: true,
+      models: [{ id: 'g', model: 'gpt-x', title: 'G', description: 'long words', effortLevels: ['low', 'high'], defaultEffort: 'low' }],
+    },
+    MOBILE_PICKER_API_VERSION - 1,
+  );
+  assert.equal(olderAccount.planEnded, undefined);
+  assert.deepEqual(olderAccount.models, [{ id: 'g', title: 'G', effortLevels: ['low', 'high'], defaultEffort: 'low' }]);
+
+  const doc: ThreadDoc = {
+    threadId: 'th-1',
+    runnerId: 'mac',
+    title: 'T',
+    cwd: '/tmp',
+    accountId: 'claude-main',
+    poolId: 'main',
+    provider: 'claude',
+    model: 'opus',
+    modelInUse: 'claude-opus-5-5',
+    effort: 'high',
+    effortInUse: 'high',
+    status: 'idle',
+    needsYou: false,
+    unread: false,
+    preview: '',
+    createdAt: '2026-11-20T00:00:00.000Z',
+    lastActivityAt: '2026-11-20T00:00:00.000Z',
+    lastActivityMs: 0,
+    view: 'inbox',
+  };
+  assert.equal(forBackend(doc, MOBILE_PICKER_API_VERSION, 0).poolId, 'main');
+  assert.equal(forBackend(doc, MOBILE_PICKER_API_VERSION, 0).effort, 'high');
+  const stripped = forBackend(doc, MOBILE_PICKER_API_VERSION - 1, 0);
+  assert.equal(stripped.poolId, undefined);
+  assert.equal(stripped.modelInUse, undefined);
+  assert.equal(stripped.effort, undefined);
+  assert.equal(stripped.effortInUse, undefined);
 });
 
 test('commands: each pending one is taken once, applied through the runner as from the phone, and finished', async () => {

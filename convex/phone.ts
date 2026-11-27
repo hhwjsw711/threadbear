@@ -9,7 +9,7 @@ import { internal } from './_generated/api';
 import { AUTH_SECRET, P256DH, endpointProblem } from './webPushEndpoint';
 import type { Doc, Id } from './_generated/dataModel';
 import { command as commandMachine, queued } from './machines';
-import { messageButton, threadFields, views } from './schema';
+import { messageButton, runnerDefaults, threadFields, usagePool, views } from './schema';
 import { checkPhoneToken, hasLiveKey, pageLimit, readRunnerOrder, runnerStatsRows, saveRunnerOrder, sha256, watchRunnersFor } from './lib';
 import { API_VERSION } from './version';
 import { pushOff } from './pushHealth';
@@ -172,8 +172,9 @@ export const runners = query({
   // release to pressure since API 45, for the website's runner page. An older
   // phone ignores them. In Mike's order since API 56 (orderedRunners), with
   // `placed` on the ones he's put in it and `main` on the main Mac: only
-  // those are ever a new thread's automatic choice.
-  returns: v.array(v.object({ runnerId: v.string(), name: v.string(), version: v.string(), lastSeenAt: v.string(), draining: v.boolean(), release: v.optional(v.string()), startedAt: v.optional(v.string()), threadCount: v.optional(v.number()), pressure: v.optional(v.string()), placed: v.optional(v.boolean()), main: v.optional(v.boolean()) })),
+  // those are ever a new thread's automatic choice. usagePools and defaults
+  // since API 107, for the mobile model picker.
+  returns: v.array(v.object({ runnerId: v.string(), name: v.string(), version: v.string(), lastSeenAt: v.string(), draining: v.boolean(), release: v.optional(v.string()), startedAt: v.optional(v.string()), threadCount: v.optional(v.number()), pressure: v.optional(v.string()), placed: v.optional(v.boolean()), main: v.optional(v.boolean()), usagePools: v.optional(v.array(usagePool)), defaults: v.optional(runnerDefaults) })),
   handler: async (ctx, { token }) => {
     await checkPhoneToken(ctx, token);
     const saved = await readRunnerOrder(ctx);
@@ -182,7 +183,7 @@ export const runners = query({
     // placed ones is online, so the phone never falls back to just "the
     // first listed", which with no main Mac known is a runner key's.
     const main = await mainOwnerRunner(ctx, runners, false);
-    return runners.map((r) => ({ runnerId: r.runnerId, name: r.name, version: r.version, lastSeenAt: new Date(r.lastSeenAt).toISOString(), draining: r.draining, ...(r.release ? { release: r.release } : {}), startedAt: r.startedAt, threadCount: r.threadCount, ...(r.pressure ? { pressure: r.pressure } : {}), ...(saved.includes(r.runnerId) ? { placed: true } : {}), ...(r.runnerId === main ? { main: true } : {}) }));
+    return runners.map((r) => ({ runnerId: r.runnerId, name: r.name, version: r.version, lastSeenAt: new Date(r.lastSeenAt).toISOString(), draining: r.draining, ...(r.release ? { release: r.release } : {}), startedAt: r.startedAt, threadCount: r.threadCount, ...(r.pressure ? { pressure: r.pressure } : {}), ...(saved.includes(r.runnerId) ? { placed: true } : {}), ...(r.runnerId === main ? { main: true } : {}), ...(r.usagePools ? { usagePools: r.usagePools } : {}), ...(r.defaults ? { defaults: r.defaults } : {}) }));
   },
 });
 
@@ -1035,11 +1036,28 @@ export const update = mutation({
       v.object({ markSeen: v.literal(true) }),
       v.object({ title: v.string() }),
       v.object({ star: v.boolean() }),
+      // API 107: model, effort, pool or login from the phone's composer picker.
+      v.object({
+        accountId: v.optional(v.string()),
+        poolId: v.optional(v.union(v.string(), v.null())),
+        provider: v.optional(v.string()),
+        model: v.optional(v.union(v.string(), v.null())),
+        effort: v.optional(v.union(v.string(), v.null())),
+      }),
     ),
   },
   returns: v.id('commands'),
   handler: async (ctx, { token, threadId, change }) => {
     await checkPhoneToken(ctx, token);
+    if (
+      !('snooze' in change || 'wake' in change || 'archive' in change || 'unarchive' in change || 'markSeen' in change || 'title' in change || 'star' in change) &&
+      change.accountId === undefined &&
+      change.poolId === undefined &&
+      change.model === undefined &&
+      change.effort === undefined
+    ) {
+      throw new ConvexError({ kind: 'badArgs', message: 'nothing to change' });
+    }
     const t = await findThread(ctx, threadId);
     return queue(ctx, t.runnerId, 'update', threadId, change);
   },
@@ -1062,12 +1080,12 @@ export const share = mutation({
 // takes it, else the main runner still online (or the first one back, as
 // "any"): mainRunner.
 export const create = mutation({
-  args: { token: v.string(), text: v.string(), runnerId: v.optional(v.string()), cwd: v.optional(v.string()), accountId: v.optional(v.string()), model: v.optional(v.string()), effort: v.optional(v.string()), images: v.optional(v.array(v.id('_storage'))) },
+  args: { token: v.string(), text: v.string(), runnerId: v.optional(v.string()), cwd: v.optional(v.string()), accountId: v.optional(v.string()), poolId: v.optional(v.string()), provider: v.optional(v.string()), model: v.optional(v.string()), effort: v.optional(v.string()), images: v.optional(v.array(v.id('_storage'))) },
   returns: v.id('commands'),
-  handler: async (ctx, { token, text, runnerId, cwd, accountId, model, effort, images }) => {
+  handler: async (ctx, { token, text, runnerId, cwd, accountId, poolId, provider, model, effort, images }) => {
     const me = await checkPhoneToken(ctx, token);
     const target = runnerId ? await knownRunner(ctx, runnerId) : await mainRunner(ctx);
-    return queue(ctx, target, 'create', undefined, { text, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(await commandImages(ctx, me.id, images)) });
+    return queue(ctx, target, 'create', undefined, { text, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}), ...(poolId ? { poolId } : {}), ...(poolId && provider ? { provider } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(await commandImages(ctx, me.id, images)) });
   },
 });
 

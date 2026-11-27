@@ -69,6 +69,17 @@ import Testing
             let r = try decoder.decode(PhoneRunner.self, from: data)
             f = ["runnerId": .string(r.runnerId), "name": .string(r.name), "version": s(r.version), "lastSeenAt": ms(r.lastSeenAt),
                  "draining": b(r.draining), "placed": b(r.placed), "main": b(r.main)]
+            put(&f, "usagePools", list(r.usagePools) { (p: PhoneUsagePool) -> [String: JSONValue] in
+                var x: [String: JSONValue] = ["id": .string(p.id), "title": .string(p.title)]
+                put(&x, "accountIds", list(p.accountIds) { (id: String) -> [String: JSONValue] in ["": .string(id)] })
+                return x
+            })
+            if let d = r.defaults {
+                f["defaults.poolId"] = s(d.poolId)
+                f["defaults.accountId"] = s(d.accountId)
+                for (k, v) in d.models ?? [:] { f["defaults.models.\(k)"] = .string(v) }
+                for (k, v) in d.efforts ?? [:] { f["defaults.efforts.\(k)"] = .string(v) }
+            }
         case "identity":
             let i = try decoder.decode(PhoneIdentity.self, from: data)
             f = ["name": .string(i.name), "expiresAt": ms(i.expiresAt), "apiVersion": n(i.apiVersion), "pushOff": b(i.pushOff), "site": s(i.site)]
@@ -92,9 +103,17 @@ import Testing
                  "threadId": s(p.threadId), "source": s(p.source), "updatedAt": .string(p.updatedAt)]
         case "account":
             let a = try decoder.decode(PhoneAccount.self, from: data)
-            f = ["id": .string(a.id), "runnerId": s(a.runnerId), "provider": .string(a.provider), "title": .string(a.title)]
+            f = ["id": .string(a.id), "runnerId": s(a.runnerId), "provider": .string(a.provider), "title": .string(a.title),
+                 "note": s(a.note), "email": s(a.email), "plan": s(a.plan),
+                 "defaultModel": s(a.defaultModel), "defaultEffort": s(a.defaultEffort),
+                 "signedOut": b(a.signedOut), "planEnded": b(a.planEnded)]
+            if let u = a.usage {
+                put(&f, "usage.windows", list(u.windows) { (w: PhoneUsageWindow) -> [String: JSONValue] in
+                    ["kind": .string(w.kind), "title": .string(w.title), "remainingPercent": n(w.remainingPercent), "resetsAt": ms(w.resetsAt)]
+                })
+            }
             put(&f, "models", list(a.models) { (m: PhoneModelChoice) -> [String: JSONValue] in
-                var x: [String: JSONValue] = ["id": .string(m.id), "title": .string(m.title), "defaultEffort": s(m.defaultEffort)]
+                var x: [String: JSONValue] = ["id": .string(m.id), "model": s(m.model), "title": .string(m.title), "description": s(m.description), "defaultEffort": s(m.defaultEffort)]
                 put(&x, "effortLevels", list(m.effortLevels) { (e: String) -> [String: JSONValue] in ["": .string(e)] })
                 return x
             })
@@ -114,7 +133,9 @@ import Testing
     static func thread(_ t: PhoneThread) -> [String: JSONValue] {
         var f: [String: JSONValue] = [
             "threadId": .string(t.threadId), "runnerId": .string(t.runnerId), "title": .string(t.title), "cwd": .string(t.cwd),
-            "accountId": .string(t.accountId), "provider": .string(t.provider), "model": s(t.model), "status": .string(t.status.rawValue),
+            "accountId": .string(t.accountId), "provider": .string(t.provider), "poolId": s(t.poolId),
+            "model": s(t.model), "modelInUse": s(t.modelInUse), "effort": s(t.effort), "effortInUse": s(t.effortInUse),
+            "status": .string(t.status.rawValue),
             "needsYou": .bool(t.needsYou), "unread": .bool(t.unread), "preview": .string(t.preview), "lastActivityAt": ms(t.lastActivityAt),
             "snoozedUntil": ms(t.snoozedUntil), "snoozedUntilRestart": b(t.snoozedUntilRestart), "wakeNote": s(t.wakeNote),
         ]

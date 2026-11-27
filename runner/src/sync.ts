@@ -35,8 +35,8 @@ import { extForMediaType, sniffImage } from './media.ts';
 import { makeFunctionReference } from 'convex/server';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
-import { agentsStillWorking, ARCHIVE_VERDICTS, ErrorCode, isEffortLevel, remoteCreateModeOf } from './protocol.ts';
-import type { Account, ArchiveVerdict, ApprovalDecision, ApprovalOption, AskAnswer, DesignReview, EffortLevel, ReviewDraft, ImageRef, LabReviewLedger, OpenAsk, PermissionMode, PersistedEvent, Pool, Project, Question, ReplyButton, Schedule, ThreadSummary } from './protocol.ts';
+import { agentsStillWorking, ARCHIVE_VERDICTS, ErrorCode, isEffortLevel, isProvider, remoteCreateModeOf } from './protocol.ts';
+import type { Account, ArchiveVerdict, ApprovalDecision, ApprovalOption, AskAnswer, DesignReview, EffortLevel, ReviewDraft, ImageRef, LabReviewLedger, OpenAsk, PermissionMode, PersistedEvent, Pool, Project, Provider, Question, ReplyButton, Schedule, ThreadSummary } from './protocol.ts';
 import { REMOTE_ALLOW_REFUSED, remoteAllowRefused, remoteCardShowsAll, summaryField } from './tools.ts';
 import type { Notification } from './runner.ts';
 import type { ScheduleBackend, StoredSchedule } from './schedules.ts';
@@ -173,7 +173,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 106;
+export const BACKEND_API_VERSION = 107;
 export const INDEX_POOL_API_VERSION = 101;
 export const COORDINATORS_API_VERSION = 102;
 export const NEXT_PICK_API_VERSION = 103;
@@ -182,6 +182,10 @@ export const NEXT_PICK_API_VERSION = 103;
 export const RESET_HINT_API_VERSION = 104;
 // logins.sealKey and logins.share calls (login-share.ts).
 export const SHARE_LOGINS_API_VERSION = 105;
+// Mobile model picker parity: runner defaults on heartbeat, thread poolId /
+// modelInUse / effort / effortInUse, account model descriptions & planEnded,
+// and phone:update settings changes.
+export const MOBILE_PICKER_API_VERSION = 107;
 // A logins call older than this is refused (the clocks' drift included).
 const SHARE_STALE_MS = 5 * 60_000;
 // From this one sync:removeThreads takes the runner's id and leaves a row
@@ -517,8 +521,12 @@ export type ThreadDoc = {
   title: string;
   cwd: string;
   accountId: string;
+  poolId?: string;
   provider: string;
   model?: string;
+  modelInUse?: string;
+  effort?: string;
+  effortInUse?: string;
   status: string;
   needsYou: boolean;
   unread: boolean;
@@ -674,6 +682,7 @@ type Host = {
   listSchedules?: () => Schedule[];
   listAccounts?: () => Account[];
   listPools?: () => { pools: Pool[] };
+  defaults?: () => { poolId?: string; accountId?: string; models?: Record<string, string>; efforts?: Record<string, string> };
   // The thread's reply buttons (buttons.list); absent in small tests, and
   // then no row carries any.
   buttons?: (threadId: string) => ReplyButton[];
@@ -696,9 +705,12 @@ export type CommandHost = {
     archived?: boolean;
     verdict?: ArchiveVerdict;
     starred?: boolean;
-    // A login or model change from the main Mac (API 77).
+    // A login, pool, model or effort change from the main Mac (API 77) or phone (API 107).
     accountId?: string;
+    poolId?: string | null;
+    provider?: Provider;
     model?: string | null;
+    effort?: EffortLevel | null;
     carryOn?: boolean;
     byAgent?: boolean;
   }): unknown;
@@ -706,7 +718,7 @@ export type CommandHost = {
   hibernateWhen?(p: { threadId: string; said: string }): unknown;
   // Seen up to the last event it has.
   markSeen(threadId: string): unknown;
-  create(p: { text: string; images?: ImageRef[]; cwd?: string; accountId?: string; model?: string; effort?: EffortLevel; permissionMode?: PermissionMode; origin?: 'phone' }): { thread: ThreadSummary } | Promise<{ thread: ThreadSummary }>;
+  create(p: { text: string; images?: ImageRef[]; cwd?: string; accountId?: string; poolId?: string; provider?: Provider; model?: string; effort?: EffortLevel; permissionMode?: PermissionMode; origin?: 'phone' }): { thread: ThreadSummary } | Promise<{ thread: ThreadSummary }>;
   // Stops the thread's turn (a command from the main Mac, API 44).
   interrupt?(threadId: string): unknown;
   share(threadId: string, p: { access: 'off' | 'link'; newLink?: boolean }): unknown;
@@ -1075,7 +1087,11 @@ export function toThreadDoc(t: ThreadSummary, runnerId: string, now: number, pen
     lastActivityMs: Date.parse(t.lastActivityAt) || 0,
     view: threadView(t, now),
   };
+  if (t.poolId) doc.poolId = t.poolId;
   if (t.model) doc.model = t.model;
+  if (t.modelInUse) doc.modelInUse = t.modelInUse;
+  if (t.effort) doc.effort = t.effort;
+  if (t.effortInUse) doc.effortInUse = t.effortInUse;
   if (t.snoozedUntil) doc.snoozedUntil = t.snoozedUntil;
   if (t.snoozedUntilRestart) doc.snoozedUntilRestart = true;
   // What it waits for, when it's more than a time (wake-note.ts): the row says it.
@@ -1216,8 +1232,15 @@ function phoneAnswers(raw: unknown): AskAnswer[] | undefined {
 export function forBackend(d: ThreadDoc, v: number, now: number): ThreadDoc {
   const asks = d.asks !== undefined || d.asksSeq !== undefined || d.next !== undefined;
   const sections = d.needs !== undefined || d.pendingReviews !== undefined || d.waitingForRoom !== undefined;
-  if ((v >= NEXT_PICK_API_VERSION || (!d.nextPick && d.nextSuggested === undefined)) && (v >= COORDINATORS_API_VERSION || !d.coordinatorProjectId) && (v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= OPTION_NOTES_API_VERSION || !d.asks?.some((a) => a.optionNotes)) && (v >= LOOSE_ENDS_API_VERSION || !d.looseEnds) && (v >= RELAY_CARDS_API_VERSION || (!d.review && !d.cardTurn)) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= KEYWORDS_API_VERSION || !d.keywords) && (v >= WAKE_NOTE_API_VERSION || !d.wakeNote) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= WAIT_STATE_API_VERSION || !d.waitState) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined) && (v >= PLAN_API_VERSION || d.pendingApproval?.kind !== 'approval' || d.pendingApproval.planSeq === undefined)) return d;
+  const mobilePicker = d.poolId !== undefined || d.modelInUse !== undefined || d.effort !== undefined || d.effortInUse !== undefined;
+  if ((v >= MOBILE_PICKER_API_VERSION || !mobilePicker) && (v >= NEXT_PICK_API_VERSION || (!d.nextPick && d.nextSuggested === undefined)) && (v >= COORDINATORS_API_VERSION || !d.coordinatorProjectId) && (v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= OPTION_NOTES_API_VERSION || !d.asks?.some((a) => a.optionNotes)) && (v >= LOOSE_ENDS_API_VERSION || !d.looseEnds) && (v >= RELAY_CARDS_API_VERSION || (!d.review && !d.cardTurn)) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= KEYWORDS_API_VERSION || !d.keywords) && (v >= WAKE_NOTE_API_VERSION || !d.wakeNote) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= WAIT_STATE_API_VERSION || !d.waitState) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined) && (v >= PLAN_API_VERSION || d.pendingApproval?.kind !== 'approval' || d.pendingApproval.planSeq === undefined)) return d;
   const out = { ...d };
+  if (v < MOBILE_PICKER_API_VERSION) {
+    delete out.poolId;
+    delete out.modelInUse;
+    delete out.effort;
+    delete out.effortInUse;
+  }
   if (v < SECTIONS_API_VERSION) {
     delete out.needs;
     delete out.pendingReviews;
@@ -1483,13 +1506,23 @@ export function toAccountDoc(a: Account, apiVersion = 0) {
   const out: Record<string, unknown> = { id: a.id, provider: a.provider, title: a.title };
   for (const k of ['note', 'email', 'plan', 'defaultModel'] as const) if (a[k] !== undefined) out[k] = a[k];
   if (apiVersion >= MODELS_API_VERSION) {
-    // Just what a picker shows and sends: no descriptions or full ids.
-    if (a.models) out.models = a.models.map((m) => ({ id: m.id, title: m.title, ...(m.effortLevels ? { effortLevels: m.effortLevels } : {}), ...(m.defaultEffort ? { defaultEffort: m.defaultEffort } : {}) }));
+    const rich = apiVersion >= MOBILE_PICKER_API_VERSION;
+    if (a.models) {
+      out.models = a.models.map((m) => ({
+        id: m.id,
+        ...(rich && m.model ? { model: m.model } : {}),
+        title: m.title,
+        ...(rich && m.description ? { description: m.description.slice(0, 200) } : {}),
+        ...(m.effortLevels ? { effortLevels: m.effortLevels } : {}),
+        ...(m.defaultEffort ? { defaultEffort: m.defaultEffort } : {}),
+      }));
+    }
     if (a.defaultEffort) out.defaultEffort = a.defaultEffort;
   }
   if (apiVersion >= LOGIN_STATE_API_VERSION) {
     if (a.loginEndsAt) out.loginEndsAt = a.loginEndsAt;
     if (a.signedOut) out.signedOut = true;
+    if (apiVersion >= MOBILE_PICKER_API_VERSION && a.planEnded) out.planEnded = true;
     // When it was made, never the token (accounts.ts never puts it on an Account).
     if (a.yearToken) out.yearToken = a.yearToken.madeAt ? { madeAt: a.yearToken.madeAt } : {};
   }
@@ -4365,6 +4398,13 @@ export class ConvexSync {
       ...((this.backendApiVersion ?? 0) >= INDEX_POOL_API_VERSION && this.deps.runner.listPools
         ? { usagePools: this.deps.runner.listPools().pools.map(({ id, title, accountIds }) => ({ id, title, accountIds })) }
         : {}),
+      ...((this.backendApiVersion ?? 0) >= MOBILE_PICKER_API_VERSION && this.deps.runner.defaults
+        ? (() => {
+            const d = this.deps.runner.defaults!();
+            const has = d.poolId || d.accountId || (d.models && Object.keys(d.models).length) || (d.efforts && Object.keys(d.efforts).length);
+            return has ? { defaults: d } : {};
+          })()
+        : {}),
       ...(this.deps.config.icon && (this.backendApiVersion ?? 0) >= RUNNER_ICON_API_VERSION ? { icon: this.deps.config.icon } : {}),
       ...(this.stats?.pressure && (this.backendApiVersion ?? 0) >= RUNNER_STATS_API_VERSION ? { pressure: this.stats.pressure } : {}),
       ...followProblem,
@@ -5109,24 +5149,40 @@ export class ConvexSync {
         else if (a.markSeen) await host.markSeen(id);
         else if (typeof a.star === 'boolean') await host.update({ threadId: id, starred: a.star });
         else if (typeof a.title === 'string') await host.update({ threadId: id, title: a.title });
-        else if (typeof a.accountId === 'string' || a.model !== undefined) {
-          // The main Mac's login or model pickers, or its limit box's
-          // Continue now on (API 77), only ever from the main Mac:
-          // convex/relay.ts queues it, the phone has no way to. An agent's
-          // (by: "agent") starts no turn by itself.
-          if (a.from !== 'mac') throw new Error('Only the main Mac changes a login from another device.');
+        else if (typeof a.accountId === 'string' || a.poolId !== undefined || a.model !== undefined || a.effort !== undefined) {
+          // carryOn (limit box's Continue now on) and agent-initiated moves
+          // stay main-Mac only (convex/relay.ts). Model, effort, pool and login
+          // changes themselves work from both the main Mac (API 77) and the
+          // phone (API 107).
+          if ((a.carryOn === true || a.by === 'agent') && a.from !== 'mac') {
+            throw new Error('Only the main Mac carries on or moves a login for an agent.');
+          }
           const byAgent = a.by === 'agent';
+          const poolId = a.poolId === null || typeof a.poolId === 'string' ? a.poolId : undefined;
+          const provider = poolId && isProvider(a.provider) ? a.provider : undefined;
+          const model = a.model === null || typeof a.model === 'string' ? a.model : undefined;
+          const effort = a.effort === null ? null : isEffortLevel(a.effort) ? a.effort : undefined;
           const done = (await host.update({
             threadId: id,
             ...(typeof a.accountId === 'string' ? { accountId: a.accountId } : {}),
-            ...(a.model === null || typeof a.model === 'string' ? { model: a.model } : {}),
+            ...(poolId !== undefined ? { poolId } : {}),
+            ...(provider ? { provider } : {}),
+            ...(model !== undefined ? { model } : {}),
+            ...(effort !== undefined ? { effort } : {}),
             ...(a.carryOn === true && typeof a.accountId === 'string' ? { carryOn: true } : {}),
             ...(byAgent ? { byAgent: true } : {}),
-          })) as { thread?: { accountId?: unknown; model?: unknown } } | undefined;
+          })) as { thread?: { accountId?: unknown; poolId?: unknown; model?: unknown; effort?: unknown } } | undefined;
           // What it became, which the Mac shows: this runner may have put
           // its own default in place of a model its login can't run.
           const t = done?.thread;
-          return { result: { ...(typeof t?.accountId === 'string' ? { accountId: t.accountId } : {}), model: typeof t?.model === 'string' ? t.model : null } };
+          return {
+            result: {
+              ...(typeof t?.accountId === 'string' ? { accountId: t.accountId } : {}),
+              ...(typeof t?.poolId === 'string' ? { poolId: t.poolId } : {}),
+              model: typeof t?.model === 'string' ? t.model : null,
+              ...(typeof t?.effort === 'string' ? { effort: t.effort } : {}),
+            },
+          };
         } else throw new Error('nothing to change');
         return undefined;
       }
@@ -5140,6 +5196,8 @@ export class ConvexSync {
           ...(images.length ? { images } : {}),
           ...(typeof a.cwd === 'string' ? { cwd: a.cwd } : {}),
           ...(typeof a.accountId === 'string' ? { accountId: a.accountId } : {}),
+          ...(typeof a.poolId === 'string' ? { poolId: a.poolId } : {}),
+          ...(typeof a.poolId === 'string' && isProvider(a.provider) ? { provider: a.provider } : {}),
           ...(typeof a.model === 'string' ? { model: a.model } : {}),
           ...(isEffortLevel(a.effort) ? { effort: a.effort } : {}),
           ...(mode ? { permissionMode: mode } : {}),

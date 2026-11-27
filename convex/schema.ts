@@ -43,6 +43,14 @@ export const messageButton = v.object({
 });
 
 export const usagePool = v.object({ id: v.string(), title: v.string(), accountIds: v.array(v.string()) });
+// API 107: the runner's default pool, login, model per provider and effort per
+// provider, for the phone's model picker and new-thread defaults.
+export const runnerDefaults = v.object({
+  poolId: v.optional(v.string()),
+  accountId: v.optional(v.string()),
+  models: v.optional(v.record(v.string(), v.string())),
+  efforts: v.optional(v.record(v.string(), v.string())),
+});
 // API 104: a Codex login's usage resets (with when they were read, so the
 // newest read wins on every runner) and the hint to use one
 // (docs/protocol/settings.md, "Telling Mike about resets").
@@ -55,8 +63,12 @@ export const threadFields = {
   title: v.string(),
   cwd: v.string(),
   accountId: v.string(),
+  poolId: v.optional(v.string()), // since API 107
   provider: v.string(),
   model: v.optional(v.string()),
+  modelInUse: v.optional(v.string()), // since API 107
+  effort: v.optional(v.string()), // since API 107
+  effortInUse: v.optional(v.string()), // since API 107
   status: v.string(),
   needsYou: v.boolean(),
   unread: v.boolean(), // lastSeq > lastSeenSeq
@@ -262,6 +274,7 @@ export const appSchema = defineSchema({
     draining: v.boolean(),
     threadCount: v.number(),
     usagePools: v.optional(v.array(usagePool)), // since API 101
+    defaults: v.optional(runnerDefaults), // since API 107
     // Whether Mike is at this Mac (the Mac app connected and the keyboard or
     // mouse used in the last two minutes), from sync:setPresence (API 3).
     // Only believed while lastSeenAt is recent: a sleeping Mac counts as away.
@@ -1305,12 +1318,13 @@ export const appSchema = defineSchema({
     email: v.optional(v.string()),
     plan: v.optional(v.string()),
     defaultModel: v.optional(v.string()),
-    // API 20: what the phone's new thread pickers offer.
-    models: v.optional(v.array(v.object({ id: v.string(), title: v.string(), effortLevels: v.optional(v.array(v.string())), defaultEffort: v.optional(v.string()) }))),
+    // API 20: what the phone's new thread pickers offer; model & description since API 107.
+    models: v.optional(v.array(v.object({ id: v.string(), model: v.optional(v.string()), title: v.string(), description: v.optional(v.string()), effortLevels: v.optional(v.array(v.string())), defaultEffort: v.optional(v.string()) }))),
     defaultEffort: v.optional(v.string()),
     // API 91: a Claude login's sign-in, for the Mac's Runners panel.
     loginEndsAt: v.optional(v.string()),
     signedOut: v.optional(v.boolean()),
+    planEnded: v.optional(v.boolean()), // since API 107
     yearToken: v.optional(v.object({ madeAt: v.optional(v.string()) })),
     resetHint: v.optional(resetHint),
     usage: v.optional(

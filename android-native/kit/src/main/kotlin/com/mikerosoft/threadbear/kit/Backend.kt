@@ -245,11 +245,16 @@ class PhoneBackend(private val transport: ConvexTransport, private val token: St
     /** Every runner's logins with the models they offer (backend API 20), for the new thread pickers. */
     fun accounts(): Flow<List<PhoneAccount>> = live("phone:accounts", args()) { it.lossyList(PhoneAccount::read) }
 
-    /** `settings` (backend API 20 for an effort): the model and effort it starts on; `images` (API 18) its photos. */
+    /** `settings` (backend API 20 for effort, API 107 for pool/login/provider): the model/effort/pool it starts on; `images` (API 18) its photos. */
     suspend fun create(text: String, runnerId: String?, cwd: String?, images: List<String>, settings: NewThreadSettings): String {
         val a = mutableListOf<Pair<String, JsonElement>>("text" to JsonPrimitive(text))
         settings.model?.let { a += "model" to JsonPrimitive(it) }
         settings.effort?.let { a += "effort" to JsonPrimitive(it) }
+        settings.accountId?.let { a += "accountId" to JsonPrimitive(it) }
+        settings.poolId?.let {
+            a += "poolId" to JsonPrimitive(it)
+            settings.provider?.let { p -> a += "provider" to JsonPrimitive(p) }
+        }
         // Only when there are some: a backend before API 18 refuses the field.
         if (images.isNotEmpty()) a += "images" to JsonArray(images.map(::JsonPrimitive))
         runnerId?.let { a += "runnerId" to JsonPrimitive(it) }
