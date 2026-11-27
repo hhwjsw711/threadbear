@@ -91,14 +91,18 @@ public struct ReviewUserMark: Codable, Sendable, Hashable {
     public var shot: Int
     public var box: [Double]
     public var storageId: String?
+    /// The stroke as drawn, as fractions of the still, to draw it again on
+    /// the phone. Not sent: the runner takes the box.
+    public var path: [[Double]]?
 
-    public init(n: Int, kind: String = "circle", optionId: String, shot: Int, box: [Double], storageId: String? = nil) {
+    public init(n: Int, kind: String = "circle", optionId: String, shot: Int, box: [Double], storageId: String? = nil, path: [[Double]]? = nil) {
         self.n = n
         self.kind = kind
         self.optionId = optionId
         self.shot = shot
         self.box = box
         self.storageId = storageId
+        self.path = path
     }
 
     /// The runner refuses more.

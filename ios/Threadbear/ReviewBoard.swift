@@ -1,11 +1,14 @@
 import SwiftUI
 import ThreadbearKit
 
-/// A design review as a board, as on the Mac: every option a column card, two
-/// to a row, on a dark board that one finger drags and two fingers zoom. A
-/// tap on a shot brings it to the screen's width; another plays its video or
-/// sound. The agent's marks are drawn over the stills; in Mark mode a finger
-/// circles part of one, which the reply can point at as "[Mark n]".
+/// A design review as the Mac's comparison canvas (desktop/gpui/src/
+/// review_window/canvas.rs and band.rs are the source of truth): the agent's
+/// lead as a sticky, then the options in one row left to right, staggered,
+/// each a column with a soft glow, its big letter, its pictures and the
+/// agent's handwritten notes beside them. One finger drags, two zoom; ‹ ›
+/// flies along the agent's tour. A shot's Play pill plays it where it is;
+/// the tools circle, highlight or pin part of a picture, which the reply can
+/// point at as "[Mark n]".
 struct ReviewBoard: View {
     let review: PhoneDesignReview
     @Binding var draft: DesignReviewDraft
@@ -22,21 +25,34 @@ struct ReviewBoard: View {
     var reload: () -> Void
     var send: () -> Void
 
-    // The board's place: screen = offset + board point * scale.
-    @State private var scale: CGFloat = 1
-    @State private var offset: CGPoint = .zero
+    enum Tool: CaseIterable { case move, circle, highlight, pin }
+
+    private struct Flight {
+        var from: CanvasCamera
+        var to: CanvasCamera
+        var start: Date
+        var id = UUID()
+    }
+
+    /// A mark being drawn, in world units.
+    private struct Drawing {
+        var tool: Tool
+        var points: [CGPoint]
+    }
+
+    @State private var camera = CanvasCamera()
+    @State private var flight: Flight?
     @State private var viewport: CGSize = .zero
-    @State private var boardSize: CGSize = .zero
     @State private var topInset: CGFloat = 0
     @State private var bottomEdge: CGFloat = 0
-    @State private var shotFrames: [ShotKey: CGRect] = [:]
-    @State private var cardFrames: [String: CGRect] = [:]
-    /// Once the user has moved the board, it's no longer refitted as pictures load.
-    @State private var userMoved = false
+    @State private var board: BoardLayout?
+    @State private var stops: [CanvasStop] = []
+    @State private var stop = 0
+    /// Moved by hand: nothing's dimmed, and the camera isn't refitted.
+    @State private var roaming = false
+    @State private var placedFor: CGSize?
     @State private var showNotes = true
-    @State private var marking = false
-    @State private var focused: ShotKey?
-    @State private var tourIndex: Int?
+    @State private var tool: Tool = .move
     @State private var drawing: Drawing?
     @State private var drawCancelled = false
     /// A finger is drawing: true from a stroke's start until it ends or is cancelled.
@@ -45,6 +61,7 @@ struct ReviewBoard: View {
     @State private var selection: TextSelection?
     @FocusState private var replyFocused: Bool
     @State private var markLimitHit = false
+    @State private var posed = false
 
     // Gesture bookkeeping, not drawn.
     @State private var pinchAnchor: CGPoint?
@@ -52,44 +69,37 @@ struct ReviewBoard: View {
     @State private var pinchTouches = 0
     @State private var lastPan: CGPoint = .zero
 
-    private struct Drawing {
-        var key: ShotKey
-        var start: CGPoint
-        var end: CGPoint
-        var box: [Double] { [start.x, start.y, end.x, end.y].map { Double(min(1, max(0, $0))) } }
-    }
-
-    private enum Metrics {
-        static let card: CGFloat = 360
-        static let inner: CGFloat = 16
-        static var picture: CGFloat { card - inner * 2 }
-        static let gap: CGFloat = 32
-        static let margin: CGFloat = 48
-        static let scales: ClosedRange<CGFloat> = 0.15...6
-    }
-
     private var pending: Bool { review.pending }
     private var busy: Bool { sending || loading }
-
-    private var tour: [ShotKey] {
-        review.options.indices.flatMap { o in review.options[o].shots.indices.map { ShotKey(option: o, shot: $0) } }
-    }
+    private var drawingOn: Bool { tool != .move && canMark && pending && !busy }
+    /// The pen on screen, as the Mac's; a highlight is wider.
+    private static let pen: CGFloat = 3
+    private static let marker: CGFloat = 22
+    private static let accent = Color(hex: 0x0A84FF)
 
     var body: some View {
         ZStack {
-            board.ignoresSafeArea()
+            TimelineView(.animation(paused: flight == nil)) { context in
+                let cam = camera(at: context.date)
+                ZStack(alignment: .topLeading) {
+                    boardLayer(cam)
+                    overlay(cam)
+                }
+            }
+            .ignoresSafeArea()
             VStack(spacing: 0) {
-                topBar
+                topChrome
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { topInset = $0 }
                 Spacer(minLength: 0)
-                replyBar
+                band
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomEdge = $0 }
             }
         }
         .environment(\.colorScheme, .dark)
         .background(BoardInk.board.ignoresSafeArea())
-        .onChange(of: fitInputs) { _, _ in if !userMoved { fitAll(animated: false) } }
-        .onChange(of: marking) { _, on in if !on { drawing = nil } }
+        .onAppear(perform: relayout)
+        .onChange(of: layoutKey) { _, _ in relayout() }
+        .onChange(of: placeKey) { _, _ in place() }
         .onChange(of: busy) { _, now in
             if now {
                 if drawing != nil { drawing = nil; drawCancelled = true }
@@ -99,181 +109,329 @@ struct ReviewBoard: View {
         }
         // However a stroke ends, ended or cancelled by the system, the next starts clean.
         .onChange(of: stroking) { _, live in if !live { drawing = nil; drawCancelled = false } }
+        .onChange(of: draft.nextMarkNumber == nil) { _, full in if full && tool != .move && drawing == nil { tool = .move } }
         .onDisappear { playback.stop() }
-        .task(id: shotFrames.count + pictures.count * 1000) { pose() }
+        .task(id: poseKey) { await pose() }
     }
 
-    /// What the opening fit depends on.
-    private var fitInputs: [CGFloat] { [viewport.width, viewport.height, boardSize.width, boardSize.height, topInset, bottomEdge] }
+    // MARK: - Layout and camera
+
+    /// What the board's layout depends on: the review and its pictures' sizes.
+    private var layoutKey: String {
+        "\(review.id):\(review.revision):\(review.options.count):" + pictures.values
+            .map { "\($0.src ?? ""):\($0.width ?? 0)x\($0.height ?? 0)" }.sorted().joined(separator: ",")
+    }
+
+    private var placeKey: [CGFloat] { [viewport.width, viewport.height, topInset, bottomEdge, CGFloat(stops.count)] }
+
+    private func aspect(_ shot: PhoneDesignReview.Shot) -> CGFloat {
+        if let p = pictures[shot.src], let w = p.width, let h = p.height, w > 0, h > 0 { return CGFloat(w) / CGFloat(h) }
+        return 4 / 3
+    }
+
+    private static let measure = CanvasMeasure(
+        words: { text, width in
+            let font = UIFont.systemFont(ofSize: CanvasMetrics.wordsSize)
+            let plain = text.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            let h = (plain as NSString).boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                                                     options: [.usesLineFragmentOrigin], attributes: [.font: font], context: nil).height
+            return max(1, (h / font.lineHeight).rounded()) * CanvasMetrics.wordsSize * 1.5
+        },
+        note: { text in
+            let font = BoardInk.handUIFont(CanvasMetrics.noteSize)
+            let r = (text as NSString).boundingRect(with: CGSize(width: CanvasMetrics.noteWidth, height: .greatestFiniteMagnitude),
+                                                    options: [.usesLineFragmentOrigin], attributes: [.font: font], context: nil)
+            let lines = max(1, (r.height / font.lineHeight).rounded())
+            return CGSize(width: min(CanvasMetrics.noteWidth, ceil(r.width)), height: lines * max(CanvasMetrics.noteSize * 1.1, font.lineHeight))
+        })
+
+    private func relayout() {
+        let laid = BoardLayout.layout(review, aspect: aspect, measure: Self.measure)
+        guard laid != board else { return }
+        board = laid
+        let fresh = laid.stops
+        if stops.isEmpty { stop = fresh.firstIndex { $0.lit == .start } ?? 0 }
+        stops = fresh
+        stop = min(stop, max(0, fresh.count - 1))
+        placedFor = nil
+        place()
+    }
+
+    /// The screen between the top tools and the bottom band.
+    private var area: CGRect {
+        let top = topInset
+        let bottom = bottomEdge > top + 40 ? bottomEdge : viewport.height
+        return CGRect(x: 0, y: top, width: viewport.width, height: max(1, bottom - top))
+    }
+
+    /// The opening stop once the screen's size is known, and again when it
+    /// changes, unless the board's been moved by hand.
+    private func place() {
+        guard viewport.width > 0, bottomEdge > topInset, stops.indices.contains(stop) else { return }
+        guard placedFor != viewport || !roaming else { return }
+        let first = placedFor == nil
+        placedFor = viewport
+        if first || !roaming {
+            flight = nil
+            camera = cameraFor(stops[stop])
+        }
+    }
+
+    private func cameraFor(_ s: CanvasStop) -> CanvasCamera {
+        CanvasCamera.fit(s.rect, in: area, pad: 12, max: CanvasMetrics.stopZoom)
+    }
+
+    private func camera(at date: Date) -> CanvasCamera {
+        guard let flight else { return camera }
+        let k = date.timeIntervalSince(flight.start) / CanvasMetrics.flightSeconds
+        if k >= 1 { return flight.to }
+        return flight.from.toward(flight.to, CanvasCamera.ease(CGFloat(k)), view: viewport)
+    }
+
+    /// Flies there in 650 ms, easing in and out, as the Mac's tour does.
+    private func fly(to target: CanvasCamera) {
+        let from = camera(at: .now)
+        let f = Flight(from: from, to: target, start: .now)
+        flight = f
+        camera = target
+        Task {
+            try? await Task.sleep(for: .seconds(CanvasMetrics.flightSeconds))
+            if flight?.id == f.id { flight = nil }
+        }
+    }
+
+    /// A hand on the board stops any flight where it is.
+    private func land() {
+        guard flight != nil else { return }
+        camera = camera(at: .now)
+        flight = nil
+    }
+
+    private func go(_ index: Int) {
+        guard stops.indices.contains(index) else { return }
+        stop = index
+        roaming = false
+        fly(to: cameraFor(stops[index]))
+    }
+
+    private func stopIndex(_ option: Int, _ shot: Int) -> Int? {
+        stops.firstIndex { $0.lit == (shot == 0 ? .opening(option) : .shot(option, shot)) }
+    }
+
+    /// A tap on a picture: to its stop, and if already there, closer, to the
+    /// picture alone.
+    private func lookCloser(_ option: Int, _ shot: Int) {
+        guard let i = stopIndex(option, shot) else { return }
+        if stop == i && !roaming, let picture = board?.shot(option, shot)?.picture {
+            roaming = true
+            fly(to: CanvasCamera.fit(picture, in: area, pad: 8, max: CanvasMetrics.maxZoom))
+        } else {
+            go(i)
+        }
+    }
+
+    private var lit: CanvasLit? {
+        guard !roaming, stops.indices.contains(stop), stops[stop].lit.dims else { return nil }
+        return stops[stop].lit
+    }
+
+    private func alpha(_ on: Bool) -> Double { on ? 1 : 0.2 }
 
     // MARK: - The board
 
-    private var board: some View {
+    private func boardLayer(_ cam: CanvasCamera) -> some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                DotGrid(scale: scale, offset: offset)
+                DotGrid(camera: cam)
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { fitAll(animated: true) }
+                    .onTapGesture(count: 2) { if let all = stops.indices.last { go(all) } }
                     .accessibilityHidden(true)
-                content
-                    .scaleEffect(scale, anchor: .topLeading)
-                    .offset(x: offset.x, y: offset.y)
+                if let board {
+                    world(board, cam: cam)
+                        .scaleEffect(cam.s, anchor: .topLeading)
+                        .offset(x: cam.tx, y: cam.ty)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .clipped()
+            .contentShape(Rectangle())
+            .highPriorityGesture(drawGesture, including: drawingOn ? .all : .subviews)
             .gesture(BoardPinch(changed: pinched))
-            .gesture(BoardPan(enabled: !marking, changed: panned))
+            .gesture(BoardPan(enabled: tool == .move || !drawingOn, changed: panned))
             .onAppear { viewport = geo.size }
             .onChange(of: geo.size) { _, size in viewport = size }
         }
     }
 
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 40) {
-            if let note = review.note, !note.isEmpty {
-                MarkdownText(note)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .frame(width: Metrics.card * 2 + Metrics.gap, alignment: .leading)
-            }
-            if !pending {
-                Text("This review is \(review.status). Your answer stays here for reference.")
-                    .font(.system(size: 17))
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-            ForEach(Array(stride(from: 0, to: review.options.count, by: 2)), id: \.self) { first in
-                HStack(alignment: .top, spacing: Metrics.gap) {
-                    ForEach(first..<min(first + 2, review.options.count), id: \.self) { index in
-                        card(index)
-                    }
-                }
-            }
+    private func world(_ board: BoardLayout, cam: CanvasCamera) -> some View {
+        let lit = lit
+        return ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: max(1, board.bounds.maxX), height: max(1, board.bounds.maxY))
+            ForEach(board.options, id: \.index) { laid in backdrop(laid, lit: lit) }
+            if let lead = board.lead, let note = review.note { leadNote(note, lead, on: lit == nil || lit == .lead, s: cam.s) }
+            ForEach(board.options, id: \.index) { laid in column(laid, lit: lit, s: cam.s) }
+            if showNotes { agentInk(board, lit: lit, s: cam.s) }
+            userInk(board, s: cam.s)
         }
-        .padding(Metrics.margin)
-        .fixedSize()
-        .coordinateSpace(.named("board"))
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { boardSize = $0 }
     }
 
-    private func card(_ index: Int) -> some View {
-        let option = review.options[index]
+    /// No box: a soft glow the column's shape, a touch green once ticked, and
+    /// the option's big letter that its first picture mostly hides.
+    @ViewBuilder private func backdrop(_ laid: BoardOptionLayout, lit: CanvasLit?) -> some View {
+        let option = review.options[laid.index]
         let picked = draft.picks.contains(option.id)
-        let tint = picked ? BoardInk.green : [BoardInk.blue, Color.purple, Color.teal, Color.orange][index % 4]
-        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
-        return VStack(alignment: .leading, spacing: 14) {
-            header(option, picked: picked)
-            ForEach(Array(option.shots.enumerated()), id: \.offset) { s, shot in
-                shotView(ShotKey(option: index, shot: s), option: option, shot: shot, picked: picked)
-            }
-            if let note = option.note, !note.isEmpty {
-                MarkdownText(note)
-                    .font(.system(size: 15))
-                    .foregroundStyle(.white.opacity(0.8))
-            }
-        }
-        .padding(Metrics.inner)
-        .frame(width: Metrics.card, alignment: .leading)
-        .background {
-            ZStack(alignment: .topTrailing) {
-                shape.fill(Color.white.opacity(0.035))
-                shape.fill(RadialGradient(colors: [tint.opacity(picked ? 0.28 : 0.14), .clear], center: .top, startRadius: 0, endRadius: 380))
-                Text(option.id)
-                    .font(.system(size: 220, weight: .black, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.3)
-                    .foregroundStyle(.white.opacity(0.05))
-                    .frame(maxWidth: Metrics.card * 0.8, alignment: .trailing)
-                    .offset(x: -4, y: 6)
-                    .accessibilityHidden(true)
-            }
-            .clipShape(shape)
-            .contentShape(shape)
-            .onTapGesture(count: 2) { fitAll(animated: true) }
-        }
-        .overlay(shape.strokeBorder(picked ? BoardInk.green.opacity(0.7) : .white.opacity(0.08), lineWidth: picked ? 2 : 1))
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("board")) } action: { cardFrames[option.id] = $0 }
+        let mine = lit.map { $0.option == laid.index } ?? true
+        RoundedRectangle(cornerRadius: CanvasMetrics.haloPad, style: .continuous)
+            .fill(picked ? BoardInk.haloPicked : BoardInk.halo)
+            .blur(radius: CanvasMetrics.haloPad * 0.75)
+            .placed(laid.halo)
+            .opacity(mine ? 1 : 0.55)
+            .allowsHitTesting(false)
+        Text(option.id)
+            .font(.system(size: CanvasMetrics.letterSize, weight: .heavy))
+            .lineLimit(1)
+            .fixedSize()
+            .foregroundStyle(picked ? BoardInk.picked.opacity(0.22) : Color.white.opacity(0.065))
+            .offset(x: laid.letter.minX, y: laid.letter.minY - CanvasMetrics.letterSize * 0.1)
+            .opacity(mine ? 1 : 0.55)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
-    private func header(_ option: PhoneDesignReview.Option, picked: Bool) -> some View {
-        HStack(spacing: 10) {
-            if option.reference == true {
-                Text("Reference")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(.white.opacity(0.1), in: Capsule())
-            } else {
-                Button {
-                    draft.pick(option.id, selected: !picked)
-                } label: {
-                    Image(systemName: picked ? "checkmark" : "")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 30, height: 30)
-                        .background(picked ? BoardInk.green : .clear, in: Circle())
-                        .overlay(Circle().strokeBorder(picked ? BoardInk.green : .white.opacity(0.5), lineWidth: 2))
-                        .contentShape(Circle().inset(by: -8))
+    private func leadNote(_ note: String, _ rect: CGRect, on: Bool, s: CGFloat) -> some View {
+        MarkdownText(note)
+            .font(.system(size: CanvasMetrics.wordsSize))
+            .lineSpacing(Self.wordsSpacing)
+            .foregroundStyle(BoardInk.leadText)
+            .padding(24)
+            .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+            .background(BoardInk.leadFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(BoardInk.leadEdge, lineWidth: 1 / s))
+            .offset(x: rect.minX, y: rect.minY)
+            .opacity(alpha(on))
+    }
+
+    private static let wordsSpacing = CanvasMetrics.wordsSize * 1.5 - UIFont.systemFont(ofSize: CanvasMetrics.wordsSize).lineHeight
+
+    @ViewBuilder private func column(_ laid: BoardOptionLayout, lit: CanvasLit?, s: CGFloat) -> some View {
+        let option = review.options[laid.index]
+        let picked = draft.picks.contains(option.id)
+        titleRow(laid, option: option, picked: picked, s: s)
+        ForEach(laid.shots, id: \.shot) { shotLaid in
+            shot(shotLaid, option: option, picked: picked, on: lit?.shows(laid.index, shotLaid.shot) ?? true, s: s)
+        }
+        if let words = laid.words, let note = option.note {
+            MarkdownText(note)
+                .font(.system(size: CanvasMetrics.wordsSize))
+                .lineSpacing(Self.wordsSpacing)
+                .foregroundStyle(.white.opacity(0.88))
+                .frame(width: words.width, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+                .offset(x: words.minX, y: words.minY)
+                .opacity(alpha(lit?.showsWords(laid.index) ?? true))
+        }
+    }
+
+    /// The tick (while the review can be answered), "A. Title" and the
+    /// agent's star; sized with the board but never under 12 pt on screen.
+    private func titleRow(_ laid: BoardOptionLayout, option: PhoneDesignReview.Option, picked: Bool, s: CGFloat) -> some View {
+        let size = CanvasMetrics.titleSize
+        // Never under 12 pt, unless the column itself is too small on screen
+        // for that, when names would run into the next column's.
+        let floor = min(12, CanvasMetrics.pictureWidth * s / 18)
+        let shrink = min(size, max(floor, size * s)) / (size * s)
+        return HStack(spacing: size * 0.45) {
+            if option.reference != true && pending {
+                Button { draft.pick(option.id, selected: !picked) } label: {
+                    Group {
+                        if picked {
+                            RoundedRectangle(cornerRadius: 3.5).fill(Self.accent)
+                                .overlay(Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
+                        } else {
+                            RoundedRectangle(cornerRadius: 3.5).strokeBorder(.white.opacity(0.6), lineWidth: 1.2)
+                        }
+                    }
+                    .frame(width: 14, height: 14)
+                    .scaleEffect(size / 14 * 0.62)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle().inset(by: -22))
                 }
                 .buttonStyle(.plain)
-                .disabled(!pending || busy)
+                .disabled(busy)
                 .accessibilityLabel("Choose \(option.id), \(option.title)")
                 .accessibilityAddTraits(picked ? .isSelected : [])
             }
-            Text("\(option.id) · \(option.title)")
-                .font(.system(size: 19, weight: .semibold))
+            Text(Self.label(option))
+                .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
+                .lineLimit(1)
+                .onTapGesture { if let i = stopIndex(laid.index, 0) { go(i) } }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Shows it on the board")
             if review.recommended == option.id {
-                Image(systemName: "star.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(BoardInk.yellow)
-                    .accessibilityLabel("Recommended")
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func pictureSize(_ shot: PhoneDesignReview.Shot) -> CGSize {
-        let w = Metrics.picture
-        if let p = pictures[shot.src], let pw = p.width, let ph = p.height, pw > 0, ph > 0 {
-            return CGSize(width: w, height: (w * CGFloat(ph) / CGFloat(pw)).rounded())
-        }
-        return CGSize(width: w, height: (w * 0.75).rounded())
-    }
-
-    @ViewBuilder private func shotView(_ key: ShotKey, option: PhoneDesignReview.Option, shot: PhoneDesignReview.Shot, picked: Bool) -> some View {
-        let size = pictureSize(shot)
-        let mediaURL = shot.media.flatMap { pictures[$0] }.flatMap { URL(string: $0.url) }
-        VStack(alignment: .leading, spacing: 6) {
-            BoardStill(url: pictures[shot.src].flatMap { URL(string: $0.url) }, preview: shot.preview != false)
-                .frame(width: size.width, height: size.height)
-                .overlay { mediaOverlay(key, shot: shot, size: size, playable: mediaURL != nil) }
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(picked ? BoardInk.green : .white.opacity(0.1), lineWidth: picked ? 3 : 0.5)
+                HStack(spacing: 5) {
+                    Image(systemName: "star.fill").font(.system(size: 15)).foregroundStyle(BoardInk.star)
+                    Text("Recommended").font(.system(size: 17)).foregroundStyle(.white.opacity(0.55))
                 }
-                .overlay(alignment: .topLeading) {
-                    if showNotes, let marks = shot.marks, !marks.isEmpty {
-                        AgentMarksOverlay(marks: marks, size: size)
+            }
+            if option.reference == true {
+                Text("Reference").font(.system(size: 17)).foregroundStyle(.white.opacity(0.55))
+            }
+        }
+        .fixedSize()
+        .scaleEffect(shrink, anchor: .leading)
+        .frame(width: laid.title.width, height: laid.title.height, alignment: .leading)
+        .offset(x: laid.title.minX, y: laid.title.minY)
+    }
+
+    private static func label(_ option: PhoneDesignReview.Option) -> String {
+        let t = option.title
+        return t.hasPrefix("\(option.id).") || t.hasPrefix("\(option.id) ") || t == option.id ? t : "\(option.id). \(t)"
+    }
+
+    @ViewBuilder private func shot(_ laid: BoardShotLayout, option: PhoneDesignReview.Option, picked: Bool, on: Bool, s: CGFloat) -> some View {
+        let shot = option.shots[laid.shot]
+        let key = ShotKey(option: laid.option, shot: laid.shot)
+        let ring: CGFloat = 6
+        if picked {
+            RoundedRectangle(cornerRadius: 8 + ring, style: .continuous)
+                .strokeBorder(BoardInk.picked, lineWidth: 2.5 / s)
+                .placed(laid.picture.insetBy(dx: -ring, dy: -ring))
+                .opacity(alpha(on))
+                .allowsHitTesting(false)
+        }
+        BoardStill(url: pictures[shot.src].flatMap { URL(string: $0.url) }, preview: shot.preview != false)
+            .overlay {
+                if playback.current == key, shot.isVideo, let player = playback.player { PlayerLayerView(player: player) }
+            }
+            .overlay(alignment: .bottom) {
+                if playback.current == key, shot.isAudio {
+                    GeometryReader { g in
+                        Rectangle().fill(BoardInk.mine).frame(width: g.size.width * playback.progress, height: 4 / s)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
                     }
                 }
-                .overlay(alignment: .topLeading) { userMarks(key, option: option, size: size) }
-                .contentShape(Rectangle())
-                .onTapGesture { if !marking { tapped(key, media: mediaURL) } }
-                .gesture(drawGesture(key, size: size, media: mediaURL), including: marking && pending && !busy && option.reference != true ? .all : .subviews)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("board")) } action: { shotFrames[key] = $0 }
-                .accessibilityElement()
-                .accessibilityLabel(pictureLabel(option, shot))
-                .accessibilityHint(mediaURL == nil ? "Fills the screen with it" : "Fills the screen with it, then plays it")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { tapped(key, media: mediaURL) }
-            if let title = shot.title, !title.isEmpty {
-                Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.55))
             }
+            .background(Color(hex: 0x0D0D0F))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 1 / s))
+            .placed(laid.picture)
+            .opacity(alpha(on))
+            .onTapGesture { lookCloser(laid.option, laid.shot) }
+            .accessibilityElement()
+            .accessibilityLabel(pictureLabel(option, shot))
+            .accessibilityHint("Shows it closer")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { lookCloser(laid.option, laid.shot) }
+        if laid.caption.height > 0 {
+            Text(shot.title ?? "\(laid.shot + 1) of \(option.shots.count)")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(1)
+                .frame(width: laid.caption.width, height: laid.caption.height, alignment: .topLeading)
+                .offset(x: laid.caption.minX, y: laid.caption.minY)
+                .opacity(alpha(on))
+                .allowsHitTesting(false)
         }
     }
 
@@ -284,157 +442,204 @@ struct ReviewBoard: View {
         return "\(option.id), \(option.title): \(shot.title ?? "picture")\(kind)\(marked)"
     }
 
-    @ViewBuilder private func mediaOverlay(_ key: ShotKey, shot: PhoneDesignReview.Shot, size: CGSize, playable: Bool) -> some View {
-        let current = playback.current == key
-        if shot.isVideo {
-            ZStack {
-                if current, let player = playback.player { PlayerLayerView(player: player) }
-                if playable && !(current && playback.playing) {
-                    PlayCircle(playing: false, loading: playback.loading == key)
+    /// The agent's marks as the Mac draws them: a looping circle, a double
+    /// underline, a marker swipe, and from each note a curled pointer with an
+    /// open head; the notes in Caveat in the margin beside the picture.
+    @ViewBuilder private func agentInk(_ board: BoardLayout, lit: CanvasLit?, s: CGFloat) -> some View {
+        let line = 3.2 * max(s, 0.5) / s
+        let size = CGSize(width: max(1, board.bounds.maxX), height: max(1, board.bounds.maxY))
+        ForEach(board.options, id: \.index) { laidOption in
+            let option = review.options[laidOption.index]
+            ForEach(laidOption.shots, id: \.shot) { laid in
+                let marks = option.shots[laid.shot].marks ?? []
+                let on = lit?.shows(laid.option, laid.shot) ?? true
+                ForEach(marks.indices, id: \.self) { m in
+                    let mark = marks[m]
+                    let ink = BoardInk.of(mark.ink)
+                    let seed = UInt32(laid.option * 97 + laid.shot * 13 + m) + 7
+                    let strokes = CanvasDoodle.strokes(laid.picture, mark, seed: seed)
+                    if mark.kind == "highlight" {
+                        StrokesShape(strokes: strokes)
+                            .stroke(ink.opacity(0.3), style: StrokeStyle(lineWidth: abs(laid.picture.part(mark.box).height) * 1.05, lineCap: .butt, lineJoin: .round))
+                            .frame(width: size.width, height: size.height, alignment: .topLeading)
+                            .opacity(alpha(on))
+                    } else if !strokes.isEmpty {
+                        StrokesShape(strokes: strokes)
+                            .stroke(ink, style: StrokeStyle(lineWidth: line, lineCap: .round, lineJoin: .round))
+                            .frame(width: size.width, height: size.height, alignment: .topLeading)
+                            .opacity(alpha(on))
+                    }
                 }
-                if !playable || playback.failed.contains(key) { onMacNote("Play the video on the Mac") }
-            }
-        } else if shot.isAudio {
-            if playable && !playback.failed.contains(key) {
-                AudioStrip(src: shot.src, progress: current ? playback.progress : 0, playing: current && playback.playing, loading: playback.loading == key)
-            } else {
-                onMacNote("Play the sound on the Mac")
-            }
-        }
-    }
-
-    private func onMacNote(_ text: String) -> some View {
-        VStack {
-            Spacer()
-            HStack {
-                Label(text, systemImage: "desktopcomputer")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.black.opacity(0.6), in: Capsule())
-                Spacer()
+                ForEach(laid.notes, id: \.mark) { place in
+                    if marks.indices.contains(place.mark) {
+                        let ink = BoardInk.of(marks[place.mark].ink)
+                        StrokesShape(strokes: CanvasDoodle.pointer(place))
+                            .stroke(ink, style: StrokeStyle(lineWidth: line, lineCap: .round, lineJoin: .round))
+                            .frame(width: size.width, height: size.height, alignment: .topLeading)
+                            .opacity(alpha(on))
+                        Text(marks[place.mark].note ?? "")
+                            .font(.custom(BoardInk.handName, size: CanvasMetrics.noteSize))
+                            .foregroundStyle(ink)
+                            .frame(width: place.rect.width + 4, alignment: .topLeading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .offset(x: place.rect.minX, y: place.rect.minY)
+                            .opacity(alpha(on))
+                    }
+                }
             }
         }
-        .padding(8)
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
-    @ViewBuilder private func userMarks(_ key: ShotKey, option: PhoneDesignReview.Option, size: CGSize) -> some View {
+    /// The phone's own marks, drawn as they were, and the one being drawn.
+    @ViewBuilder private func userInk(_ board: BoardLayout, s: CGFloat) -> some View {
+        let size = CGSize(width: max(1, board.bounds.maxX), height: max(1, board.bounds.maxY))
+        ForEach(draft.marks ?? [], id: \.n) { mark in
+            if let where_ = place(of: mark, on: board), mark.kind != "pin" {
+                let part = where_.0, points = where_.1
+                let stroke = points.count > 1 ? CanvasStroke.through(points) : nil
+                Group {
+                    if mark.kind == "highlight" {
+                        StrokesShape(strokes: stroke.map { [$0] } ?? [CanvasDoodle.swipe(part)])
+                            .stroke(BoardInk.mine.opacity(0.38), style: StrokeStyle(lineWidth: max(part.height * 0.85, 4 / s), lineCap: .round, lineJoin: .round))
+                    } else if let stroke {
+                        StrokesShape(strokes: [stroke])
+                            .stroke(BoardInk.mine, style: StrokeStyle(lineWidth: Self.pen / s, lineCap: .round, lineJoin: .round))
+                    } else {
+                        Path(ellipseIn: part).stroke(BoardInk.mine, lineWidth: Self.pen / s)
+                    }
+                }
+                .frame(width: size.width, height: size.height, alignment: .topLeading)
+            }
+        }
+        if let drawing, drawing.points.count > 1 {
+            let marker = drawing.tool == .highlight
+            StrokesShape(strokes: [.through(drawing.points)])
+                .stroke(marker ? BoardInk.mine.opacity(0.38) : BoardInk.mine,
+                        style: StrokeStyle(lineWidth: (marker ? Self.marker : Self.pen) / s, lineCap: .round, lineJoin: .round))
+                .frame(width: size.width, height: size.height, alignment: .topLeading)
+        }
+    }
+
+    /// Where one of the phone's marks is on the board: its box and stroke.
+    private func place(of mark: ReviewUserMark, on board: BoardLayout) -> (CGRect, [CGPoint])? {
+        guard let o = review.options.firstIndex(where: { $0.id == mark.optionId }), let laid = board.shot(o, mark.shot) else { return nil }
+        let p = laid.picture
+        let part = p.part(mark.box).standardized
+        let points = (mark.path ?? []).compactMap { $0.count == 2 ? p.at($0[0], $0[1]) : nil }
+        return (part, points)
+    }
+
+    // MARK: - On the screen, not zoomed: badges and play pills
+
+    /// In a GeometryReader, which takes the space it's given: a fixed size
+    /// here made the whole screen taller than the phone's and moved the bars.
+    private func overlay(_ cam: CanvasCamera) -> some View {
+        GeometryReader { _ in overlayContent(cam) }
+    }
+
+    private func overlayContent(_ cam: CanvasCamera) -> some View {
         ZStack(alignment: .topLeading) {
-            ForEach((draft.marks ?? []).filter { $0.optionId == option.id && $0.shot == key.shot }, id: \.n) { mark in
-                UserMarkView(box: mark.box, n: mark.n, size: size)
-            }
-            if let drawing, drawing.key == key {
-                UserMarkView(box: drawing.box, n: nil, size: size, drawing: true)
+            Color.clear.allowsHitTesting(false)
+            if let board {
+                ForEach(draft.marks ?? [], id: \.n) { mark in
+                    if let where_ = place(of: mark, on: board) {
+                        let part = where_.0, points = where_.1
+                        let pin = mark.kind == "pin"
+                        let spot = cam.toScreen(pin ? (points.first ?? part.origin) : part.origin)
+                        badge(mark.n, pin: pin)
+                            .offset(x: spot.x - 13, y: pin ? spot.y - 26 : spot.y - 13)
+                            .allowsHitTesting(false)
+                    }
+                }
+                ForEach(board.options, id: \.index) { laidOption in
+                    ForEach(laidOption.shots, id: \.shot) { laid in
+                        playPill(laid, cam: cam)
+                    }
+                }
             }
         }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .allowsHitTesting(false)
     }
 
-    private func drawGesture(_ key: ShotKey, size: CGSize, media: URL?) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .updating($stroking) { _, live, _ in live = true }
-            .onChanged { value in
-                // Sending started mid-drag, or a second finger came: this circle's off.
-                guard !drawCancelled, !busy, pinchAnchor == nil else { drawing = nil; drawCancelled = true; return }
-                let a = CGPoint(x: value.startLocation.x / size.width, y: value.startLocation.y / size.height)
-                let b = CGPoint(x: value.location.x / size.width, y: value.location.y / size.height)
-                drawing = Drawing(key: key, start: a, end: b)
+    private func badge(_ n: Int, pin: Bool) -> some View {
+        Text("\(n)")
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(BoardInk.mineText)
+            .frame(width: 26, height: 26)
+            .background(BoardInk.mine, in: UnevenRoundedRectangle(topLeadingRadius: 13, bottomLeadingRadius: pin ? 3 : 13, bottomTrailingRadius: 13, topTrailingRadius: 13))
+            .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+            .accessibilityHidden(true)
+    }
+
+    /// The Mac's pill at a video or sound's top right corner: Play, or Stop
+    /// while it plays. It plays the shot where it is, at any zoom.
+    @ViewBuilder private func playPill(_ laid: BoardShotLayout, cam: CanvasCamera) -> some View {
+        let option = review.options[laid.option]
+        let shot = option.shots[laid.shot]
+        let key = ShotKey(option: laid.option, shot: laid.shot)
+        let url = shot.media.flatMap { pictures[$0] }.flatMap { URL(string: $0.url) }
+        let r = cam.rect(laid.picture)
+        if (shot.isVideo || shot.isAudio), r.width >= 90, r.maxX > 0, r.minX < viewport.width, r.maxY > 0, r.minY < viewport.height {
+            let playing = playback.current == key && playback.playing
+            let failed = url == nil || playback.failed.contains(key)
+            let top = topInset + 8
+            let (right, y): (CGFloat, CGFloat) = !playing
+                ? (r.maxX - 8, max(r.minY + 8, min(top, r.maxY - 34)))
+                : (r.minY - 34 >= top ? (r.maxX, r.minY - 34) : (r.maxX, r.maxY + 8))
+            Button {
+                guard let url else { return }
+                Task { await playback.toggle(key, url: url) }
+            } label: {
+                HStack(spacing: 6) {
+                    if playback.loading == key {
+                        ProgressView().controlSize(.mini).tint(.white)
+                    } else {
+                        Image(systemName: failed ? "desktopcomputer" : playing ? "stop.fill" : shot.isAudio ? "music.note" : "play.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    Text(failed ? "Play on the Mac" : playing ? "Stop" : "Play")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background(.black.opacity(0.72), in: Capsule())
+                .contentShape(Capsule().inset(by: -8))
             }
-            .onEnded { _ in
-                defer { drawing = nil; drawCancelled = false }
-                guard !drawCancelled, !busy, let done = drawing else { return }
-                let box = done.box
-                // A tap, not a circle.
-                if abs(box[2] - box[0]) < 0.03 && abs(box[3] - box[1]) < 0.03 { tapped(key, media: media); return }
-                addMark(key, box: [min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3])])
-            }
+            .buttonStyle(.plain)
+            .disabled(failed)
+            .fixedSize()
+            // Offset, not alignment guides, which grew the overlay's own size
+            // and pushed the whole screen sideways.
+            .frame(width: 220, alignment: .trailing)
+            .offset(x: right - 220, y: y)
+            .accessibilityLabel(failed ? "\(shot.isAudio ? "Sound" : "Video") plays on the Mac" : "\(playing ? "Stop" : "Play") \(option.id), \(shot.title ?? (shot.isAudio ? "sound" : "video"))")
+        }
     }
 
     // MARK: - Moving the board
 
-    private var available: CGRect {
-        let top = topInset
-        let bottom = bottomEdge > top ? bottomEdge : viewport.height
-        return CGRect(x: 0, y: top, width: viewport.width, height: max(1, bottom - top))
-    }
-
-    private func clamp(_ s: CGFloat) -> CGFloat { min(Metrics.scales.upperBound, max(Metrics.scales.lowerBound, s)) }
-
-    /// Shows `rect` (board points) as large as fits between the bars, `margin` round it.
-    private func show(_ rect: CGRect, margin: CGFloat, animated: Bool) {
-        guard rect.width > 0, rect.height > 0, viewport.width > 0 else { return }
-        let area = available
-        let s = clamp(min((area.width - margin * 2) / rect.width, (area.height - margin * 2) / rect.height))
-        let target = CGPoint(x: area.midX - rect.midX * s, y: area.midY - rect.midY * s)
-        if animated {
-            withAnimation(.smooth(duration: 0.4)) { scale = s; offset = target }
-        } else {
-            scale = s
-            offset = target
-        }
-    }
-
-    private func fitAll(animated: Bool) {
-        focused = nil
-        tourIndex = nil
-        show(CGRect(origin: .zero, size: boardSize), margin: 8, animated: animated)
-        if animated { userMoved = false }
-    }
-
-    private func zoom(to key: ShotKey) {
-        guard let frame = shotFrames[key] else { return }
-        userMoved = true
-        focused = key
-        tourIndex = tour.firstIndex(of: key)
-        show(frame, margin: 8, animated: true)
-    }
-
-    private func isFilling(_ key: ShotKey) -> Bool {
-        guard focused == key, let frame = shotFrames[key] else { return false }
-        let area = available
-        let s = clamp(min((area.width - 16) / frame.width, (area.height - 16) / frame.height))
-        return abs(scale - s) / s < 0.05
-    }
-
-    private func tapped(_ key: ShotKey, media: URL?) {
-        if isFilling(key) {
-            if let media { Task { await playback.toggle(key, url: media) } }
-        } else {
-            zoom(to: key)
-        }
-    }
-
-    private func step(_ by: Int) {
-        let shots = tour
-        guard !shots.isEmpty else { return }
-        let next = tourIndex.map { ($0 + by + shots.count) % shots.count } ?? (by > 0 ? 0 : shots.count - 1)
-        zoom(to: shots[next])
-    }
-
     private func pinched(_ state: UIGestureRecognizer.State, _ location: CGPoint, _ pinch: CGFloat, _ touches: Int) {
         switch state {
         case .began:
-            userMoved = true
-            focused = nil
-            // Only a circle being drawn is given up: two fingers move the board.
+            land()
+            roaming = true
+            // Only a mark being drawn is given up: two fingers move the board.
             if drawing != nil { drawing = nil; drawCancelled = true }
             pinchTouches = touches
-            pinchStartScale = scale / pinch
-            pinchAnchor = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
+            pinchStartScale = camera.s / pinch
+            pinchAnchor = camera.toWorld(location)
         case .changed:
             // A finger lifted or landed: the middle point jumps, so start again from here.
             if touches != pinchTouches || pinchAnchor == nil {
                 pinchTouches = touches
-                pinchStartScale = scale / pinch
-                pinchAnchor = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
+                pinchStartScale = camera.s / pinch
+                pinchAnchor = camera.toWorld(location)
             }
             guard let anchor = pinchAnchor else { return }
-            let s = clamp(pinchStartScale * pinch)
-            scale = s
-            offset = CGPoint(x: location.x - anchor.x * s, y: location.y - anchor.y * s)
+            let s = min(CanvasMetrics.maxZoom, max(CanvasMetrics.minZoom, pinchStartScale * pinch))
+            camera = CanvasCamera(s: s, tx: location.x - anchor.x * s, ty: location.y - anchor.y * s)
         default:
             // Not drawCancelled: a finger still down from a cancelled stroke
             // would commit it from where it began. The stroke's end clears it.
@@ -445,15 +650,16 @@ struct ReviewBoard: View {
     private func panned(_ state: UIGestureRecognizer.State, _ translation: CGPoint) {
         switch state {
         case .began:
-            userMoved = true
+            land()
+            roaming = true
             lastPan = translation
         case .changed:
-            let delta = CGPoint(x: translation.x - lastPan.x, y: translation.y - lastPan.y)
+            let dx = translation.x - lastPan.x, dy = translation.y - lastPan.y
             lastPan = translation
             // The pinch moves the board while two fingers are down.
             guard pinchAnchor == nil else { return }
-            if abs(delta.x) + abs(delta.y) > 0 { focused = nil }
-            offset = CGPoint(x: offset.x + delta.x, y: offset.y + delta.y)
+            camera.tx += dx
+            camera.ty += dy
         default:
             lastPan = .zero
         }
@@ -461,21 +667,64 @@ struct ReviewBoard: View {
 
     // MARK: - Marks
 
-    private func addMark(_ key: ShotKey, box: [Double]) {
-        guard !busy, review.options[key.option].reference != true else { return }
+    private var drawGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($stroking) { _, live, _ in live = true }
+            .onChanged { value in
+                // Sending started mid-drag, or a second finger came: this one's off.
+                guard !drawCancelled, !busy, pinchAnchor == nil else { drawing = nil; drawCancelled = true; return }
+                land()
+                let p = camera.toWorld(value.location)
+                if var d = drawing {
+                    if tool != .pin, let last = d.points.last, hypot(p.x - last.x, p.y - last.y) * camera.s >= 3, d.points.count < 400 {
+                        d.points.append(p)
+                        drawing = d
+                    }
+                } else {
+                    drawing = Drawing(tool: tool, points: [camera.toWorld(value.startLocation)] + (tool == .pin ? [] : [p]))
+                }
+            }
+            .onEnded { _ in
+                defer { drawing = nil; drawCancelled = false }
+                guard !drawCancelled, !busy, let done = drawing else { return }
+                finish(done)
+            }
+    }
+
+    /// Where a drawing ends up: the picture under its middle, its box and
+    /// stroke as fractions of that picture. Nothing off a picture or on a
+    /// reference, nor a circle or highlight too small to mean anything.
+    private func finish(_ d: Drawing) {
+        guard let board, let first = d.points.first else { return }
+        if d.tool != .pin && d.points.count < 3 { return }
+        let xs = d.points.map(\.x), ys = d.points.map(\.y)
+        let middle = d.tool == .pin ? first : CGPoint(x: (xs.min()! + xs.max()!) / 2, y: (ys.min()! + ys.max()!) / 2)
+        guard let laid = board.shot(at: middle), review.options[laid.option].reference != true else { return }
+        let p = laid.picture
+        func frac(_ q: CGPoint) -> [Double] {
+            [Double(min(1, max(0, (q.x - p.minX) / p.width))), Double(min(1, max(0, (q.y - p.minY) / p.height)))]
+        }
+        let grow = d.tool == .highlight ? Self.marker / 2 / camera.s : 0
+        let a = frac(CGPoint(x: xs.min()! - grow, y: ys.min()! - grow)), b = frac(CGPoint(x: xs.max()! + grow, y: ys.max()! + grow))
+        let kind = d.tool == .highlight ? "highlight" : d.tool == .pin ? "pin" : "circle"
+        let box = d.tool == .pin ? frac(first) + frac(first) : [a[0], a[1], b[0], b[1]]
+        addMark(option: laid.option, shot: laid.shot, kind: kind, box: box, path: d.points.prefix(200).map(frac))
+    }
+
+    private func addMark(option: Int, shot: Int, kind: String, box: [Double], path: [[Double]]?) {
+        guard !busy, review.options[option].reference != true else { return }
         guard let n = draft.nextMarkNumber else { markLimitHit = true; return }
         var marks = draft.marks ?? []
-        let mark = ReviewUserMark(n: n, optionId: review.options[key.option].id, shot: key.shot, box: box)
+        let mark = ReviewUserMark(n: n, kind: kind, optionId: review.options[option].id, shot: shot, box: box, path: path)
         marks.append(mark)
         draft.marks = marks
         insert(mark.token)
     }
 
-    /// At the reply's cursor if it has one, else on the end.
+    /// At the reply's cursor while it's being typed in, else on the end.
     private func insert(_ token: String) {
         var text = draft.reply ?? ""
-        // The cursor only counts while the reply is being typed in: a stale
-        // one from before would land mid-word.
+        // A stale cursor from before would land mid-word.
         if replyFocused, let selection, case let .selection(range) = selection.indices,
            range.lowerBound >= text.startIndex, range.upperBound <= text.endIndex {
             let before = text[..<range.lowerBound].last
@@ -502,93 +751,109 @@ struct ReviewBoard: View {
         selection = nil
     }
 
-    // MARK: - Bars
+    // MARK: - Top: close, the title, and the Mac's floating tools
 
-    private var topBar: some View {
+    private var topChrome: some View {
         VStack(spacing: 8) {
             HStack(spacing: 10) {
-                Button(action: close) { barIcon("xmark") }
-                    .accessibilityLabel("Close")
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(.white.opacity(0.1), in: Circle())
+                }
+                .accessibilityLabel("Close")
+                Spacer(minLength: 0)
                 Menu {
-                    if pending {
-                        Toggle("None of these", isOn: Binding(get: { draft.none == true }, set: { draft.pickNone($0) }))
-                            .disabled(busy)
-                    }
                     Button("All reviews", systemImage: "list.bullet", action: allReviews).disabled(busy)
                     Button("Reload review", systemImage: "arrow.clockwise", action: reload).disabled(busy)
                 } label: {
                     HStack(spacing: 4) {
-                        Text(review.title)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.secondary)
+                        Text(review.title).font(.headline).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
                     }
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
                 }
                 .accessibilityLabel("\(review.title), more")
-                .accessibilityHint("None of these, all reviews, reload")
-                Button { fitAll(animated: true) } label: {
-                    Text("All").font(.system(size: 15, weight: .semibold)).frame(minWidth: 40, minHeight: 36)
+                .accessibilityHint("All reviews, reload")
+                Spacer(minLength: 0)
+                Color.clear.frame(width: 34, height: 34)
+            }
+            .padding(.horizontal, 12)
+            tools
+            if drawingOn || markLimitHit {
+                Text(markLimitHit && draft.nextMarkNumber == nil ? "That's the most marks one answer can have."
+                     : tool == .pin ? "Tap a picture to drop a pin." : tool == .highlight ? "Drag over part of a picture to highlight it." : "Drag round part of a picture to circle it.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .shadow(color: .black, radius: 3)
+            }
+        }
+        .padding(.bottom, 6)
+        .background(alignment: .top) {
+            BoardInk.board.opacity(0.94).ignoresSafeArea(edges: .top).frame(height: 50).frame(maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    private var tools: some View {
+        let marking = canMark && pending && (tool != .move || draft.nextMarkNumber != nil)
+        return HStack(spacing: 2) {
+            if marking {
+                toolButton(.move, "hand.raised", "Move and zoom")
+                toolButton(.circle, "circle", "Circle a part")
+                toolButton(.highlight, "highlighter", "Highlight a part")
+                toolButton(.pin, "mappin", "Drop a pin")
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 20).padding(.horizontal, 4)
+            }
+            Button { showNotes.toggle() } label: {
+                HStack(spacing: 7) {
+                    Capsule().fill(showNotes ? BoardInk.yellow : .white.opacity(0.2))
+                        .frame(width: 28, height: 16)
+                        .overlay(alignment: showNotes ? .trailing : .leading) { Circle().fill(.white).frame(width: 12, height: 12).padding(2) }
+                    Text("Notes").font(.system(size: 13))
                 }
                 .foregroundStyle(.white)
-                .background(.white.opacity(0.1), in: Capsule())
-                .accessibilityHint("Fits every option on the screen")
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+                .contentShape(Rectangle())
             }
-            HStack(spacing: 8) {
-                toggle("Notes", systemImage: "scribble", on: $showNotes, hint: "Shows or hides the agent's marks")
-                if canMark && pending && (marking || draft.nextMarkNumber != nil) {
-                    toggle("Mark", systemImage: "pencil.tip", on: $marking, hint: "Drag on a picture to circle part of it")
-                        .disabled(busy)
-                }
-                Spacer()
-                Button { step(-1) } label: { barIcon("chevron.left") }
-                    .accessibilityLabel("Previous shot")
-                Text(tourIndex.map { "\($0 + 1)/\(tour.count)" } ?? "\(tour.count) shots")
-                    .font(.system(size: 13, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.7))
-                    .frame(minWidth: 34)
-                    .accessibilityLabel(tourIndex.map { "Shot \($0 + 1) of \(tour.count)" } ?? "\(tour.count) shots")
-                Button { step(1) } label: { barIcon("chevron.right") }
-                    .accessibilityLabel("Next shot")
+            .buttonStyle(.plain)
+            .accessibilityLabel("Notes")
+            .accessibilityValue(showNotes ? "On" : "Off")
+            .accessibilityHint("Shows or hides the agent's notes")
+            Button { if let all = stops.indices.last { go(all) } } label: {
+                Text("See all").font(.system(size: 13)).foregroundStyle(.white)
+                    .padding(.horizontal, 10).frame(height: 32).contentShape(Rectangle())
             }
-            if marking {
-                Text(markLimitHit ? "That's the most marks one answer can have." : "Drag on a picture to circle part of it. Two fingers move the board.")
-                    .font(.footnote)
-                    .foregroundStyle(markLimitHit ? BoardInk.rose : .white.opacity(0.7))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Fits everything on the screen")
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
-        .background(BoardInk.board.opacity(0.94), ignoresSafeAreaEdges: .top)
+        .padding(4)
+        .background(Color(hex: 0x1E1E22).opacity(0.94), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.4), radius: 8, y: 3)
     }
 
-    private func toggle(_ title: String, systemImage: String, on: Binding<Bool>, hint: String) -> some View {
-        Button { on.wrappedValue.toggle() } label: {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .padding(.horizontal, 12)
-                .frame(minHeight: 34)
-                .foregroundStyle(on.wrappedValue ? .black : .white)
-                .background(on.wrappedValue ? (title == "Mark" ? BoardInk.blue : .white) : .white.opacity(0.1), in: Capsule())
+    private func toolButton(_ t: Tool, _ symbol: String, _ name: String) -> some View {
+        let on = tool == t
+        return Button { tool = t; markLimitHit = false } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(on ? BoardInk.mine : .white)
+                .frame(width: 36, height: 32)
+                .background(on ? BoardInk.mine.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .accessibilityAddTraits(on.wrappedValue ? .isSelected : [])
-        .accessibilityHint(hint)
+        .buttonStyle(.plain)
+        .disabled(busy && t != .move)
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
-    private func barIcon(_ name: String) -> some View {
-        Image(systemName: name)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: 36, height: 36)
-            .background(.white.opacity(0.1), in: Circle())
-    }
+    // MARK: - The bottom band: the tour, the reply, None of them, Send
 
-    @ViewBuilder private var replyBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var band: some View {
+        VStack(alignment: .leading, spacing: 10) {
             if let problem {
                 HStack(alignment: .firstTextBaseline) {
                     Text(problem).font(.footnote).foregroundStyle(BoardInk.rose)
@@ -598,27 +863,47 @@ struct ReviewBoard: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.updatesFrequently)
             }
+            tour
             if pending {
-                chips
-                HStack(alignment: .bottom, spacing: 8) {
-                    TextField("Reply", text: Binding(get: { draft.reply ?? "" }, set: { draft.reply = $0.isEmpty ? nil : $0 }),
-                              selection: $selection, axis: .vertical)
-                        .lineLimit(1...5)
-                        .focused($replyFocused)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .disabled(busy)
-                    Button(action: send) {
-                        Group {
-                            if sending { ProgressView().tint(.black) } else { Image(systemName: "arrow.up").font(.system(size: 17, weight: .bold)) }
-                        }
-                        .foregroundStyle(.black)
-                        .frame(width: 40, height: 40)
-                        .background(draft.canSend(to: review) || sending ? Color.white : Color.white.opacity(0.3), in: Circle())
+                markChips
+                TextField("Add a reply", text: Binding(get: { draft.reply ?? "" }, set: { draft.reply = $0.isEmpty ? nil : $0 }),
+                          selection: $selection, axis: .vertical)
+                    .lineLimit(1...5)
+                    .focused($replyFocused)
+                    .font(.system(size: 15))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(replyFocused ? Self.accent : .white.opacity(0.12), lineWidth: replyFocused ? 1 : 0.5))
+                    .disabled(busy)
+                HStack(spacing: 8) {
+                    let none = draft.none == true
+                    Button { draft.pickNone(!none) } label: {
+                        Text("None of them")
+                            .font(.system(size: 14))
+                            .foregroundStyle(none ? Self.accent : .white)
+                            .padding(.horizontal, 14)
+                            .frame(height: 34)
+                            .background(none ? Self.accent.opacity(0.25) : .white.opacity(0.08), in: Capsule())
                     }
-                    .disabled(busy || !draft.canSend(to: review))
-                    .accessibilityLabel(sending ? "Sending answer" : "Send answer")
+                    .buttonStyle(.plain)
+                    .disabled(busy)
+                    .accessibilityAddTraits(none ? .isSelected : [])
+                    .accessibilityHint(none ? "Takes back none of them" : "None of them will do")
+                    let can = draft.canSend(to: review)
+                    Button(action: send) {
+                        HStack(spacing: 6) {
+                            if sending { ProgressView().controlSize(.small).tint(can ? .white : .gray) }
+                            Text(sendLabel).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                        }
+                        .foregroundStyle(can && !sending ? .white : .white.opacity(sending ? 0.85 : 0.35))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 34)
+                        .background(can && !sending ? Self.accent : .white.opacity(sending ? 0.08 : 0.04), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(busy || !can)
                 }
             } else {
                 Text("This review is \(review.status). Answer it on the Mac if it's still open there.")
@@ -626,116 +911,175 @@ struct ReviewBoard: View {
                     .foregroundStyle(.white.opacity(0.6))
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 8)
-        .background(BoardInk.board.opacity(0.94), ignoresSafeAreaEdges: .bottom)
+        .background(BoardInk.band.opacity(0.97), ignoresSafeAreaEdges: .bottom)
+        .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.08)).frame(height: 0.5) }
     }
 
-    @ViewBuilder private var chips: some View {
-        let picked = review.options.filter { draft.picks.contains($0.id) }
+    /// What Send will send, as the Mac's button says it.
+    private var sendLabel: String {
+        if sending { return "Sending…" }
+        let picks = review.options.map(\.id).filter { draft.picks.contains($0) }
+        if !picks.isEmpty { return "Send " + picks.joined(separator: " + ") }
+        if draft.none == true { return "Send none of them" }
+        let reply = !(draft.reply ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return reply || !(draft.marks ?? []).isEmpty || draft.notes.values.contains { !$0.isEmpty } ? "Send reply" : "Send"
+    }
+
+    private var tour: some View {
+        let at = stop + 1, of = max(1, stops.count)
+        return HStack(spacing: 12) {
+            tourStep("chevron.left", "Back", by: -1, enabled: stop > 0)
+            Text("\(at) of \(of)")
+                .font(.system(size: 14).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.6))
+                .accessibilityLabel("Stop \(at) of \(of)")
+            tourStep("chevron.right", "Next", by: 1, enabled: stop < of - 1)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func tourStep(_ symbol: String, _ name: String, by: Int, enabled: Bool) -> some View {
+        Button { go(stop + by) } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(enabled ? .white : .white.opacity(0.25))
+                .frame(width: 36, height: 36)
+                .background(.white.opacity(0.08), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(name)
+    }
+
+    /// The Mac's mark chips: the number in the phone's blue, what it's on.
+    @ViewBuilder private var markChips: some View {
         let marks = (draft.marks ?? []).sorted { $0.n < $1.n }
-        if !picked.isEmpty || !marks.isEmpty || draft.none == true {
+        if !marks.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    if draft.none == true {
-                        chip("None of these", color: .white.opacity(0.85)) { draft.pickNone(false) }
-                            .disabled(busy)
-                            .accessibilityHint("Removes None of these")
-                    }
-                    ForEach(picked) { option in
-                        chip("✓ \(option.id)", color: BoardInk.green) {
-                            if let frame = cardFrames[option.id] { userMoved = true; focused = nil; show(frame, margin: 8, animated: true) }
-                        }
-                        .accessibilityLabel("Chosen: \(option.id), \(option.title)")
-                        .accessibilityHint("Shows it on the board")
-                    }
                     ForEach(marks, id: \.n) { mark in
                         HStack(spacing: 0) {
-                            chip("Mark \(mark.n)", color: BoardInk.blue) {
-                                if let o = review.options.firstIndex(where: { $0.id == mark.optionId }) { zoom(to: ShotKey(option: o, shot: mark.shot)) }
+                            Button {
+                                if let o = review.options.firstIndex(where: { $0.id == mark.optionId }) { lookCloser(o, mark.shot) }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Text("\(mark.n)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(BoardInk.mineText)
+                                        .frame(width: 15, height: 15)
+                                        .background(BoardInk.mine, in: Circle())
+                                    Text("on \(mark.optionId)")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.leading, 3)
+                                .padding(.trailing, 4)
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Mark \(mark.n) on \(mark.optionId)")
                             .accessibilityHint("Shows the marked shot")
                             Button { remove(mark) } label: {
-                                Image(systemName: "xmark.circle.fill").font(.system(size: 16)).foregroundStyle(BoardInk.blue)
-                                    .frame(width: 28, height: 30)
+                                Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.6))
+                                    .frame(width: 22, height: 26)
                             }
+                            .buttonStyle(.plain)
                             .disabled(busy)
                             .accessibilityLabel("Remove mark \(mark.n)")
                         }
+                        .frame(height: 26)
+                        .background(BoardInk.mine.opacity(0.14), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(BoardInk.mine.opacity(0.5), lineWidth: 0.5))
                     }
                 }
             }
         }
-    }
-
-    private func chip(_ title: String, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(color)
-                .padding(.horizontal, 10)
-                .frame(minHeight: 30)
-                .background(color.opacity(0.16), in: Capsule())
-                .overlay(Capsule().strokeBorder(color.opacity(0.5), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Screenshots
 
-    /// For sim-shots: `-ThreadbearReviewZoom <n>` fills the screen with the
-    /// tour's shot n (from 1), `-ThreadbearReviewMark` draws a mark on the first
-    /// shot in Mark mode, `-ThreadbearReviewPlay` plays the zoomed shot. The
-    /// simulator can't be tapped from a script.
-    private func pose() {
-        guard demo, !tour.isEmpty, shotFrames.count == tour.count, !pictures.isEmpty else { return }
+    private var poseKey: String { "\(board != nil):\(!pictures.isEmpty):\(placedFor != nil)" }
+
+    /// For screenshots, as a script can't tap the simulator:
+    /// `-ThreadbearReviewStop <n>` flies to tour stop n (from 1),
+    /// `-ThreadbearReviewAll` to everything, `-ThreadbearReviewMark` draws a
+    /// circle on the first picture, `-ThreadbearReviewPlay` plays the first video.
+    private func pose() async {
+        guard demo, !posed, board != nil, !pictures.isEmpty, placedFor != nil else { return }
+        posed = true
         let args = ProcessInfo.processInfo.arguments
+        try? await Task.sleep(for: .milliseconds(500))
         if args.contains("-ThreadbearReviewMark"), draft.marks == nil {
-            marking = true
+            tool = .circle
             draft.reply = "Tighter, like this"
-            addMark(ShotKey(option: 0, shot: 0), box: [0.52, 0.14, 0.92, 0.5])
-            draft.pick("A", selected: true)
-        }
-        if let i = args.firstIndex(of: "-ThreadbearReviewZoom"), i + 1 < args.count, let n = Int(args[i + 1]), tour.indices.contains(n - 1) {
-            Task {
-                try? await Task.sleep(for: .milliseconds(600))
-                zoom(to: tour[n - 1])
-                // `-ThreadbearReviewPlay`: then the second tap, playing it.
-                guard args.contains("-ThreadbearReviewPlay") else { return }
-                try? await Task.sleep(for: .milliseconds(800))
-                let key = tour[n - 1]
-                let shot = review.options[key.option].shots[key.shot]
-                tapped(key, media: shot.media.flatMap { pictures[$0] }.flatMap { URL(string: $0.url) })
+            let path = (0...24).map { i -> [Double] in
+                let t = Double(i) / 24 * 2.15 * .pi - 2
+                return [0.72 + cos(t) * 0.2 * (1 + 0.04 * Double(i) / 24), 0.32 + sin(t) * 0.2]
             }
+            addMark(option: 0, shot: 0, kind: "circle", box: [0.52, 0.12, 0.93, 0.53], path: path)
+            draft.pick(review.options[0].id, selected: true)
+        }
+        if let i = args.firstIndex(of: "-ThreadbearReviewStop") ?? args.firstIndex(of: "-ThreadbearReviewZoom"),
+           i + 1 < args.count, let n = Int(args[i + 1]) {
+            go(n - 1)
+        } else if args.contains("-ThreadbearReviewAll"), let all = stops.indices.last {
+            go(all)
+        }
+        if args.contains("-ThreadbearReviewPlay"),
+           let o = review.options.firstIndex(where: { $0.shots.contains { $0.isVideo && $0.media != nil } }),
+           let s = review.options[o].shots.firstIndex(where: { $0.isVideo }),
+           let src = review.options[o].shots[s].media, let url = pictures[src].flatMap({ URL(string: $0.url) }) {
+            if let stop = stopIndex(o, s) { go(stop) }
+            try? await Task.sleep(for: .milliseconds(900))
+            await playback.toggle(ShotKey(option: o, shot: s), url: url)
         }
     }
 }
 
-/// The board's faint dots, moving and spreading with it, thinned out when
-/// zoomed far out so they stay faint.
+private extension View {
+    /// At a rect of the board, in world units.
+    func placed(_ r: CGRect) -> some View {
+        frame(width: r.width, height: r.height).offset(x: r.minX, y: r.minY)
+    }
+}
+
+/// Pen strokes as one shape, in the board's own units.
+nonisolated private struct StrokesShape: Shape {
+    var strokes: [CanvasStroke]
+
+    func path(in rect: CGRect) -> Path {
+        let path = CGMutablePath()
+        for s in strokes { s.add(to: path) }
+        return Path(path)
+    }
+}
+
+/// The Mac's dot grid: 2 px squares on a 48-unit grid that stays 18 to 36
+/// px apart on screen, moving and zooming with the board.
 private struct DotGrid: View {
-    var scale: CGFloat
-    var offset: CGPoint
+    var camera: CanvasCamera
 
     var body: some View {
         Canvas { context, size in
-            var spacing = 28 * scale
-            while spacing < 16 { spacing *= 2 }
-            let dot = max(1.2, min(2.4, 1.6 * scale))
-            let startX = offset.x.truncatingRemainder(dividingBy: spacing) - spacing
-            let startY = offset.y.truncatingRemainder(dividingBy: spacing) - spacing
+            var step: CGFloat = 48
+            while step * camera.s < 18 { step *= 2 }
+            while step * camera.s > 36 { step /= 2 }
+            let gap = step * camera.s
+            func rem(_ a: CGFloat) -> CGFloat { let r = a.truncatingRemainder(dividingBy: gap); return r < 0 ? r + gap : r }
             var path = Path()
-            var y = startY
-            while y < size.height + spacing {
-                var x = startX
-                while x < size.width + spacing {
-                    path.addEllipse(in: CGRect(x: x - dot / 2, y: y - dot / 2, width: dot, height: dot))
-                    x += spacing
+            var y = rem(camera.ty)
+            while y < size.height {
+                var x = rem(camera.tx)
+                while x < size.width {
+                    path.addRect(CGRect(x: x - 1, y: y - 1, width: 2, height: 2))
+                    x += gap
                 }
-                y += spacing
+                y += gap
             }
-            context.fill(path, with: .color(.white.opacity(0.09)))
+            context.fill(path, with: .color(BoardInk.dots))
         }
         .background(BoardInk.board)
     }
@@ -750,9 +1094,9 @@ private struct BoardStill: View {
 
     var body: some View {
         ZStack {
-            Color.white.opacity(0.06)
+            Color.white.opacity(0.04)
             if let image {
-                Image(uiImage: image).resizable().interpolation(.high).scaledToFill()
+                Image(uiImage: image).resizable().interpolation(.high)
             } else if !preview {
                 note("photo", "No preview on the phone. Open it on the Mac.")
             } else if failed {
@@ -760,7 +1104,7 @@ private struct BoardStill: View {
             } else if url == nil {
                 note("photo", "The preview is on its way from the Mac.")
             } else {
-                ProgressView().tint(.white)
+                ProgressView().tint(.white).scaleEffect(3)
             }
         }
         .task(id: url) {
@@ -773,8 +1117,8 @@ private struct BoardStill: View {
 
     private func note(_ symbol: String, _ text: String) -> some View {
         Label(text, systemImage: symbol)
-            .font(.system(size: 13))
+            .font(.system(size: 24))
             .foregroundStyle(.white.opacity(0.6))
-            .padding()
+            .padding(24)
     }
 }

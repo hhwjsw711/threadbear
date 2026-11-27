@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreText
 import CryptoKit
 import SwiftUI
 import ThreadbearKit
@@ -10,13 +11,25 @@ struct ShotKey: Hashable {
     var shot: Int
 }
 
-/// The board's colours: the agent's three inks and the phone's own blue.
+/// The board's colours, the Mac canvas's (desktop/gpui/src/review_window/canvas.rs).
 enum BoardInk {
-    static let yellow = Color(red: 1, green: 0xd1 / 255, blue: 0x66 / 255)
-    static let green = Color(red: 0x4a / 255, green: 0xde / 255, blue: 0x80 / 255)
-    static let rose = Color(red: 0xfb / 255, green: 0x71 / 255, blue: 0x85 / 255)
-    static let blue = Color(red: 0x60 / 255, green: 0xa5 / 255, blue: 0xfa / 255)
-    static let board = Color(red: 0.055, green: 0.06, blue: 0.075)
+    static let yellow = Color(hex: 0xF3B01C)
+    static let green = Color(hex: 0x6FD08C)
+    static let rose = Color(hex: 0xF07A9A)
+    /// The phone's own marks.
+    static let mine = Color(hex: 0x6CB8FF)
+    static let mineText = Color(hex: 0x0B1A2A)
+    static let board = Color(hex: 0x111114)
+    static let dots = Color(hex: 0x2E2E36)
+    static let halo = Color(hex: 0x16161B)
+    static let haloPicked = Color(hex: 0x131A16)
+    /// A ticked option's rings, letter and tick.
+    static let picked = Color(hex: 0x4CC38A)
+    static let star = Color(red: 0.86, green: 0.70, blue: 0.33)
+    static let leadFill = Color(hex: 0x2A2620)
+    static let leadEdge = Color(hex: 0x4A4030)
+    static let leadText = Color(hex: 0xEFE6D6)
+    static let band = Color(hex: 0x18181C)
 
     static func of(_ ink: String?) -> Color {
         switch ink {
@@ -26,180 +39,23 @@ enum BoardInk {
         }
     }
 
-    /// Handwriting for the agent's notes, with a system fallback.
-    static func hand(_ size: CGFloat) -> Font {
-        for name in ["Noteworthy-Bold", "BradleyHandITCTT-Bold"] where UIFont(name: name, size: size) != nil {
-            return .custom(name, size: size)
+    /// Caveat Bold, the Mac's handwriting for the agent's notes, bundled with
+    /// its licence (Fonts/Caveat-OFL.txt). Registered on first use.
+    static let handName: String = {
+        if let url = Bundle.main.url(forResource: "Caveat-Bold", withExtension: "ttf") {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
-        return .system(size: size, weight: .semibold, design: .rounded).italic()
+        return UIFont(name: "Caveat-Bold", size: 12) != nil ? "Caveat-Bold" : "Noteworthy-Bold"
+    }()
+
+    static func handUIFont(_ size: CGFloat) -> UIFont {
+        UIFont(name: handName, size: size) ?? .systemFont(ofSize: size, weight: .bold)
     }
 }
 
-// MARK: - The agent's marks
-
-/// A box of fractions as a rect in a picture `size` points across. For an
-/// arrow the order matters (tail, then head), so this is only for the others.
-nonisolated private func rect(_ box: [Double], in size: CGSize) -> CGRect {
-    guard box.count == 4 else { return .zero }
-    let x0 = min(box[0], box[2]), x1 = max(box[0], box[2]), y0 = min(box[1], box[3]), y1 = max(box[1], box[3])
-    return CGRect(x: x0 * size.width, y: y0 * size.height, width: (x1 - x0) * size.width, height: (y1 - y0) * size.height)
-}
-
-/// The same small wobble every time a mark is drawn, from its box.
-nonisolated private func seed(_ box: [Double]) -> Double {
-    box.enumerated().reduce(0.0) { $0 + $1.element * Double($1.offset + 3) * 7.3 }
-}
-
-/// A circle drawn by hand: a little out of round, overshooting where it started.
-nonisolated struct WobblyEllipse: Shape {
-    var seed: Double
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let steps = 72
-        let start = -2.2 + seed.truncatingRemainder(dividingBy: 1)
-        let sweep = 2 * Double.pi + 0.45
-        for i in 0...steps {
-            let a = start + sweep * Double(i) / Double(steps)
-            let wobble = 1 + 0.04 * sin(3 * a + seed) + 0.025 * sin(5 * a + seed * 2)
-            // Spirals in a touch, as a quick hand does.
-            let inward = 1 - 0.05 * Double(i) / Double(steps)
-            let p = CGPoint(x: rect.midX + rect.width / 2 * wobble * inward * cos(a),
-                            y: rect.midY + rect.height / 2 * wobble * inward * sin(a))
-            if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
-        }
-        return path
-    }
-}
-
-/// An arrow along a gentle curve, from the box's first corner to its second.
-nonisolated private struct CurvedArrow: Shape {
-    var from: CGPoint
-    var to: CGPoint
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let dx = to.x - from.x, dy = to.y - from.y
-        let length = max(1, hypot(dx, dy))
-        let control = CGPoint(x: (from.x + to.x) / 2 - dy * 0.25, y: (from.y + to.y) / 2 + dx * 0.25)
-        path.move(to: from)
-        path.addQuadCurve(to: to, control: control)
-        let angle = atan2(to.y - control.y, to.x - control.x)
-        let head = min(16, length * 0.35)
-        for side in [-0.5, 0.5] {
-            path.move(to: to)
-            path.addLine(to: CGPoint(x: to.x - head * cos(angle + side), y: to.y - head * sin(angle + side)))
-        }
-        return path
-    }
-}
-
-/// The agent's marks over a shot's picture, `size` the picture's on the
-/// board, so they scale with the board's zoom like the picture does.
-struct AgentMarksOverlay: View {
-    var marks: [PhoneDesignReview.AgentMark]
-    var size: CGSize
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: size.width, height: size.height)
-            ForEach(Array(marks.enumerated()), id: \.offset) { _, mark in
-                shape(mark)
-                if let note = mark.note, !note.isEmpty { noteText(note, mark) }
-            }
-        }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-
-    @ViewBuilder private func shape(_ mark: PhoneDesignReview.AgentMark) -> some View {
-        let ink = BoardInk.of(mark.ink)
-        let r = rect(mark.box, in: size)
-        let stroke = StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
-        switch mark.kind {
-        case "circle":
-            WobblyEllipse(seed: seed(mark.box))
-                .stroke(ink, style: stroke)
-                .frame(width: r.width + 10, height: r.height + 10)
-                .offset(x: r.minX - 5, y: r.minY - 5)
-                .shadow(color: .black.opacity(0.5), radius: 2)
-        case "underline":
-            Path { p in
-                p.move(to: CGPoint(x: r.minX, y: r.maxY))
-                p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.maxY + 2), control: CGPoint(x: r.midX, y: r.maxY + 6))
-            }
-            .stroke(ink, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
-            .shadow(color: .black.opacity(0.5), radius: 2)
-        case "highlight":
-            RoundedRectangle(cornerRadius: 3)
-                .fill(ink.opacity(0.32))
-                .frame(width: r.width + 6, height: r.height + 2)
-                .rotationEffect(.degrees(-1))
-                .offset(x: r.minX - 3, y: r.minY - 1)
-        case "arrow":
-            CurvedArrow(from: CGPoint(x: mark.box[0] * size.width, y: mark.box[1] * size.height),
-                        to: CGPoint(x: mark.box[2] * size.width, y: mark.box[3] * size.height))
-                .stroke(ink, style: stroke)
-                .shadow(color: .black.opacity(0.5), radius: 2)
-        default:
-            EmptyView()
-        }
-    }
-
-    /// Beside the mark: to its right when there's room, else to its left. An
-    /// arrow's note sits by its tail.
-    private func noteText(_ note: String, _ mark: PhoneDesignReview.AgentMark) -> some View {
-        let r = rect(mark.box, in: size)
-        let anchor = mark.kind == "arrow"
-            ? CGPoint(x: mark.box[0] * size.width, y: mark.box[1] * size.height)
-            : CGPoint(x: r.midX, y: r.midY)
-        let tail = mark.kind == "arrow"
-        let right = tail ? anchor.x < size.width * 0.6 : r.maxX < size.width * 0.62
-        let x = tail ? anchor.x + (right ? 6 : -6) : (right ? r.maxX + 8 : r.minX - 8)
-        let y = tail ? anchor.y + (mark.box[3] < mark.box[1] ? 10 : -10) : anchor.y
-        return Text(note)
-            .font(BoardInk.hand(15))
-            .foregroundStyle(BoardInk.of(mark.ink))
-            .shadow(color: .black.opacity(0.9), radius: 2)
-            .shadow(color: .black.opacity(0.6), radius: 5)
-            .multilineTextAlignment(right ? .leading : .trailing)
-            .frame(maxWidth: 140, alignment: right ? .leading : .trailing)
-            .fixedSize(horizontal: false, vertical: true)
-            .alignmentGuide(.leading) { d in right ? -x : -(x - d.width) }
-            .alignmentGuide(.top) { d in -(y - d.height / 2) }
-    }
-}
-
-/// The phone's own mark: a blue ellipse with its number.
-struct UserMarkView: View {
-    var box: [Double]
-    var n: Int?
-    var size: CGSize
-    var drawing = false
-
-    var body: some View {
-        let r = rect(box, in: size)
-        ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: size.width, height: size.height)
-            Ellipse()
-                .stroke(BoardInk.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: drawing ? [6, 5] : []))
-                .frame(width: max(1, r.width), height: max(1, r.height))
-                .offset(x: r.minX, y: r.minY)
-                .shadow(color: .black.opacity(0.5), radius: 2)
-            if let n {
-                Text("\(n)")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(BoardInk.blue, in: Circle())
-                    .overlay(Circle().strokeBorder(.white.opacity(0.8), lineWidth: 1.5))
-                    .offset(x: r.maxX - 10, y: r.minY - 14)
-            }
-        }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+extension Color {
+    init(hex: UInt32) {
+        self.init(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
     }
 }
 
@@ -357,71 +213,6 @@ struct PlayerLayerView: UIViewRepresentable {
 
     func updateUIView(_ view: LayerView, context: Context) {
         if view.playerLayer.player !== player { view.playerLayer.player = player }
-    }
-}
-
-/// Over a sound's still: bars, the place it's got to and a play button.
-struct AudioStrip: View {
-    var src: String
-    var progress: Double
-    var playing: Bool
-    var loading: Bool
-
-    private var levels: [Double] {
-        var h = SHA256.hash(data: Data(src.utf8)).map { Double($0) / 255 }
-        h += h
-        return h.prefix(48).enumerated().map { i, v in 0.25 + 0.75 * v * (1 - Double(i) / 80) }
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            let height = min(56, geo.size.height * 0.3)
-            ZStack {
-                PlayCircle(playing: playing, loading: loading)
-                VStack {
-                    Spacer()
-                    ZStack(alignment: .leading) {
-                        HStack(alignment: .center, spacing: 2) {
-                            ForEach(Array(levels.enumerated()), id: \.offset) { i, level in
-                                Capsule()
-                                    .fill(Double(i) / Double(levels.count) < progress ? BoardInk.blue : .white.opacity(0.45))
-                                    .frame(height: max(3, height * 0.8 * level))
-                            }
-                        }
-                        .frame(height: height)
-                        Rectangle()
-                            .fill(.white)
-                            .frame(width: 2, height: height + 6)
-                            .offset(x: (geo.size.width - 20) * progress)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.45))
-                }
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-struct PlayCircle: View {
-    var playing: Bool
-    var loading: Bool
-
-    var body: some View {
-        Group {
-            if loading {
-                ProgressView().tint(.white)
-            } else {
-                Image(systemName: playing ? "pause.fill" : "play.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-        }
-        .frame(width: 52, height: 52)
-        .background(.black.opacity(0.55), in: Circle())
-        .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
-        .allowsHitTesting(false)
     }
 }
 

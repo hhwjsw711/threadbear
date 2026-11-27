@@ -800,7 +800,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     // Synthetic review data for the simulator, never a real conversation:
     // an option with the agent's marks, a video, a sound and a reference page.
     private static var sampleDesignReview: PhoneDesignReview {
-        PhoneDesignReview(id: "sample-review", title: "Choose a layout", note: "Compare the spacing before choosing.", recommended: "A", status: "pending", revision: 0, draft: DesignReviewDraft(), options: [
+        PhoneDesignReview(id: "sample-review", title: "Choose a layout", note: "Three ways to lay out the list. **A** gives each row more room; **B** animates cards in; **C** adds a chime when it's done. **D** is how it looks today.", recommended: "A", status: "pending", revision: 0, draft: DesignReviewDraft(), options: [
             .init(id: "A", title: "Roomier layout", note: "More air between rows. **Easiest to scan** at a glance.", reference: false, shots: [
                 .init(src: "review:sample:a", title: "Overview", kind: "image", marks: [
                     .init(kind: "circle", box: [0.08, 0.12, 0.42, 0.42], note: "bigger tap target", ink: "yellow"),
