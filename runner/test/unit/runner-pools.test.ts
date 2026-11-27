@@ -1348,3 +1348,11 @@ test('noted logins get a pool of their own and are never picked for another', ()
   const t = h.runner.create({ text: 'x', poolId: 'claude' }).thread;
   assert.notEqual(t.accountId, 'claude-2');
 });
+
+test('unhinted new threads prefer a main provider while explicit backup providers stay selectable', () => {
+  const h = poolHarness({ pools: [{ id: 'main', title: 'Main', accountIds: ['claude-main', 'codex-main'], backup: { 'claude-main': true } }] });
+  assert.equal(h.runner.pickForNew({ poolId: 'main', cwd: '/x' })?.accountId, 'codex-main');
+  assert.equal(h.runner.pickForNew({ poolId: 'main', cwd: '/x', provider: 'claude' })?.accountId, 'claude-main');
+  h.setUsage('codex-main', room(0, 30, true));
+  assert.equal(h.runner.pickForNew({ poolId: 'main', cwd: '/x' })?.accountId, 'claude-main');
+});

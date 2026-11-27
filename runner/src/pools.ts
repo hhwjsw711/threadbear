@@ -234,9 +234,13 @@ export type NextLogin = { accountId: string; provider: Provider } | { waitUntil:
 // Keep the provider first, then main providers, then backups, each tier in
 // pool order. Within a provider the existing weekly-reset rule still picks
 // the login. When none can run, wait until the first login is back.
+function backupByDefault(provider: Provider): boolean {
+  return provider === 'grok' || provider === 'opencode';
+}
+
 export function isBackup(pool: Pool, account: Account): boolean {
   const override = pool.backup?.[account.id];
-  return typeof override === 'boolean' ? override : account.provider === 'grok' || account.provider === 'opencode';
+  return typeof override === 'boolean' ? override : backupByDefault(account.provider);
 }
 
 export function nextLogin(pool: Pool, accounts: Account[], thread: { accountId: string; provider: Provider }, now: number): NextLogin {
@@ -435,10 +439,15 @@ export function fromShared(shared: SharedPool[], accounts: Account[], runnerId: 
   for (const p of shared) {
     const ids = [...new Set(p.members.map((m) => localLogin(m, accounts, runnerId)?.id).filter((id): id is string => !!id))];
     if (!ids.length) continue;
-    const backup = Object.fromEntries(p.members.flatMap((m) => {
-      const a = localLogin(m, accounts, runnerId);
-      return a && typeof m.backup === 'boolean' ? [[a.id, m.backup]] : [];
-    }));
+    const backup: Record<string, boolean> = {};
+    for (const id of ids) {
+      const matching = p.members.filter((m) => localLogin(m, accounts, runnerId)?.id === id);
+      // One main twin keeps the collapsed local login main. No explicit
+      // choices stays absent so old configurations retain their shape.
+      if (matching.some((m) => m.backup !== undefined)) {
+        backup[id] = matching.every((m) => m.backup ?? backupByDefault(m.provider));
+      }
+    }
     out.push({ id: p.id, title: p.title, accountIds: ids, ...(Object.keys(backup).length ? { backup } : {}), ...(p.folders?.length ? { folders: [...p.folders] } : {}), ...(p.icon ? { icon: p.icon } : {}) });
   }
   return out;
@@ -464,10 +473,15 @@ export function toShared(saved: Pool[], previous: SharedPool[], accounts: Accoun
       const pinned = before.filter((m) => pinnedElsewhere(m, runnerId) && localLogin(m, accounts, runnerId)?.id === id);
       const a = accounts.find((x) => x.id === id);
       const mine = pinned.length ? pinned : a ? [memberOf(a, runnerId, accounts, pin)] : [];
+      const matching = before.filter((m) => localLogin(m, accounts, runnerId)?.id === id);
+      const override = p.backup?.[id];
+      const derived = matching.every((m) => m.backup ?? backupByDefault(m.provider));
+      const unchangedTwins = pinned.length > 1 && (override === undefined || override === derived);
       for (const m of mine) {
         const { backup: _old, ...identity } = m;
-        const override = p.backup?.[id] ?? before.find((m) => localLogin(m, accounts, runnerId)?.id === id)?.backup;
-        const member = { ...identity, ...(typeof override === 'boolean' ? { backup: override } : {}) };
+        const prior = pinned.length ? m.backup : matching[0]?.backup;
+        const choice = unchangedTwins ? m.backup : override ?? prior;
+        const member = { ...identity, ...(typeof choice === 'boolean' ? { backup: choice } : {}) };
         if (!chosen.some((c) => memberKey(c) === memberKey(member))) chosen.push(member);
       }
     }

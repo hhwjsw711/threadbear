@@ -64,6 +64,29 @@ pub(crate) struct PoolsDraft {
     /// What went wrong with the last save, until the next one.
     error: Option<String>,
     saving: bool,
+    save_seq: u64,
+}
+
+impl PoolsDraft {
+    fn begin_save(&mut self) -> u64 {
+        self.save_seq += 1;
+        self.saving = true;
+        self.save_seq
+    }
+
+    fn finish_save(&mut self, seq: u64) -> bool {
+        if seq != self.save_seq {
+            return false;
+        }
+        self.saving = false;
+        true
+    }
+
+    fn should_sync(&self, runner_pools: &[Pool], accounts: &[Account]) -> bool {
+        !self.saving
+            && ((self.base != runner_pools && pools::problem(&self.list, accounts).is_none())
+                || self.list.is_empty())
+    }
 }
 
 impl SettingsWindow {
@@ -99,9 +122,7 @@ impl SettingsWindow {
         }
         // The runner's list wins, unless Mike is part way through a change
         // it wouldn't take yet.
-        if self.pools.base != runner_pools && pools::problem(&self.pools.list, &accounts).is_none()
-            || self.pools.list.is_empty()
-        {
+        if self.pools.should_sync(&runner_pools, &accounts) {
             self.pools.list = runner_pools.clone();
             self.pools.base = runner_pools;
             if !self
@@ -485,11 +506,13 @@ impl SettingsWindow {
         }
         let list: Vec<serde_json::Value> = self.pools.list.iter().map(pools::to_json).collect();
         let client = self.client.clone();
-        self.pools.saving = true;
+        let seq = self.pools.begin_save();
         cx.spawn(async move |this, cx| {
             let res = call(client, "pools.save", json!({ "pools": list })).await;
             this.update(cx, |this, cx| {
-                this.pools.saving = false;
+                if !this.pools.finish_save(seq) {
+                    return;
+                }
                 match res {
                     Ok(v) => {
                         this.pools.error = None;
@@ -892,5 +915,51 @@ impl RenderOnce for IconFace {
                 .with_size(px(8.))
                 .text_color(self.secondary),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Account, Pool, PoolsDraft};
+
+    #[test]
+    fn stale_pool_saves_cannot_finish_or_sync_over_the_latest_edit() {
+        let account = Account {
+            id: "a".into(),
+            ..Default::default()
+        };
+        let original = Pool {
+            id: "p".into(),
+            title: "Original".into(),
+            account_ids: vec!["a".into()],
+            ..Default::default()
+        };
+        let mut draft = PoolsDraft {
+            base: vec![original.clone()],
+            list: vec![original.clone()],
+            ..Default::default()
+        };
+        draft.list[0].title = "First".into();
+        let first_reply = draft.list.clone();
+        let first = draft.begin_save();
+        let mut second_reply = original;
+        second_reply.title = "Latest".into();
+        draft.list = vec![second_reply.clone()];
+        let second = draft.begin_save();
+        assert!(!draft.finish_save(first));
+        assert!(draft.saving);
+        assert!(!draft.should_sync(&first_reply, std::slice::from_ref(&account)));
+        assert_eq!(draft.list[0].title, "Latest");
+        assert!(draft.finish_save(second));
+        assert!(!draft.saving);
+        assert!(draft.should_sync(&[second_reply], &[account]));
+        assert!(
+            !draft.finish_save(first),
+            "a late error cannot roll back the successful latest save"
+        );
+        let mut empty = PoolsDraft::default();
+        let seq = empty.begin_save();
+        assert!(!empty.should_sync(&[], &[]));
+        assert!(empty.finish_save(seq));
     }
 }

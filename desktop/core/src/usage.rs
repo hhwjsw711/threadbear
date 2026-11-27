@@ -10,20 +10,11 @@
 // time zone's (the Swift app's `Calendar.current`), handed in as `zone` so the
 // tests can pin one.
 use crate::inbox::parse_ms;
-use crate::logins::{provider_title as login_provider_title, Account, Pool};
+use crate::logins::{provider_title, Account, Pool};
 use crate::new_thread::{clock, day_name, login_name, percent, pool_providers};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Timelike};
 use serde_json::Value;
 use std::collections::HashMap;
-
-// Usage names the service rather than Gemini's Antigravity transport.
-fn provider_title(provider: &str) -> String {
-    if provider == "antigravity" {
-        "Gemini".to_owned()
-    } else {
-        login_provider_title(provider)
-    }
-}
 
 const HOUR: i64 = 3_600_000;
 const DAY: i64 = 86_400_000;
@@ -1262,6 +1253,16 @@ fn next_back(u: &Usage, now: i64) -> Option<i64> {
         .max()
 }
 
+fn is_short_block(u: &Usage) -> bool {
+    let windows = main_windows(u);
+    windows
+        .iter()
+        .any(|w| w.kind == "five_hour" && w.remaining < 1.)
+        && windows
+            .iter()
+            .any(|w| w.kind == "weekly" && w.remaining >= 1.)
+}
+
 fn tooltip_line<Tz: TimeZone>(
     provider: &str,
     accounts: &[&Account],
@@ -1293,11 +1294,6 @@ fn tooltip_line<Tz: TimeZone>(
         .iter()
         .filter(|u| !u.blocked && room(u).is_some_and(|r| r >= 1.))
         .count();
-    let back = readings
-        .iter()
-        .filter(|u| u.blocked || room(u).is_some_and(|r| r < 1.))
-        .filter_map(|u| next_back(u, now))
-        .min();
     let weekly: f64 = readings
         .iter()
         .filter_map(|u| {
@@ -1308,13 +1304,18 @@ fn tooltip_line<Tz: TimeZone>(
         })
         .sum::<f64>()
         / usable.len() as f64;
-    let short_block = ready == 0
-        && weekly > 0.
-        && readings.iter().any(|u| {
-            main_windows(u)
-                .iter()
-                .any(|w| w.kind == "five_hour" && w.remaining < 1.)
-        });
+    let short_block = ready == 0 && weekly >= 1. && readings.iter().any(is_short_block);
+    let back = readings
+        .iter()
+        .filter(|u| {
+            if short_block {
+                is_short_block(u)
+            } else {
+                u.blocked || room(u).is_some_and(|r| r < 1.)
+            }
+        })
+        .filter_map(|u| next_back(u, now))
+        .min();
     let mut text = if short_block {
         format!(
             "{title}: 0% now{} ({} this week)",
@@ -2720,6 +2721,33 @@ mod tests {
             "{}",
             icon.tip
         );
+    }
+
+    #[test]
+    fn short_blocks_require_a_usable_week_on_the_same_login() {
+        let now = at(13, 0);
+        let mut exhausted = login("out", "antigravity", Some(0.), 0.4, true, Some(at(14, 0)));
+        exhausted.usage.as_mut().unwrap()["windows"][1]["resetsAt"] =
+            json!(iso_time(now + 3 * DAY));
+        let tip = icon_tooltip(&groups(&[], &[exhausted]), now, &zone());
+        assert!(!tip.contains("0% now"), "{tip}");
+        assert!(tip.contains("0% left, back"), "{tip}");
+        let mut weekly_out = login("out", "claude", Some(0.), 0., true, Some(now + 20 * 60_000));
+        weekly_out.usage.as_mut().unwrap()["windows"][1]["resetsAt"] =
+            json!(iso_time(now + 30 * 60_000));
+        for five in [Some(0.), None] {
+            let peer = login("peer", "claude", five, 40., true, None);
+            let tip = icon_tooltip(&groups(&[], &[weekly_out.clone(), peer]), now, &zone());
+            if five.is_some() {
+                assert!(tip.contains("0% now"), "{tip}");
+                assert!(!tip.contains("back "), "{tip}");
+            } else {
+                assert!(!tip.contains("0% now"), "{tip}");
+            }
+        }
+        let peer = login("peer", "claude", Some(0.), 40., true, Some(at(14, 0)));
+        let tip = icon_tooltip(&groups(&[], &[weekly_out, peer]), now, &zone());
+        assert!(tip.contains("0% now, back 2 pm (20% this week)"), "{tip}");
     }
 
     // ---- Ported from the Swift app's UsageStatsTests ----

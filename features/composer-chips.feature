@@ -93,7 +93,7 @@ Feature: The chips under the message box
     Given the runner also has a Gemini login and an OpenCode login
     When I open the model picker
     And I click "Pool: No pool" in the model picker
-    And I click "Provider: Antigravity" in the model picker
+    And I click "Provider: Gemini" in the model picker
     And I click "Gemini 4 Neon" in the model picker
     Then the model chip says "Gemini · Gemini 4 Neon · High"
     And the "model" menu has a row "[x] High"

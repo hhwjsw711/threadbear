@@ -745,7 +745,7 @@ fn weekly_reset(account: &Account, now_ms: i64) -> f64 {
     }
 }
 
-/// `Pools.pickLogin`: the login a turn of `provider` would run on: `current`
+/// `Pools.pickLogin`: main logins before backups; within each tier, `current`
 /// while it has room, else, of those with room, the one whose weekly window
 /// resets soonest (the most room breaking a tie), as the runner's `pickInPool`;
 /// else one whose usage isn't known, else the first.
@@ -757,6 +757,15 @@ pub fn pick_login(
     now_ms: i64,
 ) -> Option<String> {
     let own = pool_logins(pool, accounts, Some(provider));
+    let (backup, main): (Vec<_>, Vec<_>) = own
+        .into_iter()
+        .partition(|a| crate::pools::is_backup(Some(pool), a));
+    pick_ready_login(&main, current, now_ms)
+        .or_else(|| pick_ready_login(&backup, current, now_ms))
+        .or_else(|| main.first().or(backup.first()).map(|a| a.id.clone()))
+}
+
+fn pick_ready_login(own: &[&Account], current: Option<&str>, now_ms: i64) -> Option<String> {
     if let Some(current) = current {
         if own.iter().any(|a| a.id == current && has_room(a)) {
             return Some(current.to_owned());
@@ -779,10 +788,7 @@ pub fn pick_login(
     if let Some((id, _, _)) = best {
         return Some(id);
     }
-    own.iter()
-        .find(|a| has_room(a))
-        .or(own.first())
-        .map(|a| a.id.clone())
+    own.iter().find(|a| has_room(a)).map(|a| a.id.clone())
 }
 
 /// `UsageGroups.byProvider`: Claude's logins, then Codex's, then the rest,
@@ -973,21 +979,33 @@ impl Draft<'_> {
     /// `AppModel.newThreadProvider(in:)`.
     pub fn provider_in(&self, pool: &Pool) -> String {
         let providers = pool_providers(pool, &self.logins.accounts);
-        for candidate in [
-            self.picks.provider.as_deref(),
-            self.mem
-                .last_pool_providers
-                .get(&pool.id)
-                .map(String::as_str),
-        ]
-        .into_iter()
-        .flatten()
+        if let Some(provider) = self
+            .picks
+            .provider
+            .as_ref()
+            .filter(|p| providers.contains(p))
         {
-            if providers.iter().any(|p| p == candidate) {
-                return candidate.to_owned();
-            }
+            return provider.clone();
         }
-        providers
+        let main: Vec<_> = providers
+            .iter()
+            .filter(|provider| {
+                pool_logins(pool, &self.logins.accounts, Some(provider))
+                    .iter()
+                    .any(|a| !crate::pools::is_backup(Some(pool), a))
+            })
+            .cloned()
+            .collect();
+        let eligible = if main.is_empty() { &providers } else { &main };
+        if let Some(provider) = self
+            .mem
+            .last_pool_providers
+            .get(&pool.id)
+            .filter(|p| eligible.contains(p))
+        {
+            return provider.clone();
+        }
+        eligible
             .first()
             .cloned()
             .unwrap_or_else(|| "claude".to_owned())
@@ -1632,6 +1650,42 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(pick_account(&[noted], Some("n")).as_deref(), Some("n"));
+    }
+
+    #[test]
+    fn backups_do_not_become_automatic_new_thread_defaults() {
+        let mut l = with_pools();
+        let mut pool = l.pool("claude").unwrap().clone();
+        pool.backup.insert("claude-main".into(), true);
+        assert_eq!(
+            pick_login(&pool, &l.accounts, "claude", Some("claude-main"), 0).as_deref(),
+            Some("claude-3")
+        );
+        l.accounts
+            .iter_mut()
+            .find(|a| a.id == "claude-3")
+            .unwrap()
+            .usage = Some(usage(0., 0.));
+        assert_eq!(
+            pick_login(&pool, &l.accounts, "claude", None, 0).as_deref(),
+            Some("claude-main")
+        );
+        pool.account_ids = vec!["claude-main".into(), "codex-main".into()];
+        let picks = NewThreadPicks::default();
+        let mut mem = Remembered::default();
+        mem.last_pool_providers
+            .insert(pool.id.clone(), "claude".into());
+        assert_eq!(draft(&l, &picks, &mem).provider_in(&pool), "codex");
+        let picks = NewThreadPicks {
+            provider: Some("claude".into()),
+            ..Default::default()
+        };
+        assert_eq!(draft(&l, &picks, &mem).provider_in(&pool), "claude");
+        pool.backup.insert("codex-main".into(), true);
+        assert_eq!(
+            draft(&l, &NewThreadPicks::default(), &mem).provider_in(&pool),
+            "claude"
+        );
     }
 
     #[test]

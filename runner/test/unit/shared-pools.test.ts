@@ -188,3 +188,30 @@ test('older pool writers preserve backup choices and explicit false still wins',
   const shared: SharedPool[] = [{ id: 'p', title: 'P', members: [{ provider: 'claude', email: 'g@example.com', backup: true }] }];
   assert.equal(toShared([{ id: 'p', title: 'P', accountIds: ['c'] }], shared, accounts, 'r')[0].members[0].backup, true);
 });
+
+test('a main twin wins locally and an unrelated save preserves each remote twin choice', () => {
+  for (const reverse of [false, true]) {
+    const members = [
+      { provider: 'claude' as const, email: 'alex@example.net', runnerId: 'laptop', accountId: 'claude-2', backup: true },
+      { provider: 'claude' as const, email: 'alex@example.net', runnerId: 'laptop', accountId: 'claude-main' },
+    ];
+    if (reverse) members.reverse();
+    const shared: SharedPool[] = [{ id: 'both', title: 'Both', members }];
+    const local = fromShared(shared, HZ, 'hz');
+    assert.equal(local[0].backup?.['claude-main'], false);
+    local[0].title = 'Renamed';
+    assert.deepEqual(toShared(local, shared, HZ, 'hz')[0].members, members);
+    const oldClient = local.map(({ backup: _backup, ...p }) => p);
+    assert.deepEqual(toShared(oldClient, shared, HZ, 'hz')[0].members, members);
+    local[0].backup = { 'claude-main': true };
+    assert.deepEqual(toShared(local, shared, HZ, 'hz')[0].members.map((m) => m.backup), [true, true]);
+  }
+});
+
+test('a default-backup twin yields to an explicit main twin and all backups stay backup', () => {
+  const accounts: Account[] = [{ ...login('g', 'g@example.com'), provider: 'grok' }];
+  const shared: SharedPool[] = [{ id: 'p', title: 'P', members: [{ provider: 'grok', email: 'g@example.com' }, { provider: 'grok', email: 'g@example.com', backup: false }] }];
+  assert.equal(fromShared(shared, accounts, 'r')[0].backup?.g, false);
+  shared[0].members[1].backup = true;
+  assert.equal(fromShared(shared, accounts, 'r')[0].backup?.g, true);
+});

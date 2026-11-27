@@ -562,6 +562,9 @@ with an update message, rather than silently losing the choice.
 Failover keeps the same provider first (main, then backup), then tries other
 main providers in pool order, then backup providers in pool order. The existing
 reset-based login selection within each provider and tier stays unchanged.
+New threads without a provider choice prefer providers with main logins;
+explicit choices can still select a backup. The desktop draft follows the
+same tiers, including its per-provider login selection.
 
 The desktop honey pot averages the open thread provider's main logins in its
 pool. A pinned thread uses only its login. An explicitly selected backup or

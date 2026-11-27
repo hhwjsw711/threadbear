@@ -9,7 +9,7 @@ import { ErrorCode, RpcError } from '../protocol.ts';
 import { cutOut } from '../store.ts';
 import { accountRoom, resetTime } from '../usage.ts';
 import { DEFAULT_POOL_FOLDERS, peekRunnerJson, readRunnerJson, writeRunnerJson } from '../config.ts';
-import { UNKNOWN_WAIT_MS, WAIT_SLACK_MS, backAt, blockedUntil, limitWhy, loginOk, nextLogin, pickInPool, pickLogin, poolAccounts, poolForFolder, poolProviders, readPools, roomWait, validatePools } from '../pools.ts';
+import { UNKNOWN_WAIT_MS, WAIT_SLACK_MS, backAt, blockedUntil, limitWhy, isBackup, loginOk, nextLogin, pickInPool, pickLogin, poolAccounts, poolForFolder, poolProviders, readPools, roomWait, validatePools } from '../pools.ts';
 import { historyItems, selectHistory } from '../handoff-history.ts';
 import type { ThreadState } from '../runner.ts';
 import type { ThreadRecord } from '../store.ts';
@@ -180,7 +180,8 @@ export const poolsPart = {
     // substitution on the login chosen here.
     if (!pool) return undefined;
     const providers = poolProviders(pool, accounts);
-    const provider = hint && providers.includes(hint) ? hint : providers[0];
+    const mainProviders = poolProviders(pool, accounts.filter((a) => !isBackup(pool, a)));
+    const provider = hint && providers.includes(hint) ? hint : mainProviders[0] ?? providers[0];
     let accountId = pickInPool(pool, accounts, { provider, prefer, now });
     if (!accountId && !(p.model && hint === provider)) {
       const next = nextLogin(pool, accounts, { accountId: '', provider }, now);

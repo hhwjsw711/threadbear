@@ -31,7 +31,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use threadbear_core::chrono::Local;
-use threadbear_core::logins::Account;
+use threadbear_core::logins::{Account, RunnerLogins};
 use threadbear_core::usage::{
     self as rules, Card, Chart, LoginRow, LoginStatus, Meter, Range, Stats, Tile, Tone,
 };
@@ -40,6 +40,16 @@ use threadbear_core::usage::{
 /// it still is.
 const REFRESH: Duration = Duration::from_secs(60);
 const CHECK: Duration = Duration::from_secs(1);
+
+/// Restrict both draft and saved defaults to this runner's effective pools.
+fn honey_pool(logins: &RunnerLogins, draft: Option<String>) -> Option<String> {
+    let effective_pools = logins.usage_pools.as_deref().unwrap_or(&logins.pools);
+    let exists = |id: &String| effective_pools.iter().any(|p| &p.id == id);
+    draft
+        .filter(exists)
+        .or_else(|| logins.defaults.pool_id.clone().filter(exists))
+        .or_else(|| effective_pools.first().map(|p| p.id.clone()))
+}
 
 /// The Usage panel's and the icon's state (`Threadbear::usage`).
 pub(crate) struct UsageState {
@@ -231,17 +241,7 @@ impl Threadbear {
             )
         } else {
             let logins = self.new_thread_logins();
-            let pool = logins.and_then(|l| {
-                self.with_draft(l, |d| d.pool_id())
-                    .or_else(|| l.defaults.pool_id.clone())
-                    .or_else(|| {
-                        l.usage_pools
-                            .as_deref()
-                            .unwrap_or(&l.pools)
-                            .first()
-                            .map(|p| p.id.clone())
-                    })
-            });
+            let pool = logins.and_then(|l| honey_pool(l, self.with_draft(l, |d| d.pool_id())));
             (
                 logins,
                 pool,
@@ -2486,7 +2486,43 @@ pub(crate) fn automation(
 mod tests {
     use super::{rules, Account, Pot};
     use threadbear_core::chrono::Utc;
-    use threadbear_core::logins::Pool;
+    use threadbear_core::logins::{Pool, RunnerDefaults};
+
+    #[test]
+    fn stale_defaults_do_not_escape_effective_usage_pools() {
+        let mut logins = super::RunnerLogins {
+            pools: vec![Pool {
+                id: "local".into(),
+                ..Default::default()
+            }],
+            usage_pools: Some(vec![
+                Pool {
+                    id: "main".into(),
+                    ..Default::default()
+                },
+                Pool {
+                    id: "work".into(),
+                    ..Default::default()
+                },
+            ]),
+            defaults: RunnerDefaults {
+                pool_id: Some("removed".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(super::honey_pool(&logins, None).as_deref(), Some("main"));
+        assert_eq!(
+            super::honey_pool(&logins, Some("local".into())).as_deref(),
+            Some("main")
+        );
+        logins.defaults.pool_id = Some("work".into());
+        assert_eq!(super::honey_pool(&logins, None).as_deref(), Some("work"));
+        assert_eq!(
+            super::honey_pool(&logins, Some("main".into())).as_deref(),
+            Some("main")
+        );
+    }
 
     #[test]
     fn provider_switch_updates_the_pot_without_a_false_refill() {
