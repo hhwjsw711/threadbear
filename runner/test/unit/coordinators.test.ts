@@ -1788,6 +1788,65 @@ test('a coordinator does not repeat /compact when the CLI leaves context unchang
   c.stop();
 });
 
+test('a coordinator does not repeat a compaction that failed before reaching the CLI', async () => {
+  const { c, h, project, claude } = setup();
+  const { thread } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  const st = h.runner.mustGet(thread.id);
+  const deliver = h.runner.deliver.bind(h.runner);
+  let attempts = 0;
+  h.runner.deliver = (state, message, live) => {
+    if (!message.text.startsWith('/compact')) return deliver(state, message, live);
+    attempts++;
+    return deliver(state, message, { failed: 'folder unavailable' });
+  };
+
+  st.rec.contextTokens = 190_000;
+  claude.sessions.at(-1)!.result('completed');
+  h.clock.advance(0);
+  await tick();
+  assert.equal(attempts, 1);
+  assert.equal(h.runner.get(thread.id).status, 'error');
+  h.clock.advance(60 * 60_000);
+  await tick();
+  assert.equal(attempts, 1);
+  c.stop();
+});
+
+test('finishing a slash skill can still schedule coordinator compaction', async () => {
+  const { c, h, project, claude } = setup();
+  const { thread } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  claude.sessions.at(-1)!.result('completed');
+  h.runner.send(thread.id, '/research');
+  await tick();
+  const cli = claude.sessions.at(-1)!;
+  assert.equal(cli.sent.at(-1)?.text, '/research');
+  h.runner.mustGet(thread.id).rec.contextTokens = 190_000;
+  cli.result('completed');
+  h.clock.advance(0);
+  await tick();
+  assert.match(claude.sessions.at(-1)!.sent.at(-1)?.text ?? '', /^\/compact /);
+  c.stop();
+});
+
+test('clearing a coordinator conversation does not immediately compact its old context', async () => {
+  const { c, h, project, claude } = setup();
+  const { thread } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  claude.sessions.at(-1)!.result('completed');
+  h.runner.send(thread.id, '/clear');
+  await tick();
+  const cli = claude.sessions.at(-1)!;
+  assert.equal(cli.sent.at(-1)?.text, '/clear');
+  h.runner.mustGet(thread.id).rec.contextTokens = 190_000;
+  cli.result('completed');
+  h.clock.advance(60 * 60_000);
+  await tick();
+  assert.ok(!claude.sessions.some((session) => session.sent.some((m) => m.text.startsWith('/compact'))));
+  c.stop();
+});
+
 test('a turn finishing on a draining runner’s thread reaches the coordinator through the peer’s summary (THREADBEAR-2R)', async () => {
   const home = tmpDir();
   const projects = new Projects({ home, clock: new FakeClock(), log: nullLogger });

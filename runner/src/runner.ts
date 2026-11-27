@@ -302,6 +302,8 @@ export type Turn = {
   // /model's usage line) isn't a reply asking anything: without an
   // end_turn the turn leaves no card.
   command?: boolean;
+  // A compaction or clear cannot schedule another compaction on this context.
+  skipIdleCompaction?: boolean;
   // A compaction, review or clear: the CLI can't take words into it, so
   // they wait for the next turn. A skill's turn is an ordinary one.
   noSteer?: boolean;
@@ -2569,6 +2571,7 @@ export class Runner {
     rt.idleTimer?.cancel();
     rt.idleTimer = undefined;
     rt.turn = { turnId: msg.turnId, startedAt: this.clock.now(), interruptRequested: false, messages: [msg.turnId], edited: new Set(), access: rec.permissionMode };
+    rt.turn.skipIdleCompaction = /^\/(compact|clear)(?:\s|$)/i.test(msg.text.trimStart());
     rt.turn.inputs = new Map([[msg.turnId, messageSeq]]);
     if (!isCarryOn(msg)) rt.turn.newWork = true;
     if (fromMike(msg.text, msg)) rt.turn.byMike = true;
@@ -2987,6 +2990,10 @@ export class Runner {
     switch (o.kind) {
       case 'messageState': {
         const turn = rt.turn;
+        if (o.state === 'started' && turn?.precompact) {
+          turn.foreignOutput = turn.precompact.id !== o.id;
+          break;
+        }
         if (!turn?.inputs?.has(o.id)) break;
         turn.deliveryKnown = true;
         if (o.state === 'started') {
@@ -3001,9 +3008,10 @@ export class Runner {
         this.seeWake(st, ev);
         // The CLI's own line for a compaction this runner asked for ahead of
         // the turn says why (runner/cold-compact.ts).
-        if (ev.type === 'system.note' && ev.text === 'Compacted the conversation' && rt.turn?.precompact && !rt.turn.precompact.compacted) {
-          rt.turn.precompact.compacted = true;
-          ev = { ...ev, text: this.coldNote(rt.turn.precompact) };
+        const pre = rt.turn?.precompact;
+        if (ev.type === 'system.note' && ev.text === 'Compacted the conversation' && pre && pre.gen === gen && !pre.compacted && !rt.turn?.foreignOutput) {
+          pre.compacted = true;
+          ev = { ...ev, text: this.coldNote(pre) };
         }
         // A Codex child's items carry its prefix (<child>/<id>); Claude's
         // sub-agents never reach the thread's events.
@@ -3255,6 +3263,9 @@ export class Runner {
         const r = o.result;
         const turn = rt.turn;
         if (!turn) break;
+        // A background turn can end before delivery starts a compaction.
+        // Older CLIs will not send a started frame to clear this marker.
+        if (r.own) turn.foreignOutput = false;
         // The compaction sent ahead of the message (runner/cold-compact.ts).
         // A turn the CLI ran by itself meanwhile isn't it: keep waiting.
         if (turn.precompact && cliHears(rt, turn.precompact.gen) !== 'stale') {

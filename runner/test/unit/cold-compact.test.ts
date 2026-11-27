@@ -235,6 +235,54 @@ test('a completed /compact without a compaction boundary never claims it compact
   assert.ok(!notes(h, id).some((text) => text.startsWith('Compacted the conversation')));
 });
 
+test('a compaction from an unrelated CLI turn is kept separate from a skipped pre-compaction', async () => {
+  for (const foreign of ['background', 'queued'] as const) {
+    const { h, id, s } = setup();
+    finish(s, 500_000);
+    h.clock.advance(2 * HOUR);
+    h.runner.send(id, 'Carry on');
+    await tick(8);
+    const cli = last(h);
+    const compact = cli.sent.at(-1)!;
+    assert.match(compact.text, /^\/compact /);
+
+    if (foreign === 'background') cli.out({ kind: 'cliTurn' });
+    else cli.out({ kind: 'messageState', id: 'other-message', state: 'started' });
+    cli.out({ kind: 'event', event: { type: 'system.note', text: 'Compacted the conversation' } });
+    cli.result('completed', undefined, undefined, foreign === 'background' ? { own: true } : { answered: ['other-message'] });
+    assert.equal(cli.sent.at(-1)?.id, compact.id, 'the unrelated result does not release the message');
+    cli.out({ kind: 'messageState', id: compact.id!, state: 'started' });
+    cli.result('completed', undefined, undefined, { answered: [compact.id!] });
+    await tick(8);
+    assert.ok(cli.sent.at(-1)!.text.includes('Carry on'));
+    assert.equal(notes(h, id).filter((text) => text === 'Compacted the conversation').length, 1);
+    assert.ok(!notes(h, id).some((text) => text.startsWith('Compacted the conversation first')));
+  }
+});
+
+test('a background CLI turn that finishes before /compact leaves the next boundary attributable', async () => {
+  const { h, id, s } = setup();
+  finish(s, 500_000);
+  h.clock.advance(2 * HOUR);
+
+  const deliver = h.runner.deliver.bind(h.runner);
+  h.runner.deliver = (st, msg, live) => {
+    h.runner.onOutput(st, { kind: 'cliTurn' });
+    h.runner.onOutput(st, { kind: 'result', result: { outcome: 'completed', durationMs: 0, own: true } });
+    return deliver(st, msg, live);
+  };
+  h.runner.send(id, 'Carry on');
+  await tick(8);
+  const cli = last(h);
+  assert.match(cli.sent.at(-1)!.text, /^\/compact /);
+  // An older CLI supplies the boundary and result but no started frame.
+  cli.out({ kind: 'event', event: { type: 'system.note', text: 'Compacted the conversation' } });
+  cli.result('completed');
+  await tick(8);
+  assert.ok(cli.sent.at(-1)!.text.includes('Carry on'));
+  assert.ok(notes(h, id).some((text) => text.startsWith('Compacted the conversation first')));
+});
+
 test('coldWake: only a resumed Claude session past both thresholds', () => {
   const rec = { provider: 'claude', contextTokens: 300_000, sessionUsed: true };
   const now = 10 * HOUR;

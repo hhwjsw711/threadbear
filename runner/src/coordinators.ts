@@ -2217,10 +2217,12 @@ export class Coordinators {
         this.bindAsks(threadId, event.asks, event.seq);
       }
       // The runner publishes completion before dropping the active turn.
-      // A CLI can decline /compact without shrinking the context. A
-      // command finishing must not immediately schedule the same command.
+      // A refused or failed compaction leaves the context at the old size.
       const turn = this.deps.host.threads.get(threadId)?.rt.turn;
-      if (!turn?.command && !turn?.local) this.scheduleCompaction(own);
+      if (turn?.skipIdleCompaction) {
+        this.compactTimers.get(own.projectId)?.cancel();
+        this.compactTimers.delete(own.projectId);
+      } else if (!turn?.local) this.scheduleCompaction(own);
       return;
     }
     if (event.type !== 'turn.completed') return;
