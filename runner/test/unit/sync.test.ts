@@ -4852,3 +4852,23 @@ test('heartbeats mirror effective pools only after the backend can take them', a
     await sync.stop();
   }
 });
+
+
+test('backup pool fields and shared member writes are gated on backend API 111', async () => {
+  for (const apiVersion of [110, 111]) {
+    const { h, sync, calls } = setup({ answer: (fn) => fn === 'sync:heartbeat' ? { apiVersion } : null });
+    h.cfg.pools = [{ id: 'custom', title: 'Custom', accountIds: ['claude-3'], backup: { 'claude-3': true } }];
+    sync.start();
+    await tick();
+    h.clock.advance(HEARTBEAT_MS);
+    await tick();
+    const runner = calls.filter((c) => c.fn === 'sync:heartbeat').at(-1)!.args.runner as { usagePools?: { backup?: unknown }[] };
+    assert.deepEqual(runner.usagePools?.[0].backup, apiVersion >= 111 ? { 'claude-3': true } : undefined);
+    const backend = sync.poolBackend();
+    assert.equal(backend.backups, apiVersion >= 111);
+    await backend.save([{ id: 'custom', title: 'Custom', members: [{ provider: 'claude', email: 'a@example.com', backup: false }] }]);
+    const pools = calls.filter((c) => c.fn === 'sync:savePools').at(-1)!.args.pools as { members: { backup?: boolean }[] }[];
+    assert.equal(pools[0].members[0].backup, apiVersion >= 111 ? false : undefined);
+    await sync.stop();
+  }
+});

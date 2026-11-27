@@ -625,6 +625,7 @@ mod tests {
             id: "claude".into(),
             title: "Claude".into(),
             account_ids: (0..n).map(|i| i.to_string()).collect(),
+            backup: Default::default(),
             icon: None,
             folders: vec![],
         };

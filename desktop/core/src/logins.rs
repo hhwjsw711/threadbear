@@ -134,6 +134,9 @@ pub struct Pool {
     pub title: String,
     #[serde(default, deserialize_with = "crate::wire::list")]
     pub account_ids: Vec<String>,
+    /// Per-login overrides; missing means backup for Grok and OpenCode.
+    #[serde(default, deserialize_with = "crate::wire::map")]
+    pub backup: HashMap<String, bool>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub icon: Option<String>,
     /// Folders whose threads start in this pool (`Pools.forFolder`).

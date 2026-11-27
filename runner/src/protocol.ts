@@ -196,6 +196,7 @@ export type Pool = {
   id: string; // "claude", "codex", "convex", or a slug Mike made
   title: string; // "Claude"
   accountIds: string[]; // in order; may mix providers
+  backup?: Record<string, boolean>; // per-login overrides; Grok/OpenCode default to backup
   folders?: string[]; // ~ allowed; a new thread under one starts here
   icon?: string; // an SF Symbol name Mike picked ("leaf"); the app has a fallback
   builtIn?: boolean; // from the code default, not runner.json

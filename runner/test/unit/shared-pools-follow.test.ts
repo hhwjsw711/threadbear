@@ -112,3 +112,40 @@ test("a runner with none of the shared pools' logins keeps its own", async () =>
   await settle();
   assert.equal(other.sp.pools([login('claude-main', 'someone@else.com')]), undefined);
 });
+
+
+test('backup edits fail clearly before a write to an older backend', async () => {
+  const b = fakeBackend();
+  const mac = follower(MAC, 'laptop', MAC_POOLS);
+  try {
+    mac.sp.attach(b.backend);
+    await settle();
+    const before = b.calls.length;
+    await assert.rejects(mac.sp.save([{ ...MAC_POOLS[0], backup: { 'claude-main': true } }]), /backend API 111/);
+    assert.equal(b.calls.length, before);
+    Object.defineProperty(b.backend, 'backups', { value: true });
+    await mac.sp.save([{ ...MAC_POOLS[0], backup: { 'claude-main': true, 'claude-1': false } }]);
+    assert.deepEqual(mac.sp.pools(MAC)?.[0].backup, { 'claude-main': true, 'claude-1': false });
+  } finally {
+    mac.sp.stop();
+    fs.rmSync(mac.dir, { recursive: true, force: true });
+  }
+});
+
+
+test('adoption waits for a backend that can store configured backup choices', async () => {
+  const b = fakeBackend();
+  const mac = follower(MAC, 'laptop', [{ ...MAC_POOLS[0], backup: { 'claude-main': true } }]);
+  try {
+    mac.sp.attach(b.backend);
+    await settle();
+    assert.equal(b.calls.length, 0);
+    Object.defineProperty(b.backend, 'backups', { value: true });
+    mac.sp.attach(b.backend);
+    await settle();
+    assert.deepEqual(mac.sp.pools(MAC)?.[0].backup, { 'claude-main': true });
+  } finally {
+    mac.sp.stop();
+    fs.rmSync(mac.dir, { recursive: true, force: true });
+  }
+});

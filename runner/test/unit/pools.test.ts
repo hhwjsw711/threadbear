@@ -17,6 +17,7 @@ import {
   findPool,
   limitWhy,
   loginOk,
+  isBackup,
   nextLogin,
   pickInPool,
   poolForFolder,
@@ -201,4 +202,41 @@ test('limitWhy and poolLine: the words in move notes and list_accounts', () => {
   const line = poolLine(CLAUDE, [acct('claude-main', { five: 61 }), acct('claude-1'), acct('claude-3', { five: 0, blocked: true, resets: 60 })], NOW);
   assert.match(line, /^claude-main 61%, claude-1 room unknown, claude-3 out until \S/);
   assert.match(poolLine({ id: 'x', title: 'X', accountIds: ['gone'] }, [], NOW), /gone \(not found\)/);
+});
+
+
+test('nextLogin keeps the provider, then tries main providers before backups in pool order', () => {
+  const accounts: Account[] = [
+    acct('c', { week: 0, blocked: true }),
+    { ...acct('g', { week: 87 }), provider: 'grok' },
+    acct('x', { provider: 'codex', week: 30 }),
+  ];
+  const pool: Pool = { id: 'main', title: 'Main', accountIds: ['c', 'g', 'x'] };
+  assert.deepEqual(nextLogin(pool, accounts, { accountId: 'c', provider: 'claude' }, NOW), { accountId: 'x', provider: 'codex' });
+});
+
+
+test('backup defaults, explicit true/false, and old configs parse without migration', () => {
+  const accounts: Account[] = [acct('c'), { ...acct('g'), provider: 'grok' }, { ...acct('o'), provider: 'opencode' }];
+  const old = readPools({ pools: [{ id: 'p', title: 'P', accountIds: ['c', 'g', 'o'] }] }, accounts)[0];
+  assert.deepEqual(accounts.map((a) => isBackup(old, a)), [false, true, true]);
+  const raw = { ...old, backup: { c: true, g: false, o: false } };
+  const parsed = validatePools([raw], accounts);
+  assert.ok('pools' in parsed);
+  assert.deepEqual(accounts.map((a) => isBackup(parsed.pools[0], a)), [true, false, false]);
+  assert.ok('error' in validatePools([{ ...raw, backup: { c: 'yes' } }], accounts));
+  assert.ok('error' in validatePools([{ ...raw, backup: { missing: true } }], accounts));
+});
+
+test('same provider wins even on backup; main and backup provider order is stable', () => {
+  const accounts: Account[] = [acct('c', { week: 0, blocked: true }), acct('b', { week: 40 }),
+    { ...acct('g', { week: 87 }), provider: 'grok' }, acct('x', { provider: 'codex', week: 50 })];
+  const pool: Pool = { id: 'p', title: 'P', accountIds: ['c', 'b', 'g', 'x'], backup: { b: true } };
+  assert.equal(nextLogin(pool, accounts, { accountId: 'c', provider: 'claude' }, NOW).accountId, 'b');
+  accounts[1].signedOut = true;
+  assert.equal(nextLogin(pool, accounts, { accountId: 'c', provider: 'claude' }, NOW).accountId, 'x');
+  pool.backup!.x = true;
+  assert.equal(nextLogin(pool, accounts, { accountId: 'c', provider: 'claude' }, NOW).accountId, 'g');
+  pool.backup!.g = false;
+  assert.equal(nextLogin(pool, accounts, { accountId: 'c', provider: 'claude' }, NOW).accountId, 'g');
 });

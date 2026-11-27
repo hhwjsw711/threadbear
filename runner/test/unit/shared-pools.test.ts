@@ -1,3 +1,4 @@
+import { keepBackupChoices } from '../../../convex/pool-backups.ts';
 // Pools shared between runners (docs/protocol/settings.md, "Pools", "Shared between
 // runners"): the backend's list names logins by provider and email, and
 // each runner turns it into its own pools, and back again on pools.save.
@@ -161,4 +162,29 @@ test("a reorder on another runner moves the Mac's pinned member too", () => {
   const shared = roundTrip(toShared([{ id: 'mix', title: 'Mix', accountIds: ['claude-2', 'codex-main'] }], [], [...TWIN, login('codex-main', 'alex@example.net', 'codex')], 'laptop'));
   const after = toShared([{ id: 'mix', title: 'Mix', accountIds: ['codex-main', 'claude-main'] }], shared, HZ, 'hz');
   assert.deepEqual(after[0]!.members, [{ provider: 'codex', email: 'alex@example.net' }, { provider: 'claude', email: 'alex@example.net', runnerId: 'laptop', accountId: 'claude-2' }]);
+});
+
+
+test('backup overrides follow shared member identities to different local ids', () => {
+  const accounts = [login('local-c', 'a@example.com'), { ...login('local-g', 'g@example.com'), provider: 'grok' as const }];
+  const remote = [login('remote-c', 'a@example.com'), { ...login('remote-g', 'g@example.com'), provider: 'grok' as const }];
+  const pool: Pool = { id: 'p', title: 'P', accountIds: ['local-c', 'local-g'], backup: { 'local-c': true, 'local-g': false } };
+  const shared = toShared([pool], [], accounts, 'mac');
+  assert.deepEqual(shared[0].members.map((m) => m.backup), [true, false]);
+  const translated = fromShared(readShared(shared), remote, 'cloud')[0];
+  assert.deepEqual(translated.backup, { 'remote-c': true, 'remote-g': false });
+  const roundtrip = fromShared(toShared([translated], shared, remote, 'cloud'), accounts, 'mac')[0];
+  assert.deepEqual(roundtrip.backup, pool.backup);
+  assert.equal(readShared([{ ...shared[0], members: [{ ...shared[0].members[0], backup: 'invalid' }] }])[0].members[0].backup, undefined);
+});
+
+
+test('older pool writers preserve backup choices and explicit false still wins', () => {
+  const previous = [{ provider: 'grok', email: 'g@example.com', backup: false }, { provider: 'claude', runnerId: 'r', accountId: 'c', backup: true }];
+  assert.deepEqual(keepBackupChoices([{ provider: 'grok', email: 'g@example.com' }, { provider: 'claude', runnerId: 'r', accountId: 'c' }], previous), previous);
+  assert.equal(keepBackupChoices([{ provider: 'claude', runnerId: 'r', accountId: 'c', backup: false }], previous)[0].backup, false);
+  assert.equal(keepBackupChoices([{ provider: 'grok', email: 'new@example.com' }], previous)[0].backup, undefined);
+  const accounts = [login('c', 'g@example.com')];
+  const shared: SharedPool[] = [{ id: 'p', title: 'P', members: [{ provider: 'claude', email: 'g@example.com', backup: true }] }];
+  assert.equal(toShared([{ id: 'p', title: 'P', accountIds: ['c'] }], shared, accounts, 'r')[0].members[0].backup, true);
 });

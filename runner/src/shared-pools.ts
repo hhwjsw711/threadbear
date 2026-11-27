@@ -17,6 +17,7 @@ export type PoolBackend = {
   // The backend takes a member with both an email and an id (two logins
   // here sharing an email, pools.ts memberOf). False or missing: email only.
   readonly pins?: boolean;
+  readonly backups?: boolean;
 };
 
 export type SharedPoolsDeps = {
@@ -92,6 +93,9 @@ export class SharedPools {
   // runner can't see (toShared).
   async save(pools: Pool[]): Promise<void> {
     if (!this.backend) throw new Error('not attached to the backend');
+    if (pools.some((p) => Object.keys(p.backup ?? {}).length) && !this.backend.backups) {
+      throw new Error('Backup choices need backend API 111. Update the backend before changing them.');
+    }
     const accounts = this.deps.accounts();
     const local = this.deps.localPools();
     const pin = !!this.backend.pins;
@@ -137,6 +141,8 @@ export class SharedPools {
     if (!this.backend || !this.empty || this.adopting) return;
     const local = this.deps.localPools();
     if (!local?.length) return;
+    // Keep a new config local until the backend can store its choices.
+    if (local.some((p) => Object.keys(p.backup ?? {}).length) && !this.backend.backups) return;
     const accounts = this.deps.accounts();
     const used = new Set(local.flatMap((p) => p.accountIds));
     if (accounts.some((a) => used.has(a.id) && !a.email)) return;

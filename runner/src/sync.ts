@@ -174,7 +174,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 110;
+export const BACKEND_API_VERSION = 111;
 const ARTIFACTS_API_VERSION = 109;
 export const INDEX_POOL_API_VERSION = 101;
 export const COORDINATORS_API_VERSION = 102;
@@ -252,6 +252,7 @@ export const SHARED_POOLS_API_VERSION = 38;
 // email and a runner id too, so a login sharing its email with another
 // here can be saved by id (pools.ts memberOf, issue 18).
 export const POOL_PINS_API_VERSION = 75;
+export const POOL_BACKUPS_API_VERSION = 111;
 // Other runners' usage readings of the same logins (sync:sharedUsage).
 export const SHARED_USAGE_API_VERSION = 39;
 // From this one the backend scrubs secrets again before storing what a runner
@@ -4559,7 +4560,7 @@ export class ConvexSync {
       draining: false,
       threadCount: this.deps.runner.list(ALL).length,
       ...((this.backendApiVersion ?? 0) >= INDEX_POOL_API_VERSION && this.deps.runner.listPools
-        ? { usagePools: this.deps.runner.listPools().pools.map(({ id, title, accountIds }) => ({ id, title, accountIds })) }
+        ? { usagePools: this.deps.runner.listPools().pools.map(({ id, title, accountIds, backup }) => ({ id, title, accountIds, ...((this.backendApiVersion ?? 0) >= POOL_BACKUPS_API_VERSION && backup ? { backup } : {}) })) }
         : {}),
       ...((this.backendApiVersion ?? 0) >= MOBILE_PICKER_API_VERSION && this.deps.runner.defaults
         ? (() => {
@@ -4956,7 +4957,12 @@ export class ConvexSync {
     const key = this.deps.key;
     const runnerId = this.runnerId;
     const sync = this;
+    const compatible = (pools: SharedPool[]) => (sync.backendApiVersion ?? 0) >= POOL_BACKUPS_API_VERSION ? pools
+      : pools.map((p) => ({ ...p, members: p.members.map(({ backup: _backup, ...m }) => m) }));
     this.poolsTable = {
+      get backups() {
+        return (sync.backendApiVersion ?? 0) >= POOL_BACKUPS_API_VERSION;
+      },
       get pins() {
         return (sync.backendApiVersion ?? 0) >= POOL_PINS_API_VERSION;
       },
@@ -4968,13 +4974,13 @@ export class ConvexSync {
         return this.subscriber.subscribe('sync:pools', { key }, (v) => onRows(Array.isArray(v) ? (v as SharedPool[]) : []), onError);
       },
       save: async (pools) => {
-        await this.backend('mutation', 'sync:savePools', { key, runnerId, pools });
+        await this.backend('mutation', 'sync:savePools', { key, runnerId, pools: compatible(pools) });
       },
       // adoptPools is the main key's (docs/protocol/keys.md, "Runner keys"): on a
       // runner key it's "not taken", and this runner follows the main Mac's.
       adopt: async (pools) => {
         try {
-          return (await this.backend('mutation', 'sync:adoptPools', { key, runnerId, pools })) === true;
+          return (await this.backend('mutation', 'sync:adoptPools', { key, runnerId, pools: compatible(pools) })) === true;
         } catch (e) {
           if (/runner's key can't/.test(String((e as Error)?.message))) return false;
           throw e;

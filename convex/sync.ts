@@ -1,3 +1,4 @@
+import { keepBackupChoices } from './pool-backups';
 // What the runner writes (runner/src/sync.ts). Every mutation carries the
 // runner key (lib.ts). Rows are current state, so writing the same thing
 // twice is harmless, and a runner that was offline writes each changed
@@ -1575,7 +1576,7 @@ export const heartbeat = mutation({
   handler: async (ctx, { key, runner, held }) => {
     const caller = await runnerAuth(ctx, key, 'heartbeat', { housekeeping: held === true });
     runner = clean(runner);
-    if (runner.usagePools) runner.usagePools = runner.usagePools.slice(0, 50).map((p) => ({ id: cutBytes(p.id, 128), title: cutBytes(p.title, 200), accountIds: p.accountIds.slice(0, 50).map((id) => cutBytes(id, 128)) }));
+    if (runner.usagePools) runner.usagePools = runner.usagePools.slice(0, 50).map((p) => ({ id: cutBytes(p.id, 128), title: cutBytes(p.title, 200), accountIds: p.accountIds.slice(0, 50).map((id) => cutBytes(id, 128)), ...(p.backup ? { backup: Object.fromEntries(Object.entries(p.backup).filter(([id]) => p.accountIds.includes(id)).slice(0, 50).map(([id, value]) => [cutBytes(id, 128), value])) } : {}) }));
     if (runner.defaults) {
       const cutMap = (m?: Record<string, string>) =>
         m ? Object.fromEntries(Object.entries(m).slice(0, 20).map(([k, val]) => [cutBytes(k, 64), cutBytes(val, 128)])) : undefined;
@@ -3074,7 +3075,7 @@ export const requestScheduleRun = mutation({
 
 // ------------------------------------------------------------ pools (API 38)
 
-const poolMemberDoc = v.object({ provider: v.string(), email: v.optional(v.string()), runnerId: v.optional(v.string()), accountId: v.optional(v.string()) });
+const poolMemberDoc = v.object({ provider: v.string(), email: v.optional(v.string()), runnerId: v.optional(v.string()), accountId: v.optional(v.string()), backup: v.optional(v.boolean()) });
 const sharedPoolDoc = v.object({ id: v.string(), title: v.string(), members: v.array(poolMemberDoc), folders: v.optional(v.array(v.string())), icon: v.optional(v.string()) });
 
 // Every runner subscribes to this and works out its own pools from it.
@@ -3091,8 +3092,8 @@ export const pools = query({
     // email too (API 75: two logins on its runner share that email) goes to
     // every runner, without the id for another runner's key.
     const mine = (m: { runnerId?: string }) => caller.owner || m.runnerId === undefined || m.runnerId === caller.runnerId;
-    const forCaller = (members: { provider: string; email?: string; runnerId?: string; accountId?: string }[]) =>
-      members.flatMap((m) => (mine(m) ? [m] : m.email ? [{ provider: m.provider, email: m.email }] : []));
+    const forCaller = (members: { provider: string; email?: string; runnerId?: string; accountId?: string; backup?: boolean }[]) =>
+      members.flatMap((m) => (mine(m) ? [m] : m.email ? [{ provider: m.provider, email: m.email, ...(m.backup !== undefined ? { backup: m.backup } : {}) }] : []));
     return rows.map(({ id, title, members, folders, icon }) => ({ id, title, members: forCaller(members), ...(folders ? { folders } : {}), ...(icon ? { icon } : {}) }));
   },
 });
@@ -3126,7 +3127,7 @@ export const adoptPools = mutation({
   },
 });
 
-async function writePools(ctx: { db: MutationCtx['db'] }, runnerId: string, pools: { id: string; title: string; members: { provider: string; email?: string; runnerId?: string; accountId?: string }[]; folders?: string[]; icon?: string }[]): Promise<void> {
+async function writePools(ctx: { db: MutationCtx['db'] }, runnerId: string, pools: { id: string; title: string; members: { provider: string; email?: string; runnerId?: string; accountId?: string; backup?: boolean }[]; folders?: string[]; icon?: string }[]): Promise<void> {
   const ids = new Set<string>();
   for (const p of pools) {
     if (!p.id.trim() || ids.has(p.id)) throw new ConvexError(`Pool ids must be unique and not empty: "${p.id}"`);
@@ -3137,7 +3138,7 @@ async function writePools(ctx: { db: MutationCtx['db'] }, runnerId: string, pool
   const now = new Date().toISOString();
   for (const [order, p] of pools.entries()) {
     const row = existing.find((r) => r.id === p.id);
-    const doc = { id: p.id, title: p.title, members: p.members, ...(p.folders?.length ? { folders: p.folders } : {}), ...(p.icon ? { icon: p.icon } : {}), order };
+    const doc = { id: p.id, title: p.title, members: keepBackupChoices(p.members, row?.members ?? []), ...(p.folders?.length ? { folders: p.folders } : {}), ...(p.icon ? { icon: p.icon } : {}), order };
     if (!row) {
       await ctx.db.insert('pools', { ...doc, updatedAt: now, updatedBy: runnerId });
       continue;

@@ -9,7 +9,7 @@ use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::{h_flex, Sizable as _, StyledExt as _};
+use gpui_kit::component::{h_flex, Disableable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
@@ -212,7 +212,7 @@ impl SettingsWindow {
             sections.push(section_with_body(
                 "settings-pool-logins",
                 &pool.title,
-                "Tick the logins this pool can use. A mixed pool tries providers in this order; within one provider, the login with the most room goes first.",
+                "Tick the logins this pool can use. Threads keep their provider first, then try other main providers before backups. Backups and pay-as-you-go OpenCode stay out of the honey pot.",
                 "change its logins or their order, or add a login that isn't listed.",
                 group(rows, cx),
                 cx,
@@ -500,7 +500,10 @@ impl SettingsWindow {
                             });
                         }
                     }
-                    Err(e) => this.pools.error = Some(e.message),
+                    Err(e) => {
+                        this.pools.list = this.pools.base.clone();
+                        this.pools.error = Some(e.message);
+                    }
                 }
                 cx.notify();
             })
@@ -664,6 +667,42 @@ impl SettingsWindow {
             .into_any_element()
     }
 
+    fn backup_toggle(&self, pool: &Pool, account: &Account, cx: &mut Context<Self>) -> AnyElement {
+        let backup = pools::is_backup(Some(pool), account);
+        let (pool_id, login) = (pool.id.clone(), account.id.clone());
+        let me = cx.entity().downgrade();
+        let tip = format!(
+            "Use {} as a backup in {}. When changing providers, tried after main logins. Kept out of the honey pot.",
+            account.name(),
+            pool.title
+        );
+        crate::highlights::tipped(
+            h_flex()
+                .id(SharedString::from(format!("pool-backup-{}", account.id)))
+                .mr(px(10.)),
+            tip.clone(),
+        )
+        .child(
+            Checkbox::new(SharedString::from(format!(
+                "pool-backup-check-{}",
+                account.id
+            )))
+            .checked(backup)
+            .label("Backup")
+            .tooltip(tip)
+            .small()
+            .disabled(self.pools.saving)
+            .on_click(move |on: &bool, _, cx| {
+                let (pool_id, login, on) = (pool_id.clone(), login.clone(), *on);
+                me.update(cx, |this, cx| {
+                    this.change_pool(&pool_id, cx, |p| pools::set_backup(p, &login, on))
+                })
+                .ok();
+            }),
+        )
+        .into_any_element()
+    }
+
     /// `LoginToggleRow`: ticked if it's in the pool, with arrows to put the
     /// ticked ones in order.
     fn login_row(
@@ -723,6 +762,7 @@ impl SettingsWindow {
         };
         let mut controls = h_flex().gap(px(2.));
         if included {
+            controls = controls.child(self.backup_toggle(pool, account, cx));
             let first = pool.account_ids.first() == Some(&account.id);
             let last = pool.account_ids.last() == Some(&account.id);
             for (step, symbol, tip, disabled) in [

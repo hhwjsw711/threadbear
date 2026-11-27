@@ -1134,7 +1134,7 @@ async function dispatch(client, method, p) {
       if (oldRunner) throw rpcError(-32601, 'Method not found');
       validatePools(p.pools);
       // Saved ones are runner.json's, not the code default's.
-      pools = p.pools.map(({ id, title, accountIds, folders, icon }) => ({ id, title: title || id, accountIds, ...(folders?.length ? { folders } : {}), ...(icon ? { icon } : {}) }));
+      pools = p.pools.map(({ id, title, accountIds, folders, icon, backup }) => ({ id, title: title || id, accountIds, ...(backup ? { backup } : {}), ...(folders?.length ? { folders } : {}), ...(icon ? { icon } : {}) }));
       broadcast('pools.updated', { pools });
       return { pools };
     }
@@ -2661,6 +2661,11 @@ async function dispatch(client, method, p) {
       t.summary.live = tasks.length > 0 || t.summary.live;
       broadcastSummary(t.summary.id);
       return { thread: t.summary };
+    }
+    case 'mock.pools': {
+      if (Array.isArray(p.pools)) { validatePools(p.pools); pools = p.pools; }
+      broadcast('pools.updated', { pools });
+      return { pools };
     }
     case 'mock.accounts': {
       // Replaces the account list ({accounts}), or plays a runner from

@@ -98,11 +98,12 @@ Feature: The Usage panel and its honey pot
     When I press "Start a thread with ideas a day before" in Settings
     Then Settings says spare week nudges are off
 
-  @rail.honeypot
-  Scenario: The honey pot is filled to the room the next thread would get, and follows it
+  @rail.honeypot @swift-pending
+  Scenario: A pinned thread fills the honey pot from only its own login
+    When a usage thread "Pinned allowance" uses "claude-main" in pool ""
+    And I open the thread "Pinned allowance"
     Then the honey pot is 78% full, for "claude-main"
     And the honey pot's tooltip says "Claude: 78% left"
-    And the honey pot's tooltip says "Work: 95% left"
     When "claude-main" is down to 40% of its week
     Then the honey pot is 40% full, for "claude-main"
     And the honey pot's tooltip says "Claude: 40% left"
@@ -110,19 +111,34 @@ Feature: The Usage panel and its honey pot
     Then the honey pot is 100% full, for "claude-main"
 
   @rail.honeypot @swift-pending
-  Scenario: Switching threads makes the pot follow each thread's pool
+  Scenario: Switching threads follows the provider average in its pool
     When a usage thread "Pool allowance" uses "claude-4" in pool "claude"
     And I open the thread "Pool allowance"
-    Then the honey pot is 78% full, for "claude-main"
-    And the honey pot's first allowance is "Claude: 78% left"
+    Then the honey pot is 30% full, for "claude-4"
+    And a line of the honey pot's tooltip starts "Claude: 30% left (2 of 3 ready, next back "
     When a usage thread "Work allowance" uses "claude-2" in pool "work"
     And I open the thread "Work allowance"
     Then the honey pot is 95% full, for "claude-2"
-    And the honey pot's first allowance is "Work: 95% left"
+    And the honey pot's tooltip says "Claude: 95% left"
     When I open the thread "Pool allowance"
     And "claude-main" is down to 5% of its week
-    Then the honey pot is 12% full, for "claude-3"
-    And the honey pot's first allowance is "Claude: 12% left"
+    Then the honey pot is 6% full, for "claude-4"
+    And a line of the honey pot's tooltip starts "Claude: 6% left (2 of 3 ready, next back "
+
+  @rail.honeypot @swift-pending
+  Scenario: Main honey excludes backups and the tooltip explains a short block
+    When the usage example has three Claude logins, blocked Gemini and backup Grok and OpenCode
+    And I open the thread "Main allowance"
+    Then the honey pot is 5% full, for "claude-main"
+    And a line of the honey pot's tooltip starts "Claude: 5% left (1 of 3 ready, next back "
+    And a line of the honey pot's tooltip starts "Gemini: 0% now, back "
+    And the honey pot's tooltip says "Grok (backup): 87% left"
+    And the honey pot's tooltip says "OpenCode (backup): pay as you go"
+    When I open Settings on "pools"
+    And I press the backup checkbox for Grok in Main
+    Then Grok in Main is a main login
+    When I press the backup checkbox for Grok in Main
+    Then Grok in Main is a backup login
 
   # From Claude Code 2.1.325 a sign-in ends 28 days after it was made, and
   # claude-1's ended unnoticed on 14 Nov 2026. The frozen Swift app has none of it.

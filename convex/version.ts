@@ -524,4 +524,5 @@
 // 109: the owner runner can publish, look up and remove hosted HTML artifacts.
 // 110: hosted HTML artifacts use file storage up to 10 MiB, allow inline
 //    scripts in an opaque offline sandbox, and support private/public visibility.
-export const API_VERSION = 110;
+// 111: optional per-pool backup choices on shared members and usage pools.
+export const API_VERSION = 111;

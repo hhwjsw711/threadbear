@@ -207,9 +207,17 @@ impl Threadbear {
         cx.notify();
     }
 
-    /// The open thread's runner and pool; without a thread, the new draft's login.
+    /// Follow the open thread provider; other views use the active/default pool.
     fn honey_icon(&self) -> rules::HoneyIcon {
-        let thread = self.selected.as_ref().and_then(|id| self.threads.get(id));
+        let thread = self
+            .selected
+            .as_ref()
+            .filter(|_| {
+                self.home_page().is_none()
+                    && self.projects.open.is_none()
+                    && self.archive.open.is_none()
+            })
+            .and_then(|id| self.threads.get(id));
         let (logins, pool, account, runner) = if let Some(thread) = thread {
             let logins = match thread.runner_id.as_deref() {
                 Some(runner) => self.remote.logins.get(runner),
@@ -223,13 +231,21 @@ impl Threadbear {
             )
         } else {
             let logins = self.new_thread_logins();
-            let account = logins
-                .map(|l| self.with_draft(l, |d| d.account_id()))
-                .unwrap_or_default();
+            let pool = logins.and_then(|l| {
+                self.with_draft(l, |d| d.pool_id())
+                    .or_else(|| l.defaults.pool_id.clone())
+                    .or_else(|| {
+                        l.usage_pools
+                            .as_deref()
+                            .unwrap_or(&l.pools)
+                            .first()
+                            .map(|p| p.id.clone())
+                    })
+            });
             (
                 logins,
-                None,
-                account,
+                pool,
+                String::new(),
                 self.new_thread.picks.runner.as_deref(),
             )
         };
@@ -237,6 +253,7 @@ impl Threadbear {
             || rules::HoneyIcon {
                 level: 0.,
                 login: None,
+                scope: None,
                 tip: "Usage\nWaiting for this runner's usage".to_owned(),
             },
             |l| {
@@ -250,17 +267,17 @@ impl Threadbear {
                 )
             },
         );
-        // The same login id on two runners is not the same allowance resetting.
-        icon.login = icon.login.map(|login| match runner {
-            Some(runner) => format!("{runner}/{login}"),
-            None => login,
-        });
+        // Equal local ids on two runners do not mean the same allowance.
+        if let Some(runner) = runner {
+            icon.login = icon.login.map(|login| format!("{runner}/{login}"));
+            icon.scope = icon.scope.map(|scope| format!("{runner}/{scope}"));
+        }
         icon
     }
 
     pub(crate) fn honey_pot(&mut self) -> (AnyElement, String) {
         let icon = self.honey_icon();
-        self.usage.pot.see(icon.level, icon.login);
+        self.usage.pot.see(icon.level, icon.scope);
         (self.usage.pot.element(), icon.tip)
     }
 
@@ -438,6 +455,7 @@ impl Threadbear {
         }
         json!({
             "shown": self.dock.read(cx).is_showing(shell::USAGE),
+            "pools": self.logins.pools.iter().map(threadbear_core::pools::to_json).collect::<Vec<_>>(),
             "lines": rules::lines_named(&self.logins.pools, accounts, stats, now, &zone, |p| self.logins.provider_title(p)),
             "icon": {
                 "percent": (icon.level * 100.).round() as i64,
@@ -2138,14 +2156,14 @@ fn honey() -> Hsla {
 #[derive(Default)]
 struct Pot {
     seen: bool,
-    /// What it's filling to, 0 to 1, and for which login: the pot changing
+    /// What it's filling to, 0 to 1, and for which allowance: the pot changing
     /// hands isn't a refill.
     level: f64,
-    login: Option<String>,
+    scope: Option<String>,
     /// Where the last change set off from, and when.
     from: f64,
     since: Option<Instant>,
-    /// The last change was the same login's window resetting: it rises over
+    /// The last change was the same allowance resetting: it rises over
     /// 700 ms with a drip, where a spend drains in a short step.
     refill: bool,
     /// Counts the changes, so each gets an animation of its own.
@@ -2176,28 +2194,28 @@ impl Pot {
         self.from + (self.level - self.from) * f64::from((self.easing())(t))
     }
 
-    /// The level and login now. The first is just shown, as the Swift pot's
+    /// The level and allowance now. The first is just shown, as the Swift pot's
     /// `onAppear` does; after that each change animates from wherever the
     /// last one has got to.
-    fn see(&mut self, level: f64, login: Option<String>) {
+    fn see(&mut self, level: f64, scope: Option<String>) {
         if !self.seen {
             *self = Pot {
                 seen: true,
                 level,
                 from: level,
-                login,
+                scope,
                 ..Pot::default()
             };
             return;
         }
-        if (level - self.level).abs() < 1e-9 && login == self.login {
+        if (level - self.level).abs() < 1e-9 && scope == self.scope {
             return;
         }
         let from = self.shown();
-        self.refill = rules::refilled(self.level, level, login == self.login);
+        self.refill = rules::refilled(self.level, level, scope == self.scope);
         self.from = from;
         self.level = level;
-        self.login = login;
+        self.scope = scope;
         self.since = Some(Instant::now());
         self.changes += 1;
     }
@@ -2462,4 +2480,59 @@ pub(crate) fn automation(
         "ok {}",
         serde_json::to_string(&lines).unwrap_or_default()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rules, Account, Pot};
+    use threadbear_core::chrono::Utc;
+    use threadbear_core::logins::Pool;
+
+    #[test]
+    fn provider_switch_updates_the_pot_without_a_false_refill() {
+        let accounts: Vec<Account> = serde_json::from_value(serde_json::json!([
+            {"id":"c1", "provider":"claude", "usage":{"windows":[{"kind":"weekly", "remainingPercent":14}]}},
+            {"id":"c2", "provider":"claude", "usage":{"windows":[{"kind":"weekly", "remainingPercent":0}]}},
+            {"id":"x", "provider":"codex", "usage":{"windows":[{"kind":"weekly", "remainingPercent":100}]}},
+            {"id":"g", "provider":"grok", "usage":{"windows":[{"kind":"weekly", "remainingPercent":87}]}}
+        ])).unwrap();
+        let pools = [Pool {
+            id: "main".into(),
+            account_ids: accounts.iter().map(|a| a.id.clone()).collect(),
+            ..Default::default()
+        }];
+        let mut pot = Pot::default();
+        for (login, level) in [("c1", 0.07), ("x", 1.), ("g", 0.)] {
+            let icon = rules::thread_honey(&pools, &accounts, Some("main"), login, 0, &Utc);
+            pot.see(icon.level, icon.scope);
+            assert_eq!(pot.level, level);
+            assert!(!pot.refill, "switching provider is not a usage reset");
+        }
+    }
+    #[test]
+    fn changing_pool_on_the_same_login_is_not_a_refill() {
+        let accounts: Vec<Account> = serde_json::from_value(serde_json::json!([
+            {"id":"c1", "provider":"claude", "usage":{"windows":[{"kind":"weekly", "remainingPercent":100}]}},
+            {"id":"c2", "provider":"claude", "usage":{"windows":[{"kind":"weekly", "remainingPercent":0}]}}
+        ])).unwrap();
+        let pools = [
+            Pool {
+                id: "main".into(),
+                account_ids: vec!["c1".into(), "c2".into()],
+                ..Default::default()
+            },
+            Pool {
+                id: "work".into(),
+                account_ids: vec!["c1".into()],
+                ..Default::default()
+            },
+        ];
+        let mut pot = Pot::default();
+        for pool in ["main", "work"] {
+            let icon = rules::thread_honey(&pools, &accounts, Some(pool), "c1", 0, &Utc);
+            pot.see(icon.level, icon.scope);
+            assert!(!pot.refill);
+        }
+        assert_eq!(pot.level, 1.);
+    }
 }

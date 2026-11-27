@@ -680,8 +680,8 @@ impl Threadbear {
         );
         // Right-click: the app's update in a popover (updates_panel.rs).
         foot.push(self.with_update_popover(updates, window, cx));
-        // Usage, as a honey pot filled to the room the next thread would get,
-        // its tooltip each pool's best room (usage.rs). Toggles its panel
+        // Usage follows the open thread provider's main logins (usage.rs).
+        // The tooltip names backup capacity separately. Toggles its panel
         // under the threads, as VS Code's bar does its views.
         let usage_shown = self.dock.read(cx).is_showing(shell::USAGE);
         let (pot, tip) = self.honey_pot();

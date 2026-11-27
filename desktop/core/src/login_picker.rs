@@ -432,6 +432,7 @@ mod tests {
             id: "claude".into(),
             title: "Claude".into(),
             account_ids: vec!["claude-main".into(), "claude-1".into()],
+            backup: Default::default(),
             icon: None,
             folders: vec![],
         };
@@ -494,6 +495,7 @@ mod tests {
             id: "claude".into(),
             title: "Claude".into(),
             account_ids: vec!["claude-main".into(), "claude-1".into(), "claude-2".into()],
+            backup: Default::default(),
             icon: None,
             folders: vec![],
         };
@@ -723,6 +725,7 @@ mod tests {
             id: id.into(),
             title: id.into(),
             account_ids: accounts.iter().map(|a| a.to_string()).collect(),
+            backup: Default::default(),
             icon: None,
             folders: folders.iter().map(|f| f.to_string()).collect(),
         };
@@ -814,6 +817,7 @@ mod tests {
             id: "main".into(),
             title: "Main".into(),
             account_ids: vec!["claude-main".into()],
+            backup: Default::default(),
             icon: None,
             folders: vec![],
         }];
@@ -885,6 +889,7 @@ mod tests {
             id: "codex".into(),
             title: "Codex".into(),
             account_ids: vec!["codex-1".into(), "codex-2".into()],
+            backup: Default::default(),
             icon: None,
             folders: vec![],
         };

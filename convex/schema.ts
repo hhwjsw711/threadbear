@@ -42,7 +42,7 @@ export const messageButton = v.object({
   failed: v.optional(v.string()),
 });
 
-export const usagePool = v.object({ id: v.string(), title: v.string(), accountIds: v.array(v.string()) });
+export const usagePool = v.object({ id: v.string(), title: v.string(), accountIds: v.array(v.string()), backup: v.optional(v.record(v.string(), v.boolean())) });
 // API 107: the runner's default pool, login, model per provider and effort per
 // provider, for the phone's model picker and new-thread defaults.
 export const runnerDefaults = v.object({
@@ -1291,7 +1291,7 @@ export const appSchema = defineSchema({
   pools: defineTable({
     id: v.string(),
     title: v.string(),
-    members: v.array(v.object({ provider: v.string(), email: v.optional(v.string()), runnerId: v.optional(v.string()), accountId: v.optional(v.string()) })),
+    members: v.array(v.object({ provider: v.string(), email: v.optional(v.string()), runnerId: v.optional(v.string()), accountId: v.optional(v.string()), backup: v.optional(v.boolean()) })),
     folders: v.optional(v.array(v.string())),
     icon: v.optional(v.string()),
     order: v.number(),

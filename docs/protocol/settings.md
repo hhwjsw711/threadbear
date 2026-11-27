@@ -547,6 +547,33 @@ from one as `byAgent`.
 
 ## Pools
 
+### Backup logins (API 111)
+
+A pool may carry `backup?: Record<string, boolean>`, keyed by its own login
+ids. An absent entry means backup for Grok and OpenCode, main for other
+providers. `false` explicitly makes even Grok a main login. Only pool members
+may be keys. Older configs need no migration; older runners ignore the field.
+Shared saves preserve existing choices when an older client omits them.
+Shared pool members carry optional `backup?: boolean` instead, translated to
+local ids on each runner. Usage-pool heartbeats carry the optional map from
+API 111. A runner refuses an explicit backup edit against an older backend,
+with an update message, rather than silently losing the choice.
+
+Failover keeps the same provider first (main, then backup), then tries other
+main providers in pool order, then backup providers in pool order. The existing
+reset-based login selection within each provider and tier stays unchanged.
+
+The desktop honey pot averages the open thread provider's main logins in its
+pool. A pinned thread uses only its login. An explicitly selected backup or
+pay-as-you-go login leaves the pot empty and is named in the tooltip. Without
+an open thread, average all main logins in the active/default pool. Signed-out
+and plan-ended logins are excluded; unknown usage contributes zero and is
+reported as unknown. OpenCode never contributes to a percentage. The tooltip
+shows the active pool's providers, with separate backup lines, ready counts,
+and factual reset times; it distinguishes a short block from an empty week.
+It contains no burn-rate predictions.
+
+
 A pool is a named, ordered list of logins, of any provider. Mike picks a
 pool and a model; the runner picks which login runs each turn, and moves a
 thread to another login when the one it's on runs out of room.

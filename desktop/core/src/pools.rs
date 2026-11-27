@@ -88,10 +88,25 @@ pub fn login_list<'a>(pool: &Pool, accounts: &'a [Account]) -> Vec<(&'a Account,
 pub fn setting(pool: &Pool, login: &str, included: bool) -> Pool {
     let mut pool = pool.clone();
     pool.account_ids.retain(|id| id != login);
+    if !included {
+        pool.backup.remove(login);
+    }
     if included {
         pool.account_ids.push(login.to_owned());
     }
     pool
+}
+
+/// Defaults shared with the runner; OpenCode is always excluded from fill.
+pub fn is_backup(pool: Option<&Pool>, account: &Account) -> bool {
+    pool.and_then(|p| p.backup.get(&account.id))
+        .copied()
+        .unwrap_or(matches!(account.provider_id(), "grok" | "opencode"))
+}
+
+/// Keep an explicit false, so default-backup providers can become main.
+pub fn set_backup(pool: &mut Pool, login: &str, backup: bool) {
+    pool.backup.insert(login.to_owned(), backup);
 }
 
 /// Moves a ticked login one place up (`step` -1) or down (1).
@@ -166,6 +181,9 @@ pub fn to_json(pool: &Pool) -> Value {
     if let Some(icon) = pool.icon.as_deref().filter(|i| !i.is_empty()) {
         v["icon"] = json!(icon);
     }
+    if !pool.backup.is_empty() {
+        v["backup"] = json!(pool.backup);
+    }
     v
 }
 
@@ -196,6 +214,31 @@ mod tests {
     fn account(id: &str, provider: &str) -> Account {
         serde_json::from_value(json!({ "id": id, "provider": provider })).unwrap()
     }
+    #[test]
+    fn backup_defaults_overrides_and_wire_roundtrip() {
+        let mut pool: Pool =
+            serde_json::from_value(json!({"id":"p", "title":"P", "accountIds":["g", "c"]}))
+                .unwrap();
+        let grok = Account {
+            id: "g".into(),
+            provider: "grok".into(),
+            ..Default::default()
+        };
+        let claude = Account {
+            id: "c".into(),
+            provider: "claude".into(),
+            ..Default::default()
+        };
+        assert!(is_backup(Some(&pool), &grok));
+        assert!(!is_backup(Some(&pool), &claude));
+        set_backup(&mut pool, "g", false);
+        set_backup(&mut pool, "c", true);
+        let decoded: Pool = serde_json::from_value(to_json(&pool)).unwrap();
+        assert!(!is_backup(Some(&decoded), &grok));
+        assert!(is_backup(Some(&decoded), &claude));
+        assert!(!setting(&decoded, "g", false).backup.contains_key("g"));
+    }
+
     fn pool(id: &str, logins: &[&str]) -> Pool {
         Pool {
             id: id.into(),

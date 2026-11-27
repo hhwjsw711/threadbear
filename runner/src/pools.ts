@@ -92,6 +92,12 @@ function shapeOf(raw: unknown): Pool | undefined {
   if (typeof r.id !== 'string' || typeof r.title !== 'string' || !Array.isArray(r.accountIds)) return undefined;
   if (r.accountIds.some((x) => typeof x !== 'string')) return undefined;
   const pool: Pool = { id: r.id.trim(), title: r.title.trim(), accountIds: [...new Set(r.accountIds as string[])] };
+  if (r.backup !== undefined) {
+    if (!r.backup || typeof r.backup !== 'object' || Array.isArray(r.backup)) return undefined;
+    const entries = Object.entries(r.backup);
+    if (entries.some(([id, value]) => !pool.accountIds.includes(id) || typeof value !== 'boolean')) return undefined;
+    pool.backup = Object.fromEntries(entries) as Record<string, boolean>;
+  }
   if (r.folders !== undefined) {
     if (!Array.isArray(r.folders) || r.folders.some((x) => typeof x !== 'string')) return undefined;
     const f = (r.folders as string[]).map((x) => x.trim()).filter(Boolean);
@@ -187,7 +193,9 @@ export function poolAccounts(pool: Pool, accounts: Account[]): Account[] {
 type LoginPick = { provider: Provider; exclude?: string[]; current?: string; prefer?: string; now?: number };
 
 export function pickInPool(pool: Pool, accounts: Account[], o: LoginPick): string | undefined {
-  return pickLogin(poolAccounts(pool, accounts), o);
+  const members = poolAccounts(pool, accounts);
+  return pickLogin(members.filter((a) => !isBackup(pool, a)), o)
+    ?? pickLogin(members.filter((a) => isBackup(pool, a)), o);
 }
 
 export function pickLogin(accounts: Account[], o: LoginPick): string | undefined {
@@ -223,15 +231,24 @@ export function weeklyReset(a: Account, now: number): number {
 
 export type NextLogin = { accountId: string; provider: Provider } | { waitUntil: string; accountId?: string };
 
-// Where a thread goes when its login can't run the next turn: the pool
-// login of its own provider with the most room, else the first other
-// provider in pool order with a login with room (a cross-provider move),
-// else a wait until the first of the pool's logins is back.
+// Keep the provider first, then main providers, then backups, each tier in
+// pool order. Within a provider the existing weekly-reset rule still picks
+// the login. When none can run, wait until the first login is back.
+export function isBackup(pool: Pool, account: Account): boolean {
+  const override = pool.backup?.[account.id];
+  return typeof override === 'boolean' ? override : account.provider === 'grok' || account.provider === 'opencode';
+}
+
 export function nextLogin(pool: Pool, accounts: Account[], thread: { accountId: string; provider: Provider }, now: number): NextLogin {
-  const order = [thread.provider, ...poolProviders(pool, accounts).filter((p) => p !== thread.provider)];
-  for (const provider of order) {
-    const id = pickInPool(pool, accounts, { provider, exclude: [thread.accountId] });
-    if (id) return { accountId: id, provider };
+  const members = poolAccounts(pool, accounts);
+  const same = pickInPool(pool, accounts, { provider: thread.provider, exclude: [thread.accountId], now });
+  if (same) return { accountId: same, provider: thread.provider };
+  for (const backup of [false, true]) {
+    const tier = members.filter((a) => isBackup(pool, a) === backup);
+    for (const provider of poolProviders(pool, tier).filter((p) => p !== thread.provider)) {
+      const id = pickLogin(tier, { provider, now });
+      if (id) return { accountId: id, provider };
+    }
   }
   return roomWait(pool, accounts, now);
 }
@@ -356,7 +373,7 @@ export function findPool(pools: Pool[], q: string): Pool | undefined {
 // another login of its provider on the same runner shares (two config
 // folders signed in to one account, issue 18) carries both: its runner
 // takes it by id, and the others by email as usual.
-export type PoolMember = { provider: Provider; email?: string; runnerId?: string; accountId?: string };
+export type PoolMember = { provider: Provider; email?: string; runnerId?: string; accountId?: string; backup?: boolean };
 export type SharedPool = { id: string; title: string; members: PoolMember[]; folders?: string[]; icon?: string };
 
 const emailOf = (a: Account): string | undefined => a.email?.trim().toLowerCase() || undefined;
@@ -418,7 +435,11 @@ export function fromShared(shared: SharedPool[], accounts: Account[], runnerId: 
   for (const p of shared) {
     const ids = [...new Set(p.members.map((m) => localLogin(m, accounts, runnerId)?.id).filter((id): id is string => !!id))];
     if (!ids.length) continue;
-    out.push({ id: p.id, title: p.title, accountIds: ids, ...(p.folders?.length ? { folders: [...p.folders] } : {}), ...(p.icon ? { icon: p.icon } : {}) });
+    const backup = Object.fromEntries(p.members.flatMap((m) => {
+      const a = localLogin(m, accounts, runnerId);
+      return a && typeof m.backup === 'boolean' ? [[a.id, m.backup]] : [];
+    }));
+    out.push({ id: p.id, title: p.title, accountIds: ids, ...(Object.keys(backup).length ? { backup } : {}), ...(p.folders?.length ? { folders: [...p.folders] } : {}), ...(p.icon ? { icon: p.icon } : {}) });
   }
   return out;
 }
@@ -443,7 +464,12 @@ export function toShared(saved: Pool[], previous: SharedPool[], accounts: Accoun
       const pinned = before.filter((m) => pinnedElsewhere(m, runnerId) && localLogin(m, accounts, runnerId)?.id === id);
       const a = accounts.find((x) => x.id === id);
       const mine = pinned.length ? pinned : a ? [memberOf(a, runnerId, accounts, pin)] : [];
-      for (const m of mine) if (!chosen.some((c) => memberKey(c) === memberKey(m))) chosen.push(m);
+      for (const m of mine) {
+        const { backup: _old, ...identity } = m;
+        const override = p.backup?.[id] ?? before.find((m) => localLogin(m, accounts, runnerId)?.id === id)?.backup;
+        const member = { ...identity, ...(typeof override === 'boolean' ? { backup: override } : {}) };
+        if (!chosen.some((c) => memberKey(c) === memberKey(member))) chosen.push(member);
+      }
     }
     const members: PoolMember[] = [];
     let next = 0;
@@ -475,6 +501,7 @@ export function readShared(raw: unknown): SharedPool[] {
       if (typeof m.email === 'string' && m.email) member.email = m.email.toLowerCase();
       else if (!pinned) continue;
       if (pinned) Object.assign(member, { runnerId: m.runnerId, accountId: m.accountId });
+      if (typeof m.backup === 'boolean') member.backup = m.backup;
       members.push(member);
     }
     const pool: SharedPool = { id: r.id, title: r.title, members };

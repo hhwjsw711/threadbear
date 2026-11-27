@@ -1841,10 +1841,17 @@ claude:you@example.com` sets it. Your first Mac goes by its own readings,
 never that Mac's.
 
 Usage, the honey pot near the bottom of the left-hand rail (it's filled to the
-best room left in the open thread's pool, or its own login if pinned; on the
-new-thread screen it follows the draft's login), shows how much room each login
+average room left across the open thread provider's main logins in its pool,
+or its own login if pinned; other screens show the active/default pool), shows how much room each login
 has left before it hits its limits: the weekly one, and the 5-hour one for
 logins that still have it (Claude Team does, Max plans don't any more).
+In Settings > Pools, each included login has a Backup checkbox. Grok and
+OpenCode start as backups; you can change that per pool. Backups stay out of
+the pot, and OpenCode always gets its own pay-as-you-go line. A thread running
+on a backup leaves the main pot empty and says what it is using on hover.
+The tooltip shows one line per provider, ready counts, and the next known
+reset. Signed-out logins do not count; unknown usage contributes no honey.
+
 Threadbear learns these numbers from the threads it runs, so a login's bars
 fill in once it has run something.
 
