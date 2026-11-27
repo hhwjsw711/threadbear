@@ -1326,3 +1326,73 @@ test('Codex coordinator lockdown helpers', () => {
   assert.deepEqual(coordinatorMcpLeaks([{ name: 'agent-archive', runtimeStatus: 'connected', tools: { search_archive: {} } }], false), ['agent-archive'], 'not kept: must be off');
   assert.deepEqual(coordinatorMcpLeaks([{ name: 'y', runtimeStatus: null, tools: {} }], true), ['y'], 'unknown status is not proof it is off');
 });
+
+test('MCP tool-approval elicitations match open mcpToolCall items and respect Full access switches mid-turn', async () => {
+  const h = await open({ permissionMode: 'ask' });
+  await started(h);
+  h.session.send({ id: 'm1', text: 'triage sentry', images: [] });
+  await turnStarts(h, 'u1');
+
+  const args = { organizationSlug: 'mikec', issueId: 'THREADBEAR-13', status: 'resolved' };
+  h.conn.notify('item/started', {
+    threadId: 'th-1',
+    turnId: 'u1',
+    item: { type: 'mcpToolCall', id: 'exec-sentry-1', server: 'connectors', tool: 'sentry__update_issue', arguments: args, status: 'inProgress' },
+  });
+  await waitFor(() => h.rec.itemIds().includes('exec-sentry-1'));
+
+  const elicitation = (tool: string, toolParams?: Record<string, unknown>) => ({
+    threadId: 'th-1',
+    turnId: 'u1',
+    serverName: 'connectors',
+    mode: 'form',
+    message: `Allow the connectors MCP server to run tool "${tool}"?`,
+    requestedSchema: { type: 'object', properties: {} },
+    _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: tool, ...(toolParams ? { tool_params: toolParams } : {}) },
+  });
+
+  // Ask mode: routes to requestApproval with the matched itemId and full arguments (even when tool_params is omitted).
+  const first = h.conn.serverRequest('mcpServer/elicitation/request', elicitation('sentry__update_issue'));
+  await waitFor(() => h.rec.approvals.length === 1);
+  assert.equal(h.rec.questions.length, 0);
+  assert.equal(h.rec.approvals[0].toolUseId, 'exec-sentry-1');
+  assert.equal(h.rec.approvals[0].name, 'mcp__connectors__sentry__update_issue');
+  assert.equal(h.rec.approvals[0].title, 'connectors: sentry__update_issue');
+  assert.deepEqual(h.rec.approvals[0].input, args);
+  assert.equal(h.rec.approvals[0].noReview, undefined);
+  assert.deepEqual((await first).result, { action: 'accept', content: {}, _meta: null });
+
+  h.conn.notify('item/completed', {
+    threadId: 'th-1',
+    turnId: 'u1',
+    item: { type: 'mcpToolCall', id: 'exec-sentry-1', server: 'connectors', tool: 'sentry__update_issue', arguments: args, status: 'completed' },
+  });
+  await waitFor(() => h.norm.calls.some((c) => c.method === 'item/completed'));
+
+  // Switch to Full access mid-turn: subsequent MCP tool approval elicitations auto-accept with no card.
+  await h.session.setPermissionMode('full');
+  h.conn.notify('item/started', {
+    threadId: 'th-1',
+    turnId: 'u1',
+    item: { type: 'mcpToolCall', id: 'exec-sentry-2', server: 'connectors', tool: 'sentry__add_issue_note', arguments: { issueId: 'THREADBEAR-13', text: 'done' }, status: 'inProgress' },
+  });
+  await waitFor(() => h.rec.itemIds().includes('exec-sentry-2'));
+  const second = await h.conn.serverRequest('mcpServer/elicitation/request', elicitation('sentry__add_issue_note', { issueId: 'THREADBEAR-13', text: 'done' }));
+  assert.deepEqual(second.result, { action: 'accept', content: {}, _meta: null });
+  assert.equal(h.rec.approvals.length, 1);
+  assert.equal(h.rec.questions.length, 0);
+
+  // Genuine empty-schema MCP form elicitation (no codex_approval_kind) STILL asks as a question even in Full access.
+  const genuine = h.conn.serverRequest('mcpServer/elicitation/request', {
+    threadId: 'th-1',
+    turnId: 'u1',
+    serverName: 'connectors',
+    mode: 'form',
+    message: 'Confirm external action?',
+    requestedSchema: { type: 'object', properties: {} },
+    _meta: null,
+  });
+  await waitFor(() => h.rec.questions.length === 1);
+  await genuine;
+  await h.session.end();
+});

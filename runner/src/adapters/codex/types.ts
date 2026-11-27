@@ -220,6 +220,7 @@ export type McpServerElicitationRequestParams = {
   turnId: string | null;
   serverName: string;
   mode: string; // "form", "url", "openai/form", "openaiForm", "openai/userVerification"
+  _meta?: Record<string, unknown> | null;
   message?: string;
   requestedSchema?: { type?: string; properties?: Record<string, ElicitationProperty>; required?: string[] };
   url?: string;

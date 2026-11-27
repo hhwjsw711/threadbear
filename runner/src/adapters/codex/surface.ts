@@ -158,6 +158,7 @@ export const TYPE_FIELDS: Record<string, string[]> = {
   FileChangeRequestApprovalParams: ['itemId', 'reason'],
   ToolRequestUserInputParams: ['questions', 'isBlocking'],
   ToolRequestUserInputQuestion: ['id', 'header', 'question', 'isSecret', 'options'],
+  McpServerElicitationRequestParams: ['threadId', 'turnId', 'serverName', 'mode', '_meta', 'message', 'requestedSchema', 'url'],
   DynamicToolCallParams: ['callId', 'namespace', 'tool', 'arguments'],
   DynamicToolCallResponse: ['contentItems', 'success'],
   DynamicToolFunctionSpec: ['name', 'description', 'inputSchema'],
@@ -262,5 +263,6 @@ function itemText(items: string, type: string, read: (name: string) => string): 
 }
 
 function hasField(text: string, field: string): boolean {
-  return new RegExp(`(^|[\\s{,("])${field.replace(/[$]/g, '\\$')}\\??\\s*:`, 'm').test(text);
+  const escaped = field.replace(/[$]/g, '\\$');
+  return new RegExp(`(^|[\\s{,(])(?:"${escaped}"|${escaped})\\??\\s*:`, 'm').test(text);
 }

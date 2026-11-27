@@ -554,7 +554,7 @@ export type Runtime = {
   // it would a card. `main`: the agent's own call, not a subagent's.
   // `stale`: a subagent's, which Mike wrote during: its verdict was made
   // without his message, so it goes to him as a card.
-  reviews?: Map<string, { main: boolean; cancel: (a: ToolApprovalAnswer) => void; stale?: boolean }>;
+  reviews?: Map<string, { main: boolean; fullAllows?: boolean; cancel: (a: ToolApprovalAnswer) => void; stale?: boolean }>;
   idleTimer?: TimerHandle;
   releaseWhenIdle: boolean;
   inProgress: Map<string, InProgressItem>;
@@ -4456,6 +4456,9 @@ export class Runner {
       if (params.permissionMode === 'full') {
         for (const p of [...rt.approvals.values()]) {
           if (p.kind === 'tool' && p.fullAllows) this.respondApproval({ threadId: rec.id, approvalId: p.approvalId, decision: 'allow', message: 'Allowed by Full access' });
+        }
+        for (const r of [...(rt.reviews?.values() ?? [])]) {
+          if (r.fullAllows) r.cancel({ decision: 'allow', message: 'Allowed by Full access' });
         }
       }
     }

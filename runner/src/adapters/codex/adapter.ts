@@ -28,7 +28,7 @@ import {
 } from './appserver.ts';
 import { runsAsCodeByName } from '../../code-writes.ts';
 import { hookTrust, sameHome, shareCodexHome, type MainHook } from '../../codex-home-share.ts';
-import { CodexApprovals } from './approvals.ts';
+import { CodexApprovals, type OpenMcpCall } from './approvals.ts';
 import { CodexTools, dynamicToolSpecs, toolGuidance, type ToolDefinition } from './tools.ts';
 import { CodexNormalizer, limitsFromAccount, limitsFromRateLimits } from './normalize.ts';
 import { placePictures } from '../../pictures.ts';
@@ -613,6 +613,7 @@ export class CodexSession implements AgentSession {
   private waitTimers: NodeJS.Timeout[] = [];
   private rules: Set<string>;
   private itemPaths = new Map<string, string[]>();
+  private openMcpCalls = new Map<string, OpenMcpCall>();
   // Settings applied on the next turn/start.
   private model?: string;
   private modelChanged = false;
@@ -684,6 +685,7 @@ export class CodexSession implements AgentSession {
       note: (text) => this.sink.output({ kind: 'event', event: { type: 'system.note', text } }),
       cwd: () => this.cwd,
       itemPaths: (id) => this.itemPaths.get(id),
+      openMcpCalls: (server, tool) => [...this.openMcpCalls.values()].filter((c) => c.server === server && c.tool === tool),
       runsAsCode: (file) => runsAsCodeByName(file) || (opts.runsAsCode?.(file) ?? false),
       callTool: (params, o) => this.tools.call(params, o),
       now: this.now,
@@ -993,7 +995,7 @@ export class CodexSession implements AgentSession {
   // (for the approval card's title).
   private trackItem(method: string, p: Record<string, unknown>): void {
     if (method !== 'item/started' && method !== 'item/completed') return;
-    const item = p.item as { type?: string; id?: string; changes?: { path?: unknown; kind?: { move_path?: unknown } }[] } | undefined;
+    const item = p.item as { type?: string; id?: string; changes?: { path?: unknown; kind?: { move_path?: unknown } }[]; server?: unknown; tool?: unknown; arguments?: unknown } | undefined;
     if (!item || typeof item.id !== 'string') return;
     if (item.type === 'commandExecution') {
       if (method === 'item/started') this.turn?.openCommands.add(item.id);
@@ -1003,6 +1005,15 @@ export class CodexSession implements AgentSession {
       // written there (code-writes.ts).
       this.itemPaths.set(item.id, item.changes.flatMap((c) => [c?.path, c?.kind?.move_path]).filter((x): x is string => typeof x === 'string' && x !== ''));
       if (this.itemPaths.size > 200) this.itemPaths.delete(this.itemPaths.keys().next().value!);
+    } else if (item.type === 'mcpToolCall') {
+      if (method === 'item/started') {
+        if (typeof item.server === 'string' && typeof item.tool === 'string') {
+          this.openMcpCalls.set(item.id, { itemId: item.id, server: item.server, tool: item.tool, arguments: item.arguments });
+          if (this.openMcpCalls.size > 200) this.openMcpCalls.delete(this.openMcpCalls.keys().next().value!);
+        }
+      } else {
+        this.openMcpCalls.delete(item.id);
+      }
     }
   }
 
@@ -1322,6 +1333,7 @@ export class CodexSession implements AgentSession {
     if (p.turn.status === 'interrupted' && turn.openCommands.size) endAfter = !(await this.stopOpenCommands(turn));
     if (this.turn !== turn) return;
     this.turn = undefined;
+    this.openMcpCalls.clear();
     this.clearWaitTimers();
     const result = outs.find((o): o is Extract<AdapterOutput, { kind: 'result' }> => o.kind === 'result')?.result;
     this.emit(outs);

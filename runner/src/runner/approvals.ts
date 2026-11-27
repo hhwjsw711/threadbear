@@ -169,7 +169,7 @@ export const approvalsPart = {
     // adapter marks it noReview (opaque patches/stdin, or lasting permissions).
     if (req.name !== 'ExitPlanMode' && !req.noReview && reviewsCards(this, st)) {
       const title = approvalTitle(req.name, req.input, (q) => this.findThread(q)) ?? req.title;
-      return this.reviewThenCard(st, gen, { name: req.name, title, input: req.wholeInput ?? req.input }, req.signal, () => this.approvalCard(st, req), Boolean(req.toolUseId));
+      return this.reviewThenCard(st, gen, { name: req.name, title, input: req.wholeInput ?? req.input }, req.signal, () => this.approvalCard(st, req), Boolean(req.toolUseId), Boolean(req.fullAllows));
     }
     return this.approvalCard(st, req);
   },
@@ -177,7 +177,7 @@ export const approvalsPart = {
   // An Auto thread's card goes past the reviewer first (runner/card-review.ts):
   // allowed there, the call goes ahead with a note saying so; otherwise
   // `show` puts the card up for Mike, after a note with the reviewer's reason.
-  async reviewThenCard(this: Runner, st: ThreadState, gen: number, card: CardForReview, signal: AbortSignal | undefined, show: () => Promise<ToolApprovalAnswer>, main = true): Promise<ToolApprovalAnswer> {
+  async reviewThenCard(this: Runner, st: ThreadState, gen: number, card: CardForReview, signal: AbortSignal | undefined, show: () => Promise<ToolApprovalAnswer>, main = true, fullAllows = false): Promise<ToolApprovalAnswer> {
     const { rt } = st;
     // Settled at once by Stop, the turn ending or Mike writing (expireApprovals,
     // send), as a card would be, without waiting for the model.
@@ -191,7 +191,7 @@ export const approvalsPart = {
       resolveCancel(a);
     };
     const id = crypto.randomUUID();
-    const entry: { main: boolean; cancel: typeof cancel; stale?: boolean } = { main, cancel };
+    const entry: { main: boolean; fullAllows?: boolean; cancel: typeof cancel; stale?: boolean } = { main, ...(fullAllows ? { fullAllows: true } : {}), cancel };
     (rt.reviews ??= new Map()).set(id, entry);
     const onAbort = () => cancel({ decision: 'expired', message: 'Cancelled.' });
     signal?.addEventListener('abort', onAbort, { once: true });

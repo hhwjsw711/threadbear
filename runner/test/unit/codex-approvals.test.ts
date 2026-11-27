@@ -170,7 +170,7 @@ test('refusals: cancel for approvals, decline for elicitations, -32601 otherwise
 
 // ---- The handler
 
-function harness(rules: string[] = [], o: { full?: () => boolean } = {}) {
+function harness(rules: string[] = [], o: { full?: () => boolean; openMcpCalls?: ApprovalsDeps['openMcpCalls']; coordinatorRole?: ApprovalsDeps['coordinatorRole']; checkCoordinator?: ApprovalsDeps['checkCoordinator'] } = {}) {
   const replies: { id: unknown; result?: unknown; error?: { code: number; message: string } }[] = [];
   const asked: ToolApprovalRequest[] = [];
   const questions: QuestionRequest[] = [];
@@ -204,6 +204,9 @@ function harness(rules: string[] = [], o: { full?: () => boolean } = {}) {
     callTool: async () => ({ contentItems: [{ type: 'inputText', text: 'ok' }], success: true }),
     now: () => 1_793_000_000_000,
     ...(o.full ? { fullAccess: o.full } : {}),
+    ...(o.openMcpCalls ? { openMcpCalls: o.openMcpCalls } : {}),
+    ...(o.coordinatorRole ? { coordinatorRole: o.coordinatorRole } : {}),
+    ...(o.checkCoordinator ? { checkCoordinator: o.checkCoordinator } : {}),
   };
   const a = new CodexApprovals(deps);
   return {
@@ -710,5 +713,362 @@ test('codex command approvals resolve symlinked cwd in wholeInput and decline if
     assert.equal(h2.notes.length, 2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('MCP tool-approval elicitations route through requestApproval with tool identity, full input and clean allow/deny/expire replies', async () => {
+  const args = { organizationSlug: 'mikec', issueId: 'THREADBEAR-13', status: 'resolved' };
+  const h = harness([], {
+    openMcpCalls: (server, tool) =>
+      server === 'connectors' && tool === 'sentry__update_issue'
+        ? [{ itemId: 'exec-1', server, tool, arguments: args }]
+        : [],
+  });
+  const mcpReq = (overrides: Record<string, unknown> = {}) => ({
+    threadId: 't',
+    turnId: 'u',
+    serverName: 'connectors',
+    mode: 'form',
+    message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+    requestedSchema: { type: 'object', properties: {} },
+    _meta: {
+      codex_approval_kind: 'mcp_tool_call',
+      tool_name: 'sentry__update_issue',
+      tool_params: args,
+      persist: ['session', 'always'],
+    },
+    ...overrides,
+  });
+
+  h.a.handle(0, 'mcpServer/elicitation/request', mcpReq(), { fromChild: false });
+  await flush();
+  assert.equal(h.questions.length, 0, 'must not become a question card');
+  assert.equal(h.asked.length, 1);
+  assert.equal(h.asked[0].toolUseId, 'exec-1');
+  assert.equal(h.asked[0].name, 'mcp__connectors__sentry__update_issue');
+  assert.equal(h.asked[0].title, 'connectors: sentry__update_issue');
+  assert.deepEqual(h.asked[0].input, args);
+  assert.deepEqual(h.asked[0].wholeInput, args);
+  assert.equal(h.asked[0].reason, 'Allow the connectors MCP server to run tool "sentry__update_issue"?');
+  assert.equal(h.asked[0].canAlwaysAllow, false);
+  assert.equal(h.asked[0].fullAllows, true);
+  assert.equal(h.asked[0].noReview, undefined);
+  assert.deepEqual(h.replies[0], { id: 0, result: { action: 'accept', content: {}, _meta: null } });
+
+  // allowAlways still accepts once with _meta: null and saves no rule.
+  h.answerWith(async () => ({ decision: 'allowAlways' }));
+  h.a.handle(1, 'mcpServer/elicitation/request', mcpReq(), { fromChild: false });
+  h.answerWith(async () => ({ decision: 'deny', message: 'not now' }));
+  h.a.handle(2, 'mcpServer/elicitation/request', mcpReq(), { fromChild: false });
+  h.answerWith(async () => ({ decision: 'expired' }));
+  h.a.handle(3, 'mcpServer/elicitation/request', mcpReq(), { fromChild: false });
+  await flush();
+  assert.equal(h.added.length, 0);
+  assert.deepEqual(
+    h.replies.slice(1).map((r) => r.result),
+    [
+      { action: 'accept', content: {}, _meta: null },
+      { action: 'decline', content: null, _meta: null },
+      { action: 'cancel', content: null, _meta: null },
+    ],
+  );
+});
+
+test('MCP tool-approval elicitations auto-accept on Full access, while genuine MCP elicitations still ask', async () => {
+  let full = true;
+  const h = harness([], { full: () => full });
+  h.answerQuestionsWith(async (q) => ({ answers: { [q.questions[0].question]: 'Accept' } }));
+  // Codex MCP tool approval in Full access: auto-accepted with no card.
+  h.a.handle(
+    0,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue', tool_params: { issueId: 'THREADBEAR-13' } },
+    },
+    { fromChild: false },
+  );
+  assert.equal(h.asked.length, 0);
+  assert.equal(h.questions.length, 0);
+  assert.deepEqual(h.replies[0], { id: 0, result: { action: 'accept', content: {}, _meta: null } });
+
+  // Spoofed message from an external MCP server without codex_approval_kind: STILL a question even in Full access!
+  h.a.handle(
+    1,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: null,
+    },
+    { fromChild: false },
+  );
+  // Real form with fields even if _meta were present: STILL a question.
+  h.a.handle(
+    2,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'deploy',
+      mode: 'form',
+      message: 'Pick an environment',
+      requestedSchema: { type: 'object', properties: { env: { type: 'string', enum: ['staging', 'prod'] } } },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'deploy' },
+    },
+    { fromChild: false },
+  );
+  // Request explicitly marked codex_requires_user_input: STILL a question.
+  h.a.handle(
+    3,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Confirm account link?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', codex_requires_user_input: true, tool_name: 'link' },
+    },
+    { fromChild: false },
+  );
+  // Non-tool-call approval kind (tool_suggestion): NOT auto-accepted as tool approval.
+  h.a.handle(
+    4,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'codex_apps',
+      mode: 'form',
+      message: 'Install connector?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'tool_suggestion' },
+    },
+    { fromChild: false },
+  );
+  await flush();
+  assert.equal(h.asked.length, 0);
+  assert.equal(h.questions.length, 4);
+  full = false;
+});
+
+test('MCP tool-approval elicitations mark noReview when tool input is missing, unmatched, conflicting or ambiguous, and guard oversized/__proto__ inputs', async () => {
+  // 1. Missing tool_params and no matching open call -> noReview: true.
+  const h1 = harness();
+  h1.a.handle(
+    0,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue' },
+    },
+    { fromChild: false },
+  );
+  await flush();
+  assert.equal(h1.asked[0].noReview, true);
+  assert.equal(h1.asked[0].toolUseId, undefined);
+  assert.equal(h1.asked[0].input.arguments, 'unavailable');
+
+  // 2. Missing tool_params WITH a unique matching 0-arg open call -> verified empty input, reviewable.
+  const h2 = harness([], {
+    openMcpCalls: () => [{ itemId: 'exec-zero', server: 'connectors', tool: 'ping', arguments: null }],
+  });
+  h2.a.handle(
+    0,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "ping"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'ping' },
+    },
+    { fromChild: false },
+  );
+  await flush();
+  assert.equal(h2.asked[0].noReview, undefined);
+  assert.equal(h2.asked[0].toolUseId, 'exec-zero');
+  assert.deepEqual(h2.asked[0].input, {});
+
+  // 3. Conflicting tool_params vs open call -> noReview: true, toolUseId omitted.
+  const h3 = harness([], {
+    openMcpCalls: () => [{ itemId: 'exec-a', server: 'connectors', tool: 'sentry__update_issue', arguments: { issueId: 'A' } }],
+  });
+  h3.a.handle(
+    0,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue', tool_params: { issueId: 'B' } },
+    },
+    { fromChild: false },
+  );
+  await flush();
+  assert.equal(h3.asked[0].noReview, true);
+  assert.equal(h3.asked[0].toolUseId, undefined);
+
+  // 4. Concurrent open calls disambiguated by tool_params (and identical concurrent calls claim distinct itemIds).
+  let release!: () => void;
+  const wait = new Promise<void>((r) => (release = r));
+  const h4 = harness([], {
+    openMcpCalls: () => [
+      { itemId: 'exec-1', server: 'connectors', tool: 'sentry__update_issue', arguments: { issueId: 'A' } },
+      { itemId: 'exec-2', server: 'connectors', tool: 'sentry__update_issue', arguments: { issueId: 'A' } },
+      { itemId: 'exec-3', server: 'connectors', tool: 'sentry__update_issue', arguments: { issueId: 'B' } },
+    ],
+  });
+  h4.answerWith(async () => {
+    await wait;
+    return { decision: 'allow' };
+  });
+  const callMeta = (issueId: string) => ({
+    threadId: 't',
+    turnId: 'u',
+    serverName: 'connectors',
+    mode: 'form',
+    message: 'Allow?',
+    requestedSchema: { type: 'object', properties: {} },
+    _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue', tool_params: { issueId } },
+  });
+  h4.a.handle(0, 'mcpServer/elicitation/request', callMeta('B'), { fromChild: false });
+  h4.a.handle(1, 'mcpServer/elicitation/request', callMeta('A'), { fromChild: false });
+  h4.a.handle(2, 'mcpServer/elicitation/request', callMeta('A'), { fromChild: false });
+  await flush();
+  assert.deepEqual(h4.asked.map((r) => r.toolUseId), ['exec-3', 'exec-1', 'exec-2']);
+  assert.deepEqual(h4.asked.map((r) => r.noReview), [undefined, undefined, undefined]);
+  release();
+  await flush();
+
+  // 5. Subagent with tool_params gets no toolUseId and IS reviewable; without tool_params is noReview.
+  const h5 = harness();
+  h5.a.handle(0, 'mcpServer/elicitation/request', callMeta('A'), { fromChild: true });
+  h5.a.handle(
+    1,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 'child',
+      turnId: 'cu',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue' },
+    },
+    { fromChild: true },
+  );
+  await flush();
+  assert.equal(h5.asked[0].toolUseId, undefined);
+  assert.equal(h5.asked[0].noReview, undefined);
+  assert.deepEqual(h5.asked[0].input, { issueId: 'A' });
+  assert.equal(h5.asked[1].toolUseId, undefined);
+  assert.equal(h5.asked[1].noReview, true);
+
+  // 6. Oversized argument and __proto__ are refused without showing a card.
+  const h6 = harness();
+  h6.a.handle(
+    0,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__add_issue_note', tool_params: { text: 'x'.repeat(20_000) } },
+    },
+    { fromChild: false },
+  );
+  h6.a.handle(
+    1,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__add_issue_note', tool_params: JSON.parse('{"__proto__":{"a":1}}') },
+    },
+    { fromChild: false },
+  );
+  assert.equal(h6.asked.length, 0);
+  assert.equal(h6.notes.length, 2);
+  assert.deepEqual(h6.replies.map((r) => r.result), [
+    { action: 'decline', content: null, _meta: null },
+    { action: 'decline', content: null, _meta: null },
+  ]);
+
+  // 7. Read-only coordinator and paused helper decline MCP tool approvals even on Full.
+  const h7 = harness([], { full: () => true, coordinatorRole: 'coordinator' });
+  h7.a.handle(0, 'mcpServer/elicitation/request', callMeta('A'), { fromChild: false });
+  assert.deepEqual(h7.replies[0], { id: 0, result: { action: 'decline', content: null, _meta: null } });
+  assert.match(h7.notes[0], /read-only/);
+
+  const h8 = harness([], { full: () => true, coordinatorRole: 'helper', checkCoordinator: () => 'paused' });
+  h8.a.handle(0, 'mcpServer/elicitation/request', callMeta('A'), { fromChild: false });
+  assert.deepEqual(h8.replies[0], { id: 0, result: { action: 'decline', content: null, _meta: null } });
+
+  // 8. Opaque MCP cards are never remote-allowable (even when tool_params is null or empty string).
+  const h9 = harness([], {
+    openMcpCalls: () => [{ itemId: 'exec-secret', server: 'connectors', tool: 'read_secret', arguments: { path: '/sensitive/file' } }],
+  });
+  h9.a.handle(
+    0,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'read_secret', tool_params: null },
+    },
+    { fromChild: false },
+  );
+  h9.a.handle(
+    1,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 't',
+      turnId: 'u',
+      serverName: 'threadbear',
+      mode: 'form',
+      message: 'Allow?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'custom', tool_params: '' },
+    },
+    { fromChild: false },
+  );
+  await flush();
+  assert.equal(h9.asked.length, 2);
+  for (const req of h9.asked) {
+    assert.equal(req.noReview, true);
+    assert.equal(remoteCardShowsAll(req.name, req.input, '/work', req.title), false, `opaque card ${req.name} must be macOnly`);
   }
 });

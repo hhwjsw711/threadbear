@@ -10,6 +10,7 @@ import { nullLogger } from '../../src/log.ts';
 import { Models } from '../../src/models/index.ts';
 import type { Account, Pool } from '../../src/protocol.ts';
 import { CARD_REVIEW_MAX_INPUT, readVerdict } from '../../src/runner/card-review.ts';
+import { CodexApprovals, type OpenMcpCall } from '../../src/adapters/codex/approvals.ts';
 import type { GenerateParams, ModelResult } from '../../src/models/index.ts';
 
 type Ask = GenerateParams;
@@ -405,4 +406,167 @@ test('cardReviewer: falls back to the next small-job provider in the pool when a
   assert.equal(ans.decision, 'allow');
   assert.deepEqual(used, ['codex:codex-main']);
   assert.equal(h.events(t.id).filter((e) => e.type === 'approval.requested').length, 0);
+});
+
+test('cardReviewer: Codex MCP tool-approval elicitations go through the reviewer in Auto mode, skip review when opaque/NEVER_REVIEWED, and resolve on Full switch', async () => {
+  const wireCodex = (s: ReturnType<typeof setup>['codex']['last'], open: OpenMcpCall[] = []) => {
+    const replies: { id: unknown; result?: unknown }[] = [];
+    const approvals = new CodexApprovals({
+      log: nullLogger,
+      label: 'th',
+      reply: (id, result) => replies.push({ id, result }),
+      replyError: () => {},
+      requestApproval: (req) => s.sink.requestApproval(req),
+      requestQuestion: (req) => s.sink.requestQuestion(req),
+      rules: () => [],
+      addRules: () => {},
+      note: (text) => s.sink.output({ kind: 'event', event: { type: 'system.note', text } }),
+      cwd: () => '/w',
+      itemPaths: () => undefined,
+      openMcpCalls: (server, tool) => open.filter((c) => c.server === server && c.tool === tool),
+      runsAsCode: () => false,
+      callTool: async () => ({ contentItems: [], success: true }),
+      now: () => 0,
+      fullAccess: () => false,
+    });
+    return { approvals, replies };
+  };
+
+  // 1. Auto mode + reviewer allows: auto-accepts with no card.
+  const hAllow = setup({ answer: '{"verdict":"allow","why":"Resolving the triaged Sentry issue matches the task."}' });
+  const { thread: tAllow } = hAllow.runner.create({ text: 'Triage Sentry issue THREADBEAR-13 and resolve if harmless', accountId: 'codex-main', permissionMode: 'auto' });
+  const sAllow = hAllow.codex.last;
+  sAllow.init();
+  const args = { organizationSlug: 'mikec', issueId: 'THREADBEAR-13', status: 'resolved' };
+  const cAllow = wireCodex(sAllow, [{ itemId: 'exec-1', server: 'connectors', tool: 'sentry__update_issue', arguments: args }]);
+  cAllow.approvals.handle(
+    1,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 'th',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue', tool_params: args },
+    },
+    { fromChild: false },
+  );
+  await tick();
+  assert.equal(hAllow.asked.length, 1);
+  assert.ok(hAllow.asked[0].prompt.includes('mcp__connectors__sentry__update_issue'));
+  assert.ok(hAllow.asked[0].prompt.includes('THREADBEAR-13'));
+  assert.deepEqual(cAllow.replies, [{ id: 1, result: { action: 'accept', content: {}, _meta: null } }]);
+  assert.equal(hAllow.events(tAllow.id).filter((e) => e.type === 'approval.requested' || e.type === 'question.requested').length, 0);
+  assert.ok(hAllow.events(tAllow.id).some((e) => e.type === 'system.note' && /^Allowed by the reviewer: connectors: sentry__update_issue\./.test(e.text)));
+
+  // 2. Auto mode + reviewer asks: shows approval.requested (not question.requested), and user deny maps to decline.
+  const hAsk = setup({ answer: '{"verdict":"ask","why":"It modifies an external issue tracker."}' });
+  const { thread: tAsk } = hAsk.runner.create({ text: 'Check Sentry', accountId: 'codex-main', permissionMode: 'auto' });
+  const sAsk = hAsk.codex.last;
+  sAsk.init();
+  const cAsk = wireCodex(sAsk, [{ itemId: 'exec-2', server: 'connectors', tool: 'sentry__update_issue', arguments: args }]);
+  cAsk.approvals.handle(
+    2,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 'th',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue', tool_params: args },
+    },
+    { fromChild: false },
+  );
+  await tick();
+  assert.equal(hAsk.asked.length, 1);
+  assert.equal(hAsk.events(tAsk.id).filter((e) => e.type === 'question.requested').length, 0);
+  const card = hAsk.events(tAsk.id).find((e) => e.type === 'approval.requested');
+  assert.ok(card && card.type === 'approval.requested');
+  assert.equal(card.name, 'mcp__connectors__sentry__update_issue');
+  assert.equal(card.itemId, 'exec-2');
+  hAsk.runner.respondApproval({ threadId: tAsk.id, approvalId: card.approvalId, decision: 'deny' });
+  await tick();
+  assert.deepEqual(cAsk.replies, [{ id: 2, result: { action: 'decline', content: null, _meta: null } }]);
+
+  // 3. Auto mode + missing/unmatched tool input skips reviewer (noReview) and goes to Alex; switching to Full answers it Allow.
+  const hOpaque = setup({ answer: '{"verdict":"allow","why":"should not be called"}' });
+  const { thread: tOpaque } = hOpaque.runner.create({ text: 'Triage Sentry', accountId: 'codex-main', permissionMode: 'auto' });
+  const sOpaque = hOpaque.codex.last;
+  sOpaque.init();
+  const cOpaque = wireCodex(sOpaque, []);
+  cOpaque.approvals.handle(
+    3,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 'th',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue' },
+    },
+    { fromChild: false },
+  );
+  // Also NEVER_REVIEWED (mcp__threadbear__create_thread) skips reviewer.
+  cOpaque.approvals.handle(
+    4,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 'th',
+      turnId: 'u',
+      serverName: 'threadbear',
+      mode: 'form',
+      message: 'Allow the threadbear MCP server to run tool "create_thread"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'create_thread', tool_params: { text: 'hi' } },
+    },
+    { fromChild: false },
+  );
+  await tick();
+  assert.equal(hOpaque.asked.length, 0, 'neither opaque nor NEVER_REVIEWED MCP tool approval may be reviewed');
+  assert.equal(hOpaque.events(tOpaque.id).filter((e) => e.type === 'approval.requested').length, 2);
+  // Switching to Full access resolves both waiting cards via fullAllows.
+  hOpaque.runner.update({ threadId: tOpaque.id, permissionMode: 'full' });
+  await tick();
+  assert.deepEqual(cOpaque.replies, [
+    { id: 3, result: { action: 'accept', content: {}, _meta: null } },
+    { id: 4, result: { action: 'accept', content: {}, _meta: null } },
+  ]);
+
+  // 4. Switching Auto -> Full while the reviewer is still deciding settles the review as allow with no card.
+  let finishReview!: (r: ModelResult<string>) => void;
+  const hRace = setup({ answer: () => new Promise<ModelResult<string>>((r) => (finishReview = r)) });
+  const { thread: tRace } = hRace.runner.create({ text: 'Resolve Sentry issue', accountId: 'codex-main', permissionMode: 'auto' });
+  const sRace = hRace.codex.last;
+  sRace.init();
+  const cRace = wireCodex(sRace, [{ itemId: 'exec-5', server: 'connectors', tool: 'sentry__update_issue', arguments: args }]);
+  cRace.approvals.handle(
+    5,
+    'mcpServer/elicitation/request',
+    {
+      threadId: 'th',
+      turnId: 'u',
+      serverName: 'connectors',
+      mode: 'form',
+      message: 'Allow the connectors MCP server to run tool "sentry__update_issue"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'sentry__update_issue', tool_params: args },
+    },
+    { fromChild: false },
+  );
+  await tick();
+  assert.equal(hRace.asked.length, 1);
+  assert.equal(cRace.replies.length, 0);
+  hRace.runner.update({ threadId: tRace.id, permissionMode: 'full' });
+  await tick();
+  assert.deepEqual(cRace.replies, [{ id: 5, result: { action: 'accept', content: {}, _meta: null } }]);
+  // Even once the delayed reviewer returns "ask", no card appears under Full access.
+  finishReview({ ok: true, value: '{"verdict":"ask","why":"late verdict"}', model: 'claude-opus-5-5' });
+  await tick();
+  assert.equal(hRace.events(tRace.id).filter((e) => e.type === 'approval.requested').length, 0);
 });

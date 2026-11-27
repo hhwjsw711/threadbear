@@ -453,7 +453,9 @@ function generated(o: { drop?: string[]; addNotification?: string; addItem?: str
   fs.writeFileSync(path.join(dir, 'WebSearchItem.ts'), `export type WebSearchItem = { id: string, ${drop.has('webSearch.query') ? '' : 'query: string,'} };`);
   for (const [type, fields] of Object.entries(surface.TYPE_FIELDS)) {
     if (drop.has(`type:${type}`)) continue;
-    fs.writeFileSync(path.join(dir, 'v2', `${type}.ts`), `export type ${type} = {\n/** doc */\n${fields.filter((f) => !drop.has(`${type}.${f}`)).map((f) => `${f}?: string | null,`).join(' ')} };`);
+    // ts-rs quotes discriminated union tag keys such as `"mode": "form"`.
+    const fmt = (f: string) => (type === 'McpServerElicitationRequestParams' && f === 'mode' ? `"${f}": "form",` : `${f}?: string | null,`);
+    fs.writeFileSync(path.join(dir, 'v2', `${type}.ts`), `export type ${type} = {\n/** doc */\n${fields.filter((f) => !drop.has(`${type}.${f}`)).map(fmt).join(' ')} };`);
   }
   return dir;
 }
