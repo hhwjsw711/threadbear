@@ -59,14 +59,15 @@ test('the browser permits only the two trusted viewer scripts', async () => {
 
 type HistoryEntry = { artifactEntry: string };
 type FragmentMessage = { artifactFragment: string; entry: string; offset?: number[]; restart: boolean };
+let nextEntry = 0;
 
-async function viewer(navigation = 'navigate', name = '', hash = '#cost') {
+async function viewer(navigation = 'navigate', name = '', hash = '#cost', pathname = '/a/demo') {
   const html = await artifactPage({ title: 'Artifact', html: '<h2 id="cost">Cost</h2>' }).text();
   const viewerScript = html.match(/<script nonce="[^"]+">([^]*?)<\/script>/)?.[1];
   assert.ok(viewerScript);
 
   const events = new EventTarget();
-  const location = { pathname: '/a/demo', hash, get href() { return this.pathname + this.hash; } };
+  const location = { pathname, hash, get href() { return this.pathname + this.hash; } };
   const history = {
     state: null as HistoryEntry | null,
     replaceState(state: HistoryEntry) { history.state = state; },
@@ -83,7 +84,6 @@ async function viewer(navigation = 'navigate', name = '', hash = '#cost') {
     replaceWith(node: EventTarget) { assert.equal(node, replacement); },
   });
   const window = { location, name, addEventListener: events.addEventListener.bind(events) };
-  let nextEntry = 0;
   runInNewContext(viewerScript, {
     window,
     history,
@@ -114,14 +114,17 @@ test('the wrapper forwards same-fragment history entries and only sends each ent
   const { history, change, messages } = await viewer();
   const firstCostEntry = history.state;
   change('#details');
+  const detailsEntry = history.state;
   change('#cost');
+  const secondCostEntry = history.state;
+  assert.notEqual(firstCostEntry?.artifactEntry, secondCostEntry?.artifactEntry);
   // Back two entries changes history.state while the URL stays the same.
   change('#cost', firstCostEntry);
   assert.deepEqual(messages.map(({ artifactFragment, entry }) => [artifactFragment, entry]), [
-    ['#cost', '1'],
-    ['#details', '2'],
-    ['#cost', '3'],
-    ['#cost', '1'],
+    ['#cost', firstCostEntry?.artifactEntry],
+    ['#details', detailsEntry?.artifactEntry],
+    ['#cost', secondCostEntry?.artifactEntry],
+    ['#cost', firstCostEntry?.artifactEntry],
   ]);
 });
 
@@ -148,6 +151,39 @@ test('history changes during a cold frame reload are sent to the new frame only'
   assert.deepEqual(messages, []);
   replacement.dispatchEvent(new Event('load'));
   assert.deepEqual(messages.map(({ artifactFragment }) => artifactFragment), ['#details']);
+});
+
+test('a fresh artifact keeps the tab bookmarks without inheriting an earlier offset', async () => {
+  const first = await viewer('navigate', '', '#cost', '/a/first');
+  first.report([0, 800]);
+
+  const second = await viewer('navigate', first.window.name, '#cost', '/a/second');
+  assert.equal(second.messages[0]?.offset, undefined);
+  second.report([0, 300]);
+
+  const back = await viewer('back_forward', second.window.name, '#cost', '/a/first');
+  back.history.state = first.history.state;
+  back.replacement.dispatchEvent(new Event('load'));
+  assert.deepEqual(back.messages[0]?.offset, [0, 800]);
+});
+
+test('a new entry for the same fragment during frame load cannot reuse the initial bookmark', async () => {
+  const first = await viewer();
+  const cost = first.history.state;
+  assert.ok(cost);
+  first.report([0, 1000]);
+
+  const back = await viewer('back_forward', first.window.name);
+  back.history.state = cost;
+  back.change('#details');
+  back.receive({ artifactFragmentLink: '#cost' }); // Load can precede this click's history events.
+  back.replacement.dispatchEvent(new Event('load'));
+  assert.equal(back.messages[0]?.artifactFragment, '#cost');
+  assert.notEqual(back.messages[0]?.entry, cost.artifactEntry);
+  assert.equal(back.messages[0]?.offset, undefined);
+
+  back.change('#cost', cost);
+  assert.deepEqual(back.messages[1]?.offset, [0, 1000]);
 });
 
 test('the viewer honors in-page links clicked before the replacement frame finishes loading', async () => {

@@ -140,6 +140,7 @@ const artifactViewer = `(() => {
   let activeEntry;
   let activeLocation;
   let ready = false;
+  let navigatedBeforeLoad = false;
   let restartBeforeLoad;
 
   const locationKey = () => {
@@ -193,12 +194,25 @@ const artifactViewer = `(() => {
     frame.postMessage({ artifactFragment: window.location.hash, entry, offset, restart }, '*');
   };
 
+  const noteLocationChange = () => {
+    if (!ready) navigatedBeforeLoad = true;
+    if (restartBeforeLoad !== window.location.href) restartBeforeLoad = undefined;
+  };
+  const changedLocation = () => {
+    noteLocationChange();
+    sendFragment();
+  };
+  window.addEventListener('popstate', changedLocation);
+  window.addEventListener('hashchange', changedLocation);
   window.addEventListener('load', () => {
     const loadType = performance.getEntriesByType('navigation')[0]?.type;
-    const initial = loadType === 'reload' || loadType === 'back_forward' ? readBookmarks() : undefined;
+    const latest = readBookmarks();
+    const initial = loadType === 'reload' || loadType === 'back_forward' ? latest : undefined;
     const initialize = () => {
       ready = true;
-      sendFragment(initial, restartBeforeLoad === window.location.href);
+      // The fallback belongs to the opening entry, even if the reader has
+      // already made a new entry with the same fragment.
+      sendFragment(navigatedBeforeLoad ? undefined : initial, restartBeforeLoad === window.location.href);
     };
     if (loadType === 'back_forward') {
       // A cold history restore can retain the old about:srcdoc fragment
@@ -211,12 +225,6 @@ const artifactViewer = `(() => {
     } else {
       initialize();
     }
-    const changedLocation = () => {
-      if (restartBeforeLoad !== window.location.href) restartBeforeLoad = undefined;
-      sendFragment();
-    };
-    window.addEventListener('popstate', changedLocation);
-    window.addEventListener('hashchange', changedLocation);
   }, { once: true });
   window.addEventListener('message', (event) => {
     if (event.source !== frame || event.origin !== 'null') return;
@@ -234,7 +242,7 @@ const artifactViewer = `(() => {
     if (typeof fragment === 'string' && fragment.startsWith('#')) {
       const before = window.location.href;
       window.location.hash = fragment;
-      if (window.location.href !== before) restartBeforeLoad = undefined;
+      if (window.location.href !== before) noteLocationChange();
       else if (ready) sendFragment(undefined, true);
       else restartBeforeLoad = before;
       return;
