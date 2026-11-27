@@ -58,6 +58,12 @@ struct ReviewBoard: View {
     /// A finger is drawing: true from a stroke's start until it ends or is cancelled.
     @GestureState private var stroking = false
     @State private var playback = BoardPlayback()
+    private struct LiveOption: Identifiable {
+        let id = UUID()
+        let url: URL
+        let title: String
+    }
+    @State private var liveOption: LiveOption?
     @State private var selection: TextSelection?
     @FocusState private var replyFocused: Bool
     @State private var markLimitHit = false
@@ -111,6 +117,11 @@ struct ReviewBoard: View {
         .onChange(of: stroking) { _, live in if !live { drawing = nil; drawCancelled = false } }
         .onChange(of: draft.nextMarkNumber == nil) { _, full in if full && tool != .move && drawing == nil { tool = .move } }
         .onDisappear { playback.stop() }
+        .onChange(of: review.id) { _, _ in liveOption = nil }
+        .onChange(of: review.options) { _, _ in liveOption = nil }
+        .fullScreenCover(item: $liveOption) { option in
+            ReviewLivePage(url: option.url, title: option.title)
+        }
         .task(id: poseKey) { await pose() }
     }
 
@@ -580,25 +591,30 @@ struct ReviewBoard: View {
         let key = ShotKey(option: laid.option, shot: laid.shot)
         let url = shot.media.flatMap { pictures[$0] }.flatMap { URL(string: $0.url) }
         let r = cam.rect(laid.picture)
-        if (shot.isVideo || shot.isAudio), r.width >= 90, r.maxX > 0, r.minX < viewport.width, r.maxY > 0, r.minY < viewport.height {
+        if (shot.isVideo || shot.isAudio || shot.kind == "page"), r.width >= (shot.kind == "page" ? 160 : 90), r.maxX > 0, r.minX < viewport.width, r.maxY > 0, r.minY < viewport.height {
             let playing = playback.current == key && playback.playing
             let failed = url == nil || playback.failed.contains(key)
             let top = topInset + 8
-            let (right, y): (CGFloat, CGFloat) = !playing
+            let (right, y): (CGFloat, CGFloat) = shot.kind == "page" ? (r.maxX, r.minY - 32) : !playing
                 ? (r.maxX - 8, max(r.minY + 8, min(top, r.maxY - 34)))
                 : (r.minY - 34 >= top ? (r.maxX, r.minY - 34) : (r.maxX, r.maxY + 8))
             Button {
                 guard let url else { return }
-                Task { await playback.toggle(key, url: url) }
+                if shot.kind == "page" {
+                    playback.stop()
+                    liveOption = LiveOption(url: url, title: option.title)
+                } else {
+                    Task { await playback.toggle(key, url: url) }
+                }
             } label: {
                 HStack(spacing: 6) {
                     if playback.loading == key {
                         ProgressView().controlSize(.mini).tint(.white)
                     } else {
-                        Image(systemName: failed ? "desktopcomputer" : playing ? "stop.fill" : shot.isAudio ? "music.note" : "play.fill")
+                        Image(systemName: failed ? "desktopcomputer" : shot.kind == "page" ? "hand.tap" : playing ? "stop.fill" : shot.isAudio ? "music.note" : "play.fill")
                             .font(.system(size: 12, weight: .semibold))
                     }
-                    Text(failed ? "Play on the Mac" : playing ? "Stop" : "Play")
+                    Text(failed ? "Open on the Mac" : shot.kind == "page" ? "Interact" : playing ? "Stop" : "Play")
                         .font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(.white)
@@ -614,7 +630,7 @@ struct ReviewBoard: View {
             // and pushed the whole screen sideways.
             .frame(width: 220, alignment: .trailing)
             .offset(x: right - 220, y: y)
-            .accessibilityLabel(failed ? "\(shot.isAudio ? "Sound" : "Video") plays on the Mac" : "\(playing ? "Stop" : "Play") \(option.id), \(shot.title ?? (shot.isAudio ? "sound" : "video"))")
+            .accessibilityLabel(failed ? "\(shot.kind == "page" ? "Page" : shot.isAudio ? "Sound" : "Video") opens on the Mac" : "\(shot.kind == "page" ? "Interact with" : playing ? "Stop" : "Play") \(option.id), \(shot.title ?? (shot.kind == "page" ? "page" : shot.isAudio ? "sound" : "video"))")
         }
     }
 

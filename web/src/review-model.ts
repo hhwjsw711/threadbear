@@ -155,7 +155,7 @@ export function parseReviewResult(result: unknown): ReviewListResult | undefined
 
 /** Every still and media src, for phone:reviewImages. */
 export function reviewSources(review: DesignReview): string[] {
-  return [...new Set(review.options.flatMap((o) => o.shots.flatMap((s) => (s.media ? [s.src, s.media] : [s.src]))))].sort();
+  return [...new Set(review.options.flatMap((o) => o.shots.flatMap((s) => (s.media && s.kind !== 'page' ? [s.src, s.media] : [s.src]))))].sort();
 }
 
 export const isPending = (review: DesignReview) => review.status === 'pending';
@@ -503,7 +503,7 @@ function layOption(index: number, option: ReviewOption, x: number, top: number, 
     const captionH = i > 0 || shot.title ? M.captionHeight : 0;
     const caption = { x, y, w, h: captionH };
     const h = w / Math.max(0.05, aspect(shot));
-    const picture = { x, y: maxY(caption), w, h };
+    const picture = { x, y: maxY(caption) + (shot.kind === 'page' ? 144 : 0), w, h };
     y = maxY(picture) + M.shotGap;
     shots.push({ option: index, shot: i, picture, caption, notes: placeNotes(picture, shot.marks ?? [], measure) });
   });

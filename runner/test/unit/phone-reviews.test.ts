@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { draftFromPhone, mergePhoneMarks, phoneReview, reviewImageSource, reviewStills } from '../../src/phone-reviews.ts';
 import type { DesignReview } from '../../src/protocol.ts';
+import { readShareMedia, PAGE_TYPE } from '../../src/share-images.ts';
 import { makePng } from '../helpers/png.ts';
 
 const review: DesignReview = {
@@ -193,7 +194,7 @@ function mp4(brand = 'isom', size = 64): Buffer {
   return b;
 }
 
-test("a shot's video or sound goes up with the stills, up to 10 MB, never a page", async () => {
+test("a shot's video, sound or single HTML file goes up with the stills, up to 10 MB", async () => {
   const media = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-reviews-'));
   try {
     const dir = path.join(media, 'reviews', review.id);
@@ -227,11 +228,12 @@ test("a shot's video or sound goes up with the stills, up to 10 MB, never a page
       { src: src(still), read: still, within: dir },
       { src: src(clip), read: clip, within: dir, media: true },
       { src: src(sound), read: sound, within: dir, media: true },
+      { src: src(page), read: page, within: dir, media: true },
     ]);
-    assert.deepEqual([...playable], [src(clip), src(sound)]);
+    assert.deepEqual([...playable], [src(clip), src(sound), src(page)]);
     const dto = phoneReview(r, noPreview, playable);
     assert.deepEqual(dto.options[0].shots.map((s) => [s.kind, s.media]), [
-      ['video', src(clip)], ['audio', src(sound)], ['video', undefined], ['page', undefined], ['video', undefined],
+      ['video', src(clip)], ['audio', src(sound)], ['video', undefined], ['page', src(page)], ['video', undefined],
     ]);
     assert.ok(!JSON.stringify(dto).includes(dir));
     // Without the set (an older backend), no shot names its media.
@@ -259,4 +261,31 @@ test("the phone's marks join the Mac's saved ones; a clash or too many is refuse
   assert.deepEqual(mergePhoneMarks(answered, { notes: {}, marks: [phone(3)] }).marks, [saved, phone(3)]);
   // Never an error once it isn't pending, even past 20: reviews.respond says what's so.
   assert.equal(mergePhoneMarks({ ...answered, status: 'cancelled' }, { notes: {}, marks: Array.from({ length: 25 }, (_, i) => phone(i + 2)) }).marks!.length, 25);
+});
+
+
+test('review HTML upload reads one confined file, rejects links, non-HTML and oversized bytes', () => {
+  const media = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-review-html-'));
+  try {
+    const within = path.join(media, 'review');
+    fs.mkdirSync(within);
+    const html = path.join(within, 'option.html');
+    const bytes = '<!doctype html><button onclick="this.textContent=1">0</button><img src="private.txt">';
+    fs.writeFileSync(html, bytes);
+    fs.writeFileSync(path.join(within, 'private.txt'), 'sibling-private-data');
+    const read = readShareMedia(html, within);
+    assert.ok(!('skip' in read));
+    assert.equal(read.mediaType, PAGE_TYPE);
+    assert.equal(Buffer.from(read.bytes).toString(), bytes, 'no sibling bytes are bundled');
+    const outside = path.join(media, 'outside.html');
+    fs.writeFileSync(outside, bytes);
+    assert.ok('skip' in readShareMedia(outside, within));
+    const link = path.join(within, 'link.html');
+    fs.symlinkSync(outside, link);
+    assert.ok('skip' in readShareMedia(link, within));
+    fs.writeFileSync(html, 'not an HTML page');
+    assert.ok('skip' in readShareMedia(html, within));
+    fs.writeFileSync(html, '<!doctype html>' + ' '.repeat(10 * 1024 * 1024));
+    assert.ok('skip' in readShareMedia(html, within));
+  } finally { fs.rmSync(media, { recursive: true, force: true }); }
 });

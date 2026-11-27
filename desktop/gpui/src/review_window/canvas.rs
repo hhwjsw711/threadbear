@@ -22,6 +22,24 @@ use threadbear_core::review_canvas::{
     self as board, Board, Camera, Drawing, Lit, Measure, Rect, Stop, Stroke,
 };
 
+#[derive(Debug, PartialEq, Eq)]
+enum PageWaiting {
+    Prompt,
+    Opening,
+    Stopped,
+}
+
+fn page_waiting(state: &threadbear_core::web_runtime::State, not_now: bool) -> PageWaiting {
+    use threadbear_core::web_runtime::State;
+    if matches!(state, State::Unavailable) || (not_now && !state.busy()) {
+        PageWaiting::Stopped
+    } else if matches!(state, State::Ready) {
+        PageWaiting::Opening
+    } else {
+        PageWaiting::Prompt
+    }
+}
+
 /// How long a flight between stops takes.
 const FLIGHT_MS: f32 = 650.;
 /// How long a stop's notes take to scribble themselves in.
@@ -104,7 +122,7 @@ pub(crate) struct CanvasState {
     /// The clip or page playing where it sits on the board (option, shot):
     /// one at a time, with its sound and controls (Mike, 24 Nov 2026: a
     /// double-click took him off the board to hear a music bed).
-    pub(crate) playing: Option<(usize, usize)>,
+    pub(crate) playing: board::Playback,
     /// A sound's bar starts paused (the pane's): set by Play, so the first
     /// frame with it up presses its play.
     start_sound: bool,
@@ -127,7 +145,7 @@ impl CanvasState {
             bounds: Rc::new(Cell::new(None)),
             placed: None,
             want: None,
-            playing: None,
+            playing: board::Playback::default(),
             start_sound: false,
         }
     }
@@ -715,6 +733,7 @@ impl ReviewWindow {
         let Some(laid) = self.canvas.as_ref().and_then(|c| c.board.clone()) else {
             return div().into_any_element();
         };
+        let player = self.canvas_player(&scene, &laid, window, cx);
         let mut layer = div().absolute().inset_0();
         let mut pens: Vec<Pen> = Vec::new();
         if let Some(lead) = scene.lead(&laid, &review) {
@@ -729,7 +748,7 @@ impl ReviewWindow {
         let (badges, more) = scene.my_marks(&laid, &review, &draft_marks, drawing.as_ref());
         pens.extend(more);
         layer = layer.children(badges);
-        layer = layer.children(self.canvas_player(&scene, &laid, window, cx));
+        layer = layer.children(player);
         let Some(cv) = self.canvas.as_ref() else {
             return div().into_any_element();
         };
@@ -1210,6 +1229,9 @@ impl ReviewWindow {
     // ------------------------------------------------------------ moving round
 
     pub(super) fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        if tool != Tool::Move {
+            self.canvas_stop_playing(cx);
+        }
         if let Some(c) = self.canvas.as_mut() {
             c.tool = tool;
             c.drawing = None;
@@ -1229,6 +1251,7 @@ impl ReviewWindow {
 
     /// The tour's stop `by` from this one (0: back to this one).
     pub(super) fn canvas_step(&mut self, by: i32, cx: &mut Context<Self>) {
+        self.canvas_stop_playing(cx);
         if let Some(c) = self.canvas.as_mut() {
             let last = c.stops.len().saturating_sub(1) as i32;
             let next = (c.stop as i32 + by).clamp(0, last) as usize;
@@ -1257,6 +1280,7 @@ impl ReviewWindow {
     }
 
     pub(super) fn canvas_go_shot(&mut self, option: usize, shot: usize, cx: &mut Context<Self>) {
+        self.canvas_stop_playing(cx);
         if let Some(c) = self.canvas.as_mut() {
             if c.stops.is_empty() {
                 c.want = Some((option, shot));
@@ -1268,6 +1292,7 @@ impl ReviewWindow {
     }
 
     pub(super) fn canvas_everything(&mut self, cx: &mut Context<Self>) {
+        self.canvas_stop_playing(cx);
         if let Some(c) = self.canvas.as_mut() {
             let last = c.stops.len().saturating_sub(1);
             c.go(last);
@@ -1280,6 +1305,14 @@ impl ReviewWindow {
     pub(super) fn canvas_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         match key {
             "escape" => {
+                if self
+                    .canvas
+                    .as_ref()
+                    .is_some_and(|c| c.playing.active().is_some())
+                {
+                    self.canvas_stop_playing(cx);
+                    return true;
+                }
                 let tool = self.canvas.as_ref().map(|c| c.tool);
                 if tool.is_some_and(|t| t != Tool::Move) {
                     self.set_tool(Tool::Move, cx);
@@ -1301,6 +1334,7 @@ impl ReviewWindow {
 
     /// A click on a mark's chip: fly to the mark.
     pub(super) fn canvas_show_mark(&mut self, n: u32, cx: &mut Context<Self>) {
+        self.canvas_stop_playing(cx);
         let review = self.session.review().clone();
         let Some(mark) = self
             .session
@@ -1326,7 +1360,45 @@ impl ReviewWindow {
         cx.notify();
     }
 
+    #[cfg(feature = "automation")]
+    pub(super) fn script_canvas_double_click(
+        &mut self,
+        option: usize,
+        shot: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let point = self
+            .canvas
+            .as_ref()
+            .and_then(|c| c.board.as_ref())
+            .and_then(|b| b.shot(option, shot))
+            .map(|s| s.picture.center());
+        if let Some(point) = point {
+            self.canvas_look_closer(point, cx);
+        }
+    }
+
     /// What the board shows, for scripts and specs.
+    #[cfg(feature = "automation")]
+    pub(super) fn script_canvas_zoom(&mut self, factor: f32, cx: &mut Context<Self>) {
+        if let Some(c) = self.canvas.as_mut() {
+            c.camera = c.camera_now().zoom_at((0., 0.), factor);
+            c.flight = None;
+            c.roaming = true;
+        }
+        cx.notify();
+    }
+
+    #[cfg(feature = "automation")]
+    pub(super) fn script_canvas_pan(&mut self, dx: f32, dy: f32, cx: &mut Context<Self>) {
+        if let Some(c) = self.canvas.as_mut() {
+            c.camera = c.camera_now().pan(dx, dy);
+            c.flight = None;
+            c.roaming = true;
+        }
+        cx.notify();
+    }
+
     pub(super) fn canvas_state(&self) -> serde_json::Value {
         let Some(c) = self.canvas.as_ref() else {
             return serde_json::Value::Null;
@@ -1354,6 +1426,9 @@ impl ReviewWindow {
             // player, "sound" on its play bar ("sound paused" before it
             // starts), "page" in place, "waiting" for
             // any of them, or nothing.
+            "activeCard": c.playing.active(),
+            "pageBounds": self.stage.page.as_ref().map(|(_, p)| p.bounds()),
+            "mediaNotice": self.stage.notice,
             "playing": self.canvas_playing_shot().map(|shot| {
                 if shot.video().is_some_and(|v| crate::media_view::state_of(&canvas_key(v)).is_some()) {
                     "clip"
@@ -1542,8 +1617,9 @@ impl ReviewWindow {
     }
 
     /// A double-click: fly to the picture under it, or its frame, or out to
-    /// everything. A clip or a page plays where it is, flown to.
+    /// everything. Only clips and sounds play on double-click; HTML keeps its marks.
     fn canvas_look_closer(&mut self, at: (f32, f32), cx: &mut Context<Self>) {
+        self.canvas_stop_playing(cx);
         let Some(c) = self.canvas.as_mut() else {
             return;
         };
@@ -1556,7 +1632,7 @@ impl ReviewWindow {
                 .options
                 .get(option)
                 .map(|o| o.shot(index))
-                .is_some_and(|s| s.media.is_some());
+                .is_some_and(|s| s.video().is_some() || s.audio().is_some());
             c.roaming = true;
             c.fly_to(rect, board::STOP_ZOOM);
             if moving {
@@ -1770,9 +1846,17 @@ impl ReviewWindow {
         if s.w < 90. {
             return div().into_any_element();
         }
-        let at = (index, shot_laid.shot);
-        let playing = self.canvas.as_ref().and_then(|c| c.playing) == Some(at);
         let page = shot.page().is_some();
+        let header = if page {
+            let Some(header) = board::html_control_rect(s) else {
+                return div().into_any_element();
+            };
+            Some(header)
+        } else {
+            None
+        };
+        let at = (index, shot_laid.shot);
+        let playing = self.canvas.as_ref().and_then(|c| c.playing.active()) == Some(at);
         let name = threadbear_core::review::shot_tip(option, shot_laid.shot);
         let (icon, words, tip) = match (playing, page) {
             (false, false) if shot.audio().is_some() => (
@@ -1787,8 +1871,8 @@ impl ReviewWindow {
             ),
             (false, true) => (
                 gpui_kit::assets::IconName::Globe,
-                "Show page",
-                format!("Show {name}'s page here"),
+                "Interact",
+                format!("Interact with {name} here, sealed and offline"),
             ),
             (true, false) => (
                 gpui_kit::assets::IconName::Square,
@@ -1797,30 +1881,26 @@ impl ReviewWindow {
             ),
             (true, true) => (
                 gpui_kit::assets::IconName::Close,
-                "Close page",
-                format!("Close {name}'s page"),
+                "Stop",
+                format!("Stop {name}"),
             ),
         };
         // Clear of the tools' row, which is drawn over the board and takes
         // a click aimed at a button under it: Stop goes under the picture
         // when there's no room over it (a sound's Stop sat under the row and
         // never stopped it, 24 Nov 2026).
-        let (right, top) = if !playing {
-            (
-                s.x + s.w - 8.,
-                (s.y + 8.).max(PLAY_TOP.min(s.y + s.h - 34.)),
-            )
+        let top = if let Some(header) = header {
+            header.y
+        } else if !playing {
+            (s.y + 8.).max(PLAY_TOP.min(s.y + s.h - 34.))
         } else if s.y - 34. >= PLAY_TOP || s.y + s.h + 34. > scene.view.1 {
-            (s.x + s.w, s.y - 34.)
+            s.y - 34.
         } else {
-            (s.x + s.w, s.y + s.h + 8.)
+            s.y + s.h + 8.
         };
-        crate::highlights::tipped(
+        let button = crate::highlights::tipped(
             h_flex()
                 .id(SharedString::from(format!("canvas-play-{}-{}", at.0, at.1)))
-                .absolute()
-                .right(gpui_kit::px(scene.view.0 - right))
-                .top(gpui_kit::px(top))
                 .h(px(26.))
                 .px(px(10.))
                 .gap(px(6.))
@@ -1849,12 +1929,22 @@ impl ReviewWindow {
                 this.canvas_play(at, cx);
             }
         }))
-        .into_any_element()
+        .into_any_element();
+        h_flex()
+            .absolute()
+            .left(gpui_kit::px(s.x))
+            .top(gpui_kit::px(top))
+            .w(gpui_kit::px(s.w))
+            .justify_end()
+            .child(button)
+            .into_any_element()
     }
 
     /// Plays the clip or shows the page of `at` where it sits on the board.
     pub(super) fn canvas_play(&mut self, at: (usize, usize), cx: &mut Context<Self>) {
         self.canvas_stop_playing(cx);
+        self.stage.page_failed = None;
+        self.stage.notice = None;
         // Where this window can't play a clip or a sound (Windows, Linux),
         // it opens in the app this computer plays it in, as the stage's
         // button does.
@@ -1870,8 +1960,40 @@ impl ReviewWindow {
             crate::open_gate::open_file(&video, threadbear_core::open_policy::Origin::ThisMac, cx);
             return;
         }
+        let html = self
+            .session
+            .review()
+            .options
+            .get(at.0)
+            .map(|o| o.shot(at.1))
+            .is_some_and(|s| s.page().is_some());
         if let Some(c) = self.canvas.as_mut() {
-            c.playing = Some(at);
+            if html {
+                if let (Some(rect), Some((vw, vh))) = (
+                    c.board
+                        .as_ref()
+                        .and_then(|b| b.shot(at.0, at.1))
+                        .map(|s| s.picture),
+                    c.viewport(),
+                ) {
+                    // Leave chrome and Stop clear. Settle before mounting the native view.
+                    let mut cam = Camera::fit(
+                        rect,
+                        vw,
+                        (vh - 86.).max(1.),
+                        board::STOP_PAD,
+                        board::STOP_ZOOM,
+                    );
+                    cam.ty += 86.;
+                    if !board::live_fits(c.camera.rect(&rect), (vw, vh)) {
+                        c.camera = cam;
+                    }
+                    c.flight = None;
+                    c.roaming = true;
+                }
+            }
+            c.playing.activate(at);
+            c.drag = None;
             c.start_sound = true;
             if c.tool != Tool::Move {
                 c.tool = Tool::Move;
@@ -1883,18 +2005,15 @@ impl ReviewWindow {
 
     pub(super) fn canvas_stop_playing(&mut self, cx: &mut Context<Self>) {
         if let Some(c) = self.canvas.as_mut() {
-            if c.playing.take().is_some() {
-                // The board's page goes with it (the stage's is dropped in
-                // render when its shot isn't on show).
-                self.stage.page = None;
-            }
+            c.playing.stop();
         }
+        self.drop_page(cx);
         cx.notify();
     }
 
     /// The shot playing on the board, while it's in sight.
     pub(super) fn canvas_playing_shot(&self) -> Option<threadbear_core::reducer::ReviewShot> {
-        let (option, shot) = self.canvas.as_ref()?.playing?;
+        let (option, shot) = self.canvas.as_ref()?.playing.active()?;
         let o = self.session.review().options.get(option)?;
         (shot < o.shot_count()).then(|| o.shot(shot))
     }
@@ -1910,7 +2029,7 @@ impl ReviewWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let (option, index) = self.canvas.as_ref()?.playing?;
+        let (option, index) = self.canvas.as_ref()?.playing.active()?;
         let rect = laid
             .options
             .iter()
@@ -1920,13 +2039,12 @@ impl ReviewWindow {
             .find(|s| s.shot == index)?
             .picture;
         let Some(shot) = self.canvas_playing_shot() else {
-            self.canvas.as_mut()?.playing = None;
+            self.canvas.as_mut()?.playing.stop();
             return None;
         };
         let editable = self.canvas.as_ref().is_some_and(|c| c.tool == Tool::Move);
         if !scene.visible(&rect) || !editable {
-            self.canvas.as_mut()?.playing = None;
-            self.stage.page = None;
+            self.canvas_stop_playing(cx);
             return None;
         }
         let s = scene.cam.rect(&rect);
@@ -1948,17 +2066,14 @@ impl ReviewWindow {
             spot.size_0()
         };
         if let Some(page) = shot.page() {
-            if !whole {
-                if let Some((_, view)) = &self.stage.page {
-                    view.set_hidden(true);
-                }
+            if !board::live_fits(s, scene.view) || self.more_open || self.viewer.is_open() {
+                self.canvas_stop_playing(cx);
                 return None;
             }
-            if let Some(view) = self.stage_page(page, window, cx) {
+            if let Some(view) = self.canvas_live_page(page, window, cx) {
                 return Some(spot.child(view).into_any_element());
             }
-            // Couldn't show here: in the browser, once, as the stage's
-            // Open the page does.
+            // A failed seal restores the snapshot and offers no browser fallback.
             if self
                 .stage
                 .page_failed
@@ -1966,24 +2081,49 @@ impl ReviewWindow {
                 .is_some_and(|(p, _)| p == page)
             {
                 let page = page.to_owned();
-                self.canvas.as_mut()?.playing = None;
-                crate::open_gate::open_file(
-                    &page,
-                    threadbear_core::open_policy::Origin::ThisMac,
-                    cx,
-                );
+                self.canvas.as_mut()?.playing.stop();
+                self.stage.notice = Some(format!(
+                    "Couldn't run {} safely.",
+                    threadbear_core::highlights::last_component(&page)
+                ));
                 return None;
             }
-            // The web runtime's still starting.
+            let Some(runtime) = crate::web_runtime::runtime(cx) else {
+                self.canvas_stop_playing(cx);
+                self.stage.notice =
+                    Some("This HTML option stays a snapshot on this platform.".into());
+                return None;
+            };
+            let r = runtime.read(cx);
+            let waiting = page_waiting(&r.state, r.not_now);
+            if waiting == PageWaiting::Stopped
+                || matches!(r.engine, crate::web_runtime::Engine::Failed(_))
+            {
+                self.canvas_stop_playing(cx);
+                self.stage.notice = Some("This HTML option stays a snapshot. Install or retry the web runtime in Settings to interact.".into());
+                return None;
+            }
             return Some(
-                spot.flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(hsla(0., 0., 0., 0.45))
-                    .text_color(white())
-                    .text_size(px(13.))
-                    .child("Opening the page\u{2026}")
-                    .into_any_element(),
+                spot.child(
+                    gpui_kit::component::v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(10.))
+                        .p(px(20.))
+                        .bg(hsla(0., 0., 0., 0.45))
+                        .text_color(white())
+                        .text_size(px(13.))
+                        .children(crate::web_runtime::prompt(
+                            "canvas-page-runtime",
+                            "this HTML option",
+                            cx,
+                        ))
+                        .when(waiting == PageWaiting::Opening, |d| {
+                            d.child("Opening the page…")
+                        }),
+                )
+                .into_any_element(),
             );
         }
         // A sound: its waveform stays the picture, with the pane's play bar
@@ -2009,8 +2149,8 @@ impl ReviewWindow {
                     Some(spot.child(bar.child(view)).into_any_element())
                 }
                 Err(why) => {
-                    self.session.error = Some(why);
-                    self.canvas.as_mut()?.playing = None;
+                    self.stage.notice = Some(why);
+                    self.canvas.as_mut()?.playing.stop();
                     None
                 }
             };
@@ -2030,8 +2170,8 @@ impl ReviewWindow {
         match view {
             Ok(view) => Some(spot.child(view).into_any_element()),
             Err(why) => {
-                self.session.error = Some(why);
-                self.canvas.as_mut()?.playing = None;
+                self.stage.notice = Some(why);
+                self.canvas.as_mut()?.playing.stop();
                 None
             }
         }
@@ -2042,6 +2182,32 @@ impl ReviewWindow {
 mod tests {
     use super::cut_plan;
     use crate::fit_picture::{BUDGET_BYTES, LIMITS};
+
+    #[test]
+    fn runtime_prompt_distinguishes_installation_opening_and_declining() {
+        use super::{page_waiting, PageWaiting};
+        use threadbear_core::web_runtime::State;
+        for state in [
+            State::Missing,
+            State::Failed("download failed".into()),
+            State::Downloading {
+                received: 1,
+                total: 10,
+            },
+            State::Unpacking,
+        ] {
+            assert_eq!(page_waiting(&state, false), PageWaiting::Prompt);
+        }
+        assert_eq!(page_waiting(&State::Ready, false), PageWaiting::Opening);
+        for state in [State::Missing, State::Failed("no".into()), State::Ready] {
+            assert_eq!(page_waiting(&state, true), PageWaiting::Stopped);
+        }
+        assert_eq!(
+            page_waiting(&State::Unavailable, false),
+            PageWaiting::Stopped
+        );
+        assert_eq!(page_waiting(&State::Unpacking, true), PageWaiting::Prompt);
+    }
 
     // Daybreak 170, round 4: an 8,192-square picture on screen keeps 134 MB,
     // and its cut-out asked for 896 MB besides, so it never fitted.

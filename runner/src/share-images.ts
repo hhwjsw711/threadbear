@@ -251,11 +251,11 @@ export function readShareImage(file: string, mediaDir: string | undefined): { by
   return readShareFile(file, mediaDir, sniffImage, NOT_A_PICTURE);
 }
 
-// A design review's video or sound for the phone (phone-reviews.ts), read
+// A design review's video, sound or single HTML file for the phone, read
 // as readShareImage reads a picture, from the same folder and up to the same
 // 10 MB. A sound is sniffed first, as an M4A is an MPEG-4 file too.
 export function readShareMedia(file: string, mediaDir: string | undefined): { bytes: Uint8Array; mediaType: string; width?: number; height?: number } | { skip: string } {
-  return readShareFile(file, mediaDir, (buf) => sniffAudio(buf, file) ?? sniffVideo(buf), "it isn't a video or sound");
+  return readShareFile(file, mediaDir, (buf) => sniffAudio(buf, file) ?? sniffVideo(buf) ?? (isPageName(file) && sniffPage(buf) ? { mediaType: PAGE_TYPE } : null), "it isn't a video, sound or page");
 }
 
 function readShareFile(file: string, mediaDir: string | undefined, sniff: (buf: Buffer) => ImageInfo | null, notIt: string): { bytes: Uint8Array; mediaType: string; width?: number; height?: number } | { skip: string } {

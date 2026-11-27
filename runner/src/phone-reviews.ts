@@ -7,7 +7,7 @@
 // Stills go up only once the phone opens a review (reviewStills, from the
 // designReviews command in sync.ts), not as reviews are made, so a review
 // nobody reads on the phone never leaves the Mac. A shot's video or sound
-// goes up with them (API 106), named the same way; a page stays on the Mac.
+// goes up with them (API 106), named the same way; HTML uses the sealed live view.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,10 +38,9 @@ export function phoneDraft(d: ReviewDraft) {
   };
 }
 
-// A shot's video or sound the phone can play; never a page, which would run
-// there.
+// A shot the phone can play, or a single HTML file for its sealed live view.
 function playable(media: ImageRef | undefined): media is ImageRef {
-  return Boolean(media && (media.mediaType.startsWith('video/') || media.mediaType.startsWith('audio/')));
+  return Boolean(media && (media.mediaType.startsWith('video/') || media.mediaType.startsWith('audio/') || media.mediaType === 'text/html'));
 }
 
 // The agent's marks as the phone draws them: ink filled in with the window's
@@ -52,7 +51,7 @@ function phoneMarks(marks: AgentMark[]) {
 
 // noPreview: sources whose still can't go to the phone (gone, or not a
 // picture even after shrinking), so it says so rather than waiting.
-// media: the sources of shots' videos and sounds that go up (reviewStills),
+// media: the sources of shots' videos, sounds and HTML files that go up (reviewStills),
 // each named on its shot as `media`; any other plays only on the Mac.
 //
 // canMark: this runner takes the phone's own marks (mergePhoneMarks), which
@@ -177,7 +176,7 @@ const PHONE_STILL_PX = 2400;
 // read: the file to send; within: the folder it must be in when it's read
 // (readShareImage: no links, nothing outside). The row in Convex is named by
 // src alone, never the path.
-// media: a video or sound, read as one (readShareMedia), not a picture.
+// media: a video, sound or HTML file, read as one (readShareMedia), not a picture.
 export type ReviewStill = { src: string; read: string; within: string; media?: true };
 
 // A review's stills ready to go up, and the ones that can't. Only files in
@@ -188,7 +187,7 @@ export type ReviewStill = { src: string; read: string; within: string; media?: t
 // phone doesn't take is shrunk to a JPEG in a `phone` folder beside it once,
 // and that copy goes instead.
 //
-// A shot's video or sound goes too, as it is, from the same folder and up
+// A shot's video, sound or single HTML file goes too, from the same folder and up
 // to the same 10 MB; a bigger one plays only on the Mac (media lists the
 // ones that go, for phoneReview).
 export async function reviewStills(review: DesignReview, threadMedia: string | undefined): Promise<{ stills: ReviewStill[]; noPreview: Set<string>; media: Set<string> }> {

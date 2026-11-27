@@ -12,10 +12,9 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::cell::Cell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use threadbear_core::open_policy::Origin;
-use threadbear_core::reducer::{ImageRef, ReviewOption, ReviewShot};
+use threadbear_core::reducer::{ReviewOption, ReviewShot};
 use threadbear_core::review::{
     self as rules, GalleryLayout, Point as StagePoint, ReviewMode, ScrollPhase, StageZoom, ZoomStep,
 };
@@ -54,6 +53,8 @@ pub(crate) struct StageState {
     /// A page shot on show, sealed with its scripts off (`review.media`):
     /// its file and its view, dropped once another shot shows.
     pub(crate) page: Option<(String, Rc<threadbear_web::PanelPage>)>,
+    live_digest: Option<String>,
+    pub(super) notice: Option<String>,
     /// Why the page shot on show couldn't show in place, by its file.
     pub(super) page_failed: Option<(String, String)>,
     /// What the page is waiting for (the runtime), for the dump.
@@ -641,6 +642,25 @@ impl ReviewWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        self.page_view(path, false, window, cx)
+    }
+
+    pub(super) fn canvas_live_page(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.page_view(path, true, window, cx)
+    }
+
+    fn page_view(
+        &mut self,
+        path: &str,
+        live: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let Some(runtime) = crate::web_runtime::runtime(cx) else {
             self.stage.page_waiting = Some("no web runtime here".into());
             return None;
@@ -664,13 +684,26 @@ impl ReviewWindow {
         {
             return None;
         }
-        if self.stage.page.as_ref().is_none_or(|(p, _)| p != path) {
-            self.stage.page = None;
+        if self.stage.page.as_ref().is_none_or(|(p, _)| p != path)
+            || self.stage.live_digest.is_some() != live
+        {
+            self.drop_page(cx);
             let made = (|| {
-                let real = threadbear_core::local_preview::decide_page(path, Origin::ThisMac)?;
-                let site = threadbear_core::local_preview::Site::new(&real, None)
-                    .ok_or_else(|| "its folder couldn't be read".to_owned())?;
-                let preview = threadbear_web::PreviewSite::new(std::sync::Arc::new(site), false);
+                let preview = if live {
+                    let (real, digest) = crate::live_pages::prepare(path)?;
+                    let real = std::path::Path::new(&real);
+                    let site =
+                        threadbear_core::local_preview::Site::page_only(real, digest.clone())
+                            .ok_or_else(|| "the page couldn't be sealed".to_owned())?;
+                    self.stage.live_digest = Some(digest);
+                    threadbear_web::PreviewSite::live(std::sync::Arc::new(site))
+                } else {
+                    self.stage.live_digest = None;
+                    let real = threadbear_core::local_preview::decide_page(path, Origin::ThisMac)?;
+                    let site = threadbear_core::local_preview::Site::new(&real, None)
+                        .ok_or_else(|| "its folder couldn't be read".to_owned())?;
+                    threadbear_web::PreviewSite::new(std::sync::Arc::new(site), false)
+                };
                 let parent = crate::web_panels::native_view(window)
                     .ok_or_else(|| "the window has no view".to_owned())?;
                 let (page, _events) = threadbear_web::PanelPage::open(
@@ -681,20 +714,53 @@ impl ReviewWindow {
                 Ok::<_, String>(page)
             })();
             match made {
-                Ok(page) => self.stage.page = Some((path.to_owned(), Rc::new(page))),
+                Ok(page) => {
+                    let page = Rc::new(page);
+                    self.stage.page = Some((path.to_owned(), page.clone()));
+                    if let Some(digest) = self.stage.live_digest.clone() {
+                        let path = path.to_owned();
+                        let page = Rc::downgrade(&page);
+                        cx.spawn(async move |this, cx| loop {
+                            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                            let current = this.read_with(cx, |this, _| this.stage.page.as_ref().is_some_and(|(_, p)| std::rc::Weak::ptr_eq(&Rc::downgrade(p), &page)));
+                            if !matches!(current, Ok(true)) { break; }
+                            let file = path.clone();
+                            let same = cx.background_executor().spawn(async move {
+                                crate::live_pages::prepare(&file).map(|(_, d)| d)
+                            }).await.is_ok_and(|d| d == digest);
+                            if !same {
+                                this.update(cx, |this, cx| {
+                                    if !this.stage.page.as_ref().is_some_and(|(_, p)| std::rc::Weak::ptr_eq(&Rc::downgrade(p), &page)) { return; }
+                                    this.canvas_stop_playing(cx);
+                                    this.stage.notice = Some("The page changed, so it stopped. Press Interact to try it again.".into());
+                                    cx.notify();
+                                }).ok();
+                                break;
+                            }
+                        }).detach();
+                    }
+                }
                 Err(why) => {
                     self.stage.page_failed = Some((path.to_owned(), why));
                     return None;
                 }
             }
         }
-        let page = self.stage.page.as_ref()?.1.clone();
+        // The previous frame must not keep a stopped Chromium runtime alive.
+        let page = Rc::downgrade(&self.stage.page.as_ref()?.1);
         // The title bar's menu draws under a native view: out of sight while it's up.
         let covered = self.more_open;
+        let owner = cx.entity().downgrade();
         Some(
             canvas(
-                move |bounds, window, _| {
+                move |bounds, window, cx| {
+                    let Some(page) = page.upgrade() else { return };
                     let height = f32::from(window.viewport_size().height);
+                    if live {
+                        page.set_zoom_factor(threadbear_core::review_canvas::html_zoom(f32::from(
+                            bounds.size.width,
+                        )));
+                    }
                     page.set_bounds(
                         f32::from(bounds.origin.x),
                         f32::from(bounds.origin.y),
@@ -702,9 +768,33 @@ impl ReviewWindow {
                         f32::from(bounds.size.height),
                         height,
                     );
-                    page.set_hidden(covered);
-                    if !covered {
+                    let clip = window.content_mask().bounds;
+                    let whole = bounds.origin.x >= clip.origin.x
+                        && bounds.origin.y >= clip.origin.y
+                        && bounds.right() <= clip.right()
+                        && bounds.bottom() <= clip.bottom()
+                        && bounds.size.width > gpui_kit::px(0.)
+                        && bounds.size.height > gpui_kit::px(0.);
+                    page.set_hidden(covered || !whole);
+                    if !covered && whole {
                         window.add_tooltip_exclusion(bounds);
+                    }
+                    if covered || !whole {
+                        crate::web_panels::keyboard_to_app(window);
+                    }
+                    if live && !whole {
+                        let page = Rc::downgrade(&page);
+                        cx.defer(move |cx| {
+                            owner
+                                .update(cx, |this, cx| {
+                                    if this.stage.page.as_ref().is_some_and(|(_, p)| {
+                                        std::rc::Weak::ptr_eq(&Rc::downgrade(p), &page)
+                                    }) {
+                                        this.canvas_stop_playing(cx);
+                                    }
+                                })
+                                .ok();
+                        });
                     }
                 },
                 |_, _, _, _| {},

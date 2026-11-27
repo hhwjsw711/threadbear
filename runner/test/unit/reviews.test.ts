@@ -958,3 +958,23 @@ test('canvas: a moved review keeps marks that fit and none of its cut-outs; reco
   assert.deepEqual(queued.images, []);
   assert.equal(queued.reviewResponse.marks![0].image, undefined);
 });
+
+
+test('HTML imports and moved reviews keep the full 10 MiB offline page limit', (t) => {
+  t.mock.method(stills, 'quickLook', () => undefined);
+  const { h, thread } = fixture();
+  const page = path.join(h.home, 'large.html');
+  const bytes = Buffer.alloc(10 * 1024 * 1024, ' ');
+  bytes.write('<!doctype html><meta charset="utf-8"><button>Try it</button>');
+  fs.writeFileSync(page, bytes);
+  const { review } = h.runner.createReview(thread.id, {title: 'Large offline page', options: [{id: 'A', title: 'Full page', path: page}]});
+  const media = review.options[0]!.shots![0]!.media!;
+  assert.equal(fs.statSync(media.path).size, bytes.length);
+  const root = h.store.mediaDir(thread.id);
+  const moved = fitReview(review, {threadId: thread.id, now: root, final: root})!;
+  assert.equal(moved.options[0]!.shots![0]!.media?.path, media.path);
+  fs.appendFileSync(page, 'x');
+  assert.throws(() => h.runner.createReview(thread.id, {title: 'Too large', options: [{id: 'A', title: 'Oversize', path: page}]}), /at most 10 MB/);
+  fs.appendFileSync(media.path, Buffer.alloc(1025));
+  assert.equal(fitReview(review, {threadId: thread.id, now: root, final: root})!.options[0]!.shots![0]!.media, undefined);
+});

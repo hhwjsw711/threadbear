@@ -81,3 +81,16 @@ test("a review answer's marks go to the runner, cut-outs as the command's photos
   const other = await b.ctx.db.insert('tokens', { hash: await sha256('other'), name: 'ipad', kind: 'phone', expiresAt: Date.now() + 1e9, createdAt: Date.now() });
   assert.equal(await outcome(one({ storageId: await upload('theirs', other) })), 'notFound');
 });
+
+
+test('review HTML uses the existing opaque media path without a backend API change', async () => {
+  const { b } = await setup();
+  const storageId = b.file('html');
+  await b.ctx.db.insert('storageOwners', { storageId, runnerId: MINI, at: Date.now() });
+  await call(b.ctx, sync.addReplyImage, { key: MINI_KEY, threadId: 'B', seq: 0, path: SRC, src: SRC, storageId, mediaType: 'text/html' });
+  const got = await call(b.ctx, phone.reviewImages, { token: TOKEN, threadId: 'B', sources: [SRC] }) as { src: string; url: string }[];
+  assert.equal(got.length, 1);
+  assert.equal(got[0]?.src, SRC);
+  assert.ok(got[0]?.url);
+  assert.equal(b.rows('replyImages')[0]?.mediaType, 'text/html');
+});

@@ -65,6 +65,24 @@ pub(crate) struct Reviews {
 
 impl Global for Reviews {}
 
+/// A review's native page owns its Edit commands, even if GPUI still thinks
+/// the reply box has focus. None means this is another kind of window.
+pub(crate) fn edit_page_command(handle: AnyWindowHandle, command: &str, cx: &App) -> Option<bool> {
+    let (_, view) = cx
+        .try_global::<Reviews>()?
+        .windows
+        .values()
+        .find(|(w, _)| *w == handle)?;
+    let review = view.read(cx);
+    Some(review.stage.page.as_ref().is_some_and(|(_, page)| {
+        if page.hidden() || !page.has_keyboard() {
+            return false;
+        }
+        page.edit(command);
+        true
+    }))
+}
+
 struct PendingList {
     thread_id: String,
     loading: bool,
@@ -770,6 +788,12 @@ impl ReviewWindow {
 
     /// A newer copy: the card's event, a poll, the window opened again.
     fn receive(&mut self, latest: DesignReview, cx: &mut Context<Self>) {
+        if self.session.review().id != latest.id || self.session.review().options != latest.options
+        {
+            self.canvas_stop_playing(cx);
+            self.canvas = Some(canvas::CanvasState::new());
+            self.drop_page(cx);
+        }
         self.session.receive(latest);
         write_drafts(cx);
         cx.notify();
@@ -907,6 +931,8 @@ impl ReviewWindow {
             return;
         }
         self.closed = true;
+        self.canvas_stop_playing(cx);
+        self.drop_page(cx);
         // Its clips stop and go with it.
         crate::media_view::close_window(self.handle.window_id());
         let key = window_key(&self.session.thread_id, &self.session.review().id);
@@ -1030,6 +1056,29 @@ impl ReviewWindow {
         }
     }
 
+    /// Hide before dropping, then reclaim native focus outside this window's
+    /// current borrow. A GPUI focus handle alone cannot reclaim AppKit keys.
+    fn drop_page(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, page)) = self.stage.page.take() {
+            page.set_hidden(true);
+            let handle = self.handle;
+            cx.defer(move |cx| {
+                handle
+                    .update(cx, |_, window, _| {
+                        crate::web_panels::keyboard_to_app(window)
+                    })
+                    .ok();
+            });
+        }
+    }
+
+    fn page_has_keys(&self) -> bool {
+        self.stage
+            .page
+            .as_ref()
+            .is_some_and(|(_, page)| !page.hidden() && page.has_keyboard())
+    }
+
     // ------------------------------------------------------------ keys
 
     /// The window's keys, outside the reply box, which keeps its own arrows
@@ -1042,6 +1091,14 @@ impl ReviewWindow {
         if m.platform && !m.shift && !m.control && !m.alt && ev.keystroke.key == "w" {
             self.close(cx);
             cx.stop_propagation();
+            return;
+        }
+        if self.page_has_keys() {
+            if !m.platform && !m.control && !m.alt && ev.keystroke.key == "escape" {
+                self.canvas_stop_playing(cx);
+                crate::web_panels::keyboard_to_app(window);
+                cx.stop_propagation();
+            }
             return;
         }
         if self.reply_focused(window, cx) || m.control || m.alt {
@@ -1104,7 +1161,7 @@ impl ReviewWindow {
     /// nothing here took the paste, so the words went nowhere (12 Nov).
     fn paste_in_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // In the box already, the paste was the box's own to take.
-        if !self.session.editable() || self.reply_focused(window, cx) {
+        if self.page_has_keys() || !self.session.editable() || self.reply_focused(window, cx) {
             return;
         }
         let clipboard = cx.read_from_clipboard();
@@ -1133,8 +1190,8 @@ impl ReviewWindow {
     pub(crate) fn take_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus.is_focused(window) {
             window.focus(&self.focus, cx);
-            crate::web_panels::keyboard_to_app(window);
         }
+        crate::web_panels::keyboard_to_app(window);
     }
 
     // ------------------------------------------------------------ drawing
@@ -1356,6 +1413,37 @@ impl ReviewWindow {
             .into_any_element()
     }
 
+    /// Media problems survive review refreshes and never offer a draft retry.
+    fn render_media_notice(&mut self, notice: String, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .flex_none()
+            .p(px(12.))
+            .gap(px(8.))
+            .items_center()
+            .bg(style::needs_you(cx).opacity(0.1))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(style::size::DETAIL))
+                    .child(notice),
+            )
+            .child(
+                plain_button(
+                    "review-dismiss-media",
+                    "Dismiss",
+                    "Dismiss this media notice",
+                    false,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.stage.notice = None;
+                    cx.notify();
+                })),
+            )
+            .into_any_element()
+    }
+
     /// No options at all (`ContentUnavailableView`).
     fn render_empty(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let secondary = style::secondary_text(cx);
@@ -1478,7 +1566,7 @@ impl Render for ReviewWindow {
             page_shown
         };
         if !page_shown {
-            self.stage.page = None;
+            self.drop_page(cx);
         }
         // The tab of the option on show stays in view as the stage moves:
         // the first of them is the one for all of them.
@@ -1529,6 +1617,7 @@ impl Render for ReviewWindow {
                 .into_any_element()
         };
         let titlebar = self.render_titlebar(window, cx);
+        let notice = self.stage.notice.clone();
         v_flex()
             .id("review-window")
             .key_context("ReviewWindow")
@@ -1579,9 +1668,11 @@ impl Render for ReviewWindow {
             )
             .child(titlebar)
             .when_some(error, |s, e| s.child(self.render_error_bar(e, cx)))
+            .when_some(notice, |s, n| s.child(self.render_media_notice(n, cx)))
             .child(body)
             .child(clips)
             .children(crate::viewer::overlay(self, window, cx))
+            .child(crate::web_panels::keyboard_guard())
     }
 }
 
@@ -1949,6 +2040,29 @@ pub(crate) async fn automation(
                         v.canvas_go_shot(at, shot, cx);
                     }
                 }
+                if cmd["canvasFocusPage"].as_bool() == Some(true) {
+                    if let Some((_, page)) = &v.stage.page {
+                        page.focus();
+                    }
+                }
+                if let Some(at) = cmd["canvasDoubleClick"].as_array() {
+                    if let (Some(option), Some(shot)) = (
+                        at.first().and_then(Value::as_u64),
+                        at.get(1).and_then(Value::as_u64),
+                    ) {
+                        v.script_canvas_double_click(option as usize, shot as usize, cx);
+                    }
+                }
+                if let Some(factor) = cmd["canvasZoom"].as_f64() {
+                    v.script_canvas_zoom(factor as f32, cx);
+                }
+                if let Some(pan) = cmd["canvasPan"].as_array() {
+                    v.script_canvas_pan(
+                        pan.first().and_then(Value::as_f64).unwrap_or(0.) as f32,
+                        pan.get(1).and_then(Value::as_f64).unwrap_or(0.) as f32,
+                        cx,
+                    );
+                }
                 if let Some(mark) = cmd["canvasMark"].as_object() {
                     v.script_mark(mark, window, cx);
                 }
@@ -2014,11 +2128,35 @@ pub(crate) async fn automation(
             .await;
     }
     // A frame, so a screenshot straight after shows what this did.
-    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
-        .ok();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Ask for a system frame before a native window capture. The test
+        // draw consumes the invalidation without presenting its new scene.
+        if cmd["present"].as_bool() == Some(true) {
+            window.refresh();
+        }
+    })
+    .ok();
     cx.background_executor()
         .timer(Duration::from_millis(250))
         .await;
+    // Only the automation build can inspect the review's sealed page.
+    if let Some(js) = cmd["canvasPageJs"].as_str() {
+        let page = view
+            .read_with(cx, |v, _| v.stage.page.as_ref().map(|(_, p)| p.clone()))
+            .ok_or("no live canvas page")?;
+        let answer = page
+            .devtools(
+                "Runtime.evaluate",
+                json!({ "expression": js, "returnByValue": true, "awaitPromise": true, "userGesture": true }),
+            )
+            .await
+            .map_err(|_| "the page went away".to_owned())??;
+        if answer.get("exceptionDetails").is_some() {
+            return Err(format!("page script failed: {answer}"));
+        }
+        return Ok(json!(format!("ok {}", answer["result"]["value"])));
+    }
     let state = state_with_keys(cmd, &view, handle, cx)?;
     Ok(json!(format!("ok {state}")))
 }
@@ -2040,6 +2178,18 @@ fn state_with_keys(
             .read(cx)
             .reply_focused(window, cx))
         .unwrap_or(false));
+    state["pageKeys"] = json!(view.read_with(cx, |v, _| v.page_has_keys()));
+    state["nativeKeyboard"] = json!(cx
+        .update_window(handle, |_, window, _| {
+            // SAFETY: this open window's content view, borrowed on the main thread.
+            unsafe {
+                threadbear_web::keyboard_holder(
+                    crate::web_panels::native_view(window).unwrap_or(std::ptr::null_mut()),
+                )
+            }
+            .name()
+        })
+        .ok());
     Ok(state)
 }
 

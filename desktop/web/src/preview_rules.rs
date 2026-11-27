@@ -415,3 +415,24 @@ mod tests {
         assert_eq!(encode_path("é.html"), "%C3%A9.html");
     }
 }
+
+/// Chromium zoom levels are logarithmic, with a factor of 1.2 per level.
+pub fn zoom_level(factor: f64) -> Option<f64> {
+    (factor.is_finite() && factor > 0.).then(|| factor.ln() / 1.2_f64.ln())
+}
+
+#[cfg(test)]
+mod canvas_zoom_tests {
+    #[test]
+    fn zoom_preserves_the_design_viewport_when_a_card_shrinks() {
+        for width in [160., 384., 640., 1024., 1433.6] {
+            let factor = threadbear_core::review_canvas::html_zoom(width);
+            let level = super::zoom_level(factor).unwrap();
+            assert!((1.2_f64.powf(level) - factor).abs() < 1e-9);
+            assert!((f64::from(width) / factor - 1024.).abs() < 1e-9);
+        }
+        for factor in [0., -1., f64::NAN, f64::INFINITY] {
+            assert_eq!(super::zoom_level(factor), None);
+        }
+    }
+}

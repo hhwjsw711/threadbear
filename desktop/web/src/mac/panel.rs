@@ -488,6 +488,18 @@ impl PanelPage {
         }
     }
 
+    /// Scale CSS content with its canvas card instead of changing its layout viewport.
+    pub fn set_zoom_factor(&self, factor: f64) {
+        let Some(level) = crate::preview_rules::zoom_level(factor) else {
+            return;
+        };
+        if let Some(host) = self.browser.host() {
+            if (host.zoom_level() - level).abs() > 1e-6 {
+                host.set_zoom_level(level);
+            }
+        }
+    }
+
     pub fn bounds(&self) -> (f32, f32, f32, f32) {
         let (x, y, w, h, _) = self.frame.get();
         (x, y, w, h)

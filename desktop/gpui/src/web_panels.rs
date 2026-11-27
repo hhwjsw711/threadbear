@@ -125,8 +125,8 @@ pub(crate) fn init(cx: &mut App) {
     // The app draws the panels, so it's told when a page, a Convex panel or
     // the runtime changes.
     // ⌘C and the like while a page has the keyboard are the page's.
-    cx.intercept_keystrokes(|event, _, cx| {
-        if edit_key(&event.keystroke, cx) {
+    cx.intercept_keystrokes(|event, window, cx| {
+        if edit_key(&event.keystroke, window.window_handle(), cx) {
             cx.stop_propagation();
         }
     })
@@ -188,7 +188,7 @@ pub(crate) fn holds_a_restart(cx: &App) -> bool {
 /// view. GPUI's view sees key equivalents before the page does (it answers
 /// performKeyEquivalent for the whole window), so without this they'd go to
 /// whatever GPUI has focused, the composer say. True when the page took it.
-fn edit_key(keystroke: &Keystroke, cx: &App) -> bool {
+fn edit_key(keystroke: &Keystroke, handle: AnyWindowHandle, cx: &App) -> bool {
     let m = &keystroke.modifiers;
     if !m.platform || m.control || m.alt || m.function {
         return false;
@@ -202,6 +202,12 @@ fn edit_key(keystroke: &Keystroke, cx: &App) -> bool {
         ("z", true) => "redo",
         _ => return false,
     };
+    if let Some(handled) = crate::review_window::edit_page_command(handle, command, cx) {
+        if handled {
+            record_edit(command);
+        }
+        return handled;
+    }
     let Some(panels) = panels(cx) else {
         return false;
     };
@@ -214,13 +220,17 @@ fn edit_key(keystroke: &Keystroke, cx: &App) -> bool {
         return false;
     };
     kept.page.edit(command);
+    record_edit(command);
+    true
+}
+
+fn record_edit(command: &str) {
     EDITS.with(|e| {
         let mut e = e.borrow_mut();
         e.push(command.to_owned());
         let extra = e.len().saturating_sub(10);
         e.drain(..extra);
     });
-    true
 }
 
 thread_local! {
@@ -265,6 +275,40 @@ pub(crate) fn sweeper(menu_at: Option<Point<Pixels>>, popover: bool) -> AnyEleme
     .absolute()
     .size_0()
     .into_any_element()
+}
+
+/// The comparison window has no panel pool, but needs the same native
+/// keyboard sweep and capture-phase click reclaim as the main window.
+pub(crate) fn keyboard_guard() -> AnyElement {
+    canvas(
+        |_, window, _| {
+            // SAFETY: this open window's view is borrowed on the main thread.
+            let holder = unsafe {
+                threadbear_web::keyboard_holder(native_view(window).unwrap_or(std::ptr::null_mut()))
+            };
+            if reclaim_keyboard(holder) {
+                keyboard_to_app(window);
+            }
+        },
+        |_, _, window, _| {
+            window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
+                if phase.capture() {
+                    keyboard_to_app(window);
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_0()
+    .into_any_element()
+}
+
+fn reclaim_keyboard(holder: threadbear_web::KeyboardHolder) -> bool {
+    use threadbear_web::KeyboardHolder;
+    matches!(
+        holder,
+        KeyboardHolder::HiddenPage | KeyboardHolder::Window | KeyboardHolder::Other
+    )
 }
 
 /// Gives GPUI's view its window's keyboard. Called wherever the app asks GPUI
@@ -400,16 +444,12 @@ fn sweep(
     // window itself, which beeps at every letter while GPUI draws its caret
     // and ⌘V still reaches GPUI (Mike, 12 Nov, a dictated paste and then
     // nothing he typed; features/tools/real-typing.ts plays it with real keys).
-    use threadbear_web::KeyboardHolder;
     // SAFETY: null or the content view of `window`, open while it's borrowed
     // here, on the main thread.
     let holder = unsafe {
         threadbear_web::keyboard_holder(native_view(window).unwrap_or(std::ptr::null_mut()))
     };
-    if matches!(
-        holder,
-        KeyboardHolder::HiddenPage | KeyboardHolder::Window | KeyboardHolder::Other
-    ) {
+    if reclaim_keyboard(holder) {
         keyboard_to_app(window);
     }
 }
@@ -2457,4 +2497,22 @@ fn dump_page(key: &str, cx: &App) -> Value {
     };
     let p = panels.read(cx);
     page_dump(key, p.pages.iter().find(|k| k.key == key), frame_now())
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    #[test]
+    fn a_hidden_or_dropped_page_returns_native_keys_but_a_visible_page_keeps_them() {
+        use threadbear_web::KeyboardHolder;
+        for holder in [
+            KeyboardHolder::HiddenPage,
+            KeyboardHolder::Window,
+            KeyboardHolder::Other,
+        ] {
+            assert!(super::reclaim_keyboard(holder));
+        }
+        for holder in [KeyboardHolder::App, KeyboardHolder::Page] {
+            assert!(!super::reclaim_keyboard(holder));
+        }
+    }
 }

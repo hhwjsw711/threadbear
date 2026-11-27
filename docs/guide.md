@@ -312,13 +312,14 @@ itself, and that's checked again when you press it.
 On the iPhone and the Android app, tap Reviews in the thread's top bar, or a
 review link in a reply. The board shows the options, their notes and a still of each
 picture, with the agent's marks drawn on it. Videos and sounds play there
-too, up to 10 MB each; a bigger one, and a page, shows its still, so open
-the real thing on the Mac. You can mark a picture as you can on the Mac
+too, up to 10 MB each. On iPhone, a delivered HTML option has **Interact**:
+it opens full screen in the sealed offline view, with **Stop** at the top.
+Android keeps HTML static. Bigger media shows its still, so open it on the Mac. You can mark a picture as you can on the Mac
 (a circle, a highlight or a pin) and put the mark in your reply. Pick any
 options, None of these, or write a reply, then Send answer. Reference
 options are there to compare and can't be picked. The thread's Mac has to
 be on to load the review and take the answer, and it sends the stills,
-videos and sounds only once you open the review, so they can take a moment
+videos, sounds and single HTML files only once you open the review, so they can take a moment
 to turn up. Pictures pasted into an answer on the Mac stay with it, though
 the phone doesn't show them, and so do marks made on the Mac: yours from
 the phone are added to them, up to 20 in all. Reviews need your backend on API 86 or newer;
@@ -351,9 +352,19 @@ you want the pictures clean.
 
 Next and Back take a tour through every picture, then show everything.
 The mouse wheel or a pinch zooms at the pointer; drag the background to
-move around. A clip, sound or page plays where it sits: press Play (Show
-page for a page), or double-click it. One plays at a time. Pages have their
-scripts off. Sounds show a waveform with a play bar.
+move around. A clip or sound plays where it sits: press Play or double-click
+it. Sounds show a waveform with a play bar.
+
+HTML options start as static snapshots. Double-click to look closer with
+marks and notes still visible. Click **Interact** in the card's header to
+try its buttons, tabs and toggles in place. One card runs at a time, offline, from a single self-contained HTML file, in the same sealed
+runtime as live pages. **Stop**, picking a marking tool, closing the review
+or moving the card outside the canvas's safe bounds restores its snapshot.
+Esc stops the live card first; tour steps and option tabs stop it before
+moving the canvas.
+The website keeps HTML static because its browser cannot enforce the native
+runtime's WebRTC block. Comparison Interact is independent of the **Live
+pages** experiment, which still controls pages shown in transcript replies.
 
 Your own tools circle, highlight or pin a part of any picture. Each adds
 a numbered chip to the reply, so you can say "[Mark 1] is too tight"; the

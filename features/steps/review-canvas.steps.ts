@@ -1,13 +1,17 @@
 // The review as a board (review-canvas.feature):
 // what the open review window's `canvas` says (review_window/canvas.rs,
 // `canvas_state`), and a mark drawn as the mouse would draw it.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { shotsReview } from '../support/review-demo.ts';
 import { Then, When } from '@cucumber/cucumber';
 import { okValue, sleep } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 import { reviewId } from './review.steps.ts';
 
-type CanvasState = { on: boolean; stop: number; stops: number; lit: string; notesOn: boolean; agentMarks: number; tool: string; marks: string[]; playing?: string | null };
-type WithCanvas = { reply: string; replyKeys?: boolean; canvas?: CanvasState | null };
+type CanvasState = { on: boolean; stop: number; stops: number; lit: string; notesOn: boolean; agentMarks: number; tool: string; marks: string[]; mediaNotice?: string | null; playing?: string | null };
+type WithCanvas = { reply: string; error?: string; replyKeys?: boolean; pageKeys?: boolean; nativeKeyboard?: string; canvas?: CanvasState | null };
 
 async function board(world: ThreadbearWorld, cmd: Record<string, unknown> = {}): Promise<WithCanvas> {
   return JSON.parse(okValue(await world.app.do({ cmd: 'review', id: reviewId(world), open: false, ...cmd }, 30))) as WithCanvas;
@@ -107,4 +111,91 @@ Then('the board frames option {string}, shot {int}', async function (this: Threa
   const option = id.charCodeAt(0) - 65;
   const lit = shot === 1 ? `Opening(${option})` : `Shot(${option}, ${shot - 1})`;
   await untilBoard(this, `${id}'s shot ${shot} framed`, (s) => s.canvas?.lit === lit);
+});
+
+
+Then('the board runs HTML in place', async function (this: ThreadbearWorld) {
+  await untilBoard(this, 'HTML running in place', (s) => s.canvas?.playing === 'page');
+  const value = JSON.parse(okValue(await this.app.do({ cmd: 'review', id: reviewId(this), open: false, canvasPageJs: 'typeof document.body === "object"' })));
+  if (value !== true) throw new Error('The HTML body never loaded');
+});
+
+
+When('I double-click HTML option {string}, shot {int} on the board', async function (this: ThreadbearWorld, id: string, shot: number) {
+  await board(this, {canvasDoubleClick: [id.charCodeAt(0) - 65, shot - 1]});
+});
+
+Then('the live HTML keeps a desktop CSS viewport as the card scales', async function (this: ThreadbearWorld) {
+  const inspect = async () => JSON.parse(okValue(await this.app.do({cmd: 'review', id: reviewId(this), open: false, canvasPageJs: 'window.innerWidth'}))) as number;
+  const before = await inspect();
+  if (Math.abs(before - 1024) > 16) throw new Error(`Expected desktop viewport, got ${before}`);
+  await board(this, {canvasZoom: 0.9});
+  const after = await inspect();
+  if (Math.abs(after - before) > 16) throw new Error(`Viewport reflowed from ${before} to ${after}`);
+});
+
+
+Then('HTML input owns editing shortcuts and Stop returns the keyboard', async function (this: ThreadbearWorld) {
+  const js = async (expression: string) => JSON.parse(okValue(await this.app.do({cmd: 'review', id: reviewId(this), open: false, canvasPageJs: expression})));
+  const key = async (key: string, modifiers = ['cmd']) => this.app.do({cmd: 'menu-key', key, modifiers, review: reviewId(this)});
+  const clipboard = JSON.parse(okValue(await this.app.do({cmd: 'clipboard'}))) as string;
+  const before = await board(this);
+  try {
+    await js(`(() => {const input=document.createElement('input');input.id='edit-test';input.value='seed';document.body.prepend(input);input.focus();return true})()`);
+    await board(this, {canvasFocusPage: true});
+    await untilBoard(this, 'the native page holding keys', (s) => s.pageKeys === true);
+    await this.app.do({cmd: 'clipboard', set: 'pasted locally'});
+    await key('a');
+    await key('v');
+    if (await js(`document.getElementById('edit-test').value`) !== 'pasted locally') throw new Error('Paste missed the HTML input');
+    if ((await board(this)).reply !== before.reply) throw new Error('The review reply stole paste');
+    await key('z');
+    if (await js(`document.getElementById('edit-test').value`) !== 'seed') throw new Error('Undo missed the HTML input');
+    await key('z', ['cmd', 'shift']);
+    if (await js(`document.getElementById('edit-test').value`) !== 'pasted locally') throw new Error('Redo missed the HTML input');
+    await key('a');
+    await key('x');
+    await key('c');
+    if (await js(`document.getElementById('edit-test').value`) !== 'pasted locally') throw new Error('The sealed page allowed Cut');
+    await this.app.do({cmd: 'click', review: reviewId(this), tip: 'Stop B. One picker, shot 2'});
+    await untilBoard(this, 'GPUI holding native keys after Stop', (s) => !s.canvas?.playing && s.nativeKeyboard === 'app');
+    await key('o', []);
+    await untilBoard(this, 'a marking shortcut immediately after Stop', (s) => s.canvas?.tool === 'circle');
+  } finally {
+    await this.app.do({cmd: 'clipboard', set: clipboard});
+  }
+});
+
+
+Then('changing the HTML leaves a persistent dismissible media notice', async function (this: ThreadbearWorld) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-canvas-watcher-'));
+  const fixture = shotsReview();
+  const shot = fixture.options[1]!.shots[1]!;
+  if (!('media' in shot) || !shot.media) throw new Error('The HTML fixture has no media');
+  const page = shot.media;
+  const original = page.path;
+  page.path = path.join(dir, 'page.html');
+  fs.copyFileSync(original, page.path);
+  const threadId = (await this.app.dump()).selection!.id;
+  try {
+    await this.app.do({cmd: 'mock', method: 'review', params: {threadId, review: fixture}});
+    await untilBoard(this, 'the replaced page stopped', (s) => !s.canvas?.playing);
+    await board(this, {canvasGo: 'B', canvasShot: 1});
+    await sleep(750);
+    await this.app.do({cmd: 'click', review: reviewId(this), tip: 'Interact with B. One picker, shot 2 here, sealed and offline'});
+    await untilBoard(this, 'the temporary HTML running', (s) => s.canvas?.playing === 'page');
+    fs.appendFileSync(page.path, '\n<!-- changed after activation -->');
+    await untilBoard(this, 'the changed page stopped with a media notice', (s) => !s.canvas?.playing && !!s.canvas?.mediaNotice?.includes('page changed'));
+    // A real refresh poll must keep the notice, and must not turn it into a
+    // failed draft save with a retry button.
+    await sleep(5500);
+    const stopped = await board(this);
+    if (!stopped.canvas?.mediaNotice?.includes('page changed') || stopped.error) throw new Error(`Notice was lost or became a draft error: ${JSON.stringify(stopped)}`);
+    await this.app.do({cmd: 'click', review: reviewId(this), tip: 'Dismiss this media notice'});
+    if ((await board(this)).canvas?.mediaNotice) throw new Error('Dismiss kept the media notice');
+  } finally {
+    await this.app.do({cmd: 'mock', method: 'review', params: {threadId, review: shotsReview()}});
+    await board(this);
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
 });

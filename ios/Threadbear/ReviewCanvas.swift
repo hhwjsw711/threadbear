@@ -137,7 +137,7 @@ nonisolated struct BoardLayout: Equatable {
             let captionH = i > 0 || shot.title != nil ? CanvasMetrics.captionHeight : 0
             let caption = CGRect(x: x, y: y, width: w, height: captionH)
             let h = w / max(0.05, aspect(shot))
-            let picture = CGRect(x: x, y: caption.maxY, width: w, height: h)
+            let picture = CGRect(x: x, y: caption.maxY + (shot.kind == "page" ? 144 : 0), width: w, height: h)
             y = picture.maxY + CanvasMetrics.shotGap
             shots.append(BoardShotLayout(option: index, shot: i, picture: picture, caption: caption,
                                          notes: placeNotes(picture, shot.marks ?? [], measure: measure)))

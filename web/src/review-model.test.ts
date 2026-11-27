@@ -207,3 +207,12 @@ test('the wobble is the Mac’s mulberry32', () => {
   assert.ok(a >= 0 && a <= 1);
   assert.equal(wobble(7)(), a);
 });
+
+
+test('HTML sources fetch only the still and reserve a separate control band', () => {
+  const r = review({options: [{id: 'A', title: 'HTML', shots: [{src: 'still', media: 'sealed-html', kind: 'page'}]}]});
+  assert.deepEqual(reviewSources(r), ['still']);
+  const laid = layout(r, () => 4 / 3, measure);
+  const shot = laid.options[0]!.shots[0]!;
+  assert.equal(shot.picture.y - (shot.caption.y + shot.caption.h), 144);
+});

@@ -31,8 +31,8 @@ public struct PhoneDesignReview: Codable, Sendable, Hashable, Identifiable {
         public var preview: Bool?
         /// The agent's marks on the still (API 106), drawn over it on the board.
         public var marks: [AgentMark]?
-        /// The video or sound itself (API 106), a src like the still's, for
-        /// a video or audio shot of 10 MB or less. Pages never have one.
+        /// The video, sound or HTML source (API 106), a src like the still's.
+        /// Single-file HTML stays within 10 MiB for the sealed full-screen view.
         public var media: String?
 
         public var isVideo: Bool { kind == "video" }

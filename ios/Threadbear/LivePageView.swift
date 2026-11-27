@@ -110,11 +110,8 @@ enum LivePageLoader {
     static let maxBytes = 10 * 1024 * 1024
 
     static func fetch(_ url: URL) async throws -> String {
-        var request = URLRequest(url: url)
-        request.cachePolicy = .returnCacheDataElseLoad
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= maxBytes,
-              let text = String(data: data, encoding: .utf8) else { throw URLError(.cannotDecodeContentData) }
+        let data = try await CappedDownload.data(from: url, session: .shared, limit: maxBytes)
+        guard let text = String(data: data, encoding: .utf8) else { throw URLError(.cannotDecodeContentData) }
         return text
     }
 }
@@ -125,6 +122,7 @@ enum LivePageLoader {
 /// that a page can only narrow.
 struct LiveWebView: UIViewRepresentable {
     let page: String
+    var scrolling = false
 
     static let policy = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: data:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; worker-src blob:; connect-src data: blob:; frame-src 'none'; form-action 'none'; base-uri 'none'"
 
@@ -167,9 +165,10 @@ struct LiveWebView: UIViewRepresentable {
         // scripts can't take it apart (its copy in the page's world can be).
         config.userContentController.addUserScript(WKUserScript(source: RichWebSandbox.linkGuard, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
         let view = WKWebView(frame: .zero, configuration: config)
-        view.isOpaque = false
-        view.backgroundColor = .clear
-        view.scrollView.isScrollEnabled = false
+        view.isOpaque = scrolling
+        view.backgroundColor = scrolling ? .white : .clear
+        view.scrollView.backgroundColor = scrolling ? .white : .clear
+        view.scrollView.isScrollEnabled = scrolling
         view.scrollView.bounces = false
         // No long-press preview or menu on a link: its Open Link would take
         // the page's address, and anything in it, out to Safari (Gemini).
@@ -235,5 +234,41 @@ struct LiveWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor () -> Void) { completionHandler() }
         func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor (Bool) -> Void) { completionHandler(false) }
         func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor (String?) -> Void) { completionHandler(nil) }
+    }
+}
+
+
+/// Review HTML runs only in the existing sealed live-pages view. The cover
+/// owns its bytes and WebView; dismissing it destroys both.
+struct ReviewLivePage: View {
+    let url: URL
+    let title: String
+    @Environment(\.dismiss) private var dismiss
+    private enum Content { case loading, ready(String), failed }
+    @State private var content = Content.loading
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch content {
+                case let .ready(page): LiveWebView(page: page, scrolling: true)
+                case .failed: ContentUnavailableView("Couldn't load this page", systemImage: "exclamationmark.triangle")
+                case .loading: ProgressView("Loading page")
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Stop") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+        .task(id: url) {
+            content = .loading
+            LivePages.shared.running = nil
+            do {
+                let loaded = try await LivePageLoader.fetch(url)
+                try Task.checkCancellation()
+                content = .ready(loaded)
+            } catch { if !Task.isCancelled { content = .failed } }
+        }
     }
 }

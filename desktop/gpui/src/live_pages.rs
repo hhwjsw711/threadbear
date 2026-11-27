@@ -183,7 +183,7 @@ impl MarkdownPlugin for Cards {
 // ---------------------------------------------------------------- running
 
 /// What Run found: the page to run, or why it can't.
-fn prepare(path: &str) -> Result<(String, String), String> {
+pub(crate) fn prepare(path: &str) -> Result<(String, String), String> {
     let real = threadbear_core::local_preview::decide_page(
         path,
         threadbear_core::open_policy::Origin::ThisMac,

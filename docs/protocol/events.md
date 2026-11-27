@@ -94,8 +94,20 @@ none can), is its `image`, which thumbnails and older clients show. A
 page comes in a folder of its own with the files it names (`src`, `href`,
 `url()`, a stylesheet's own) from its folder down, at most 100 files and
 50 MB; never anything above its folder, nor other pages it links to. The
-Mac window shows the page the way the side pane does: scripts off, nothing
-loaded from outside, and Open in Browser for a page with scripts. A video
+Mac canvas keeps the page's static snapshot until its header's Interact
+button is pressed. Double-click only looks closer, preserving marks and notes.
+Interact runs that single self-contained HTML file in the sealed live-pages
+runtime: scripts on, no network or sibling files, dialogs, popups, external
+navigation or printing. Buttons, tabs, toggles and local state work offline.
+Only one card runs per comparison window. Stop, a marking tool, a change of
+review, closing the window or leaving valid canvas bounds destroys its view
+and restores the original snapshot. The top tools and Stop stay outside the
+native overlay. This explicit action is available independently of the
+`livePages` experiment (which still gates pages in transcript replies).
+The stage's ordinary page preview keeps scripts off.
+The iPhone opens delivered HTML media full screen in its existing sealed
+live-pages sandbox. The website keeps snapshots: browser iframes cannot
+disable WebRTC as the native runtimes do, so scripts never run there. A video
 loops. On the stage it has controls and plays with sound; side by side
 with the others in the grid it's muted. A sound shows its waveform on the
 stage with a play bar along its bottom, paused at the start, so stepping
@@ -317,9 +329,10 @@ to an answered review is refused as answered.
 
 The phone's Reviews sheet opens from the pending-review button or a
 `review:<id>` link. It shows reference and recommended options, each shot's
-still, multiple picks, none, per-option notes and a reply. Pages stay on
-the Mac, and so do videos and sounds before API 106 or over 10 MB; the
-phone labels their stills (a shot's `kind` is `image`, `video`, `audio` or
+still, multiple picks, none, per-option notes and a reply. A delivered HTML
+file opens full screen with Interact, using the sealed iOS live-pages
+sandbox and Stop to dismiss. HTML, videos and sounds stay on the Mac before
+API 106 or over 10 MB; the phone labels unavailable media's stills (a shot's `kind` is `image`, `video`, `audio` or
 `page`; an unknown one reads as a still). Loading and
 failed submissions keep the user's draft. A stale revision reloads the
 review and requires another deliberate send. Older backends keep the

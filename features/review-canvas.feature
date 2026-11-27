@@ -52,7 +52,7 @@ Feature: The review as a canvas
 
   # Mike, 24 Nov 2026: comparing music beds, each option a clip, a
   # double-click took him off the board to the stage to hear one. A clip or
-  # a page now plays where it sits, with its sound and controls, one at a time.
+  # a sound now plays where it sits, with its sound and controls, one at a time.
   @review.canvas @review.media @swift-pending @windows-pending @linux-pending
   Scenario: A clip plays where it sits on the board
     Given the agent shows options with several shots each
@@ -101,3 +101,81 @@ Feature: The review as a canvas
     Then the board frames option "B", shot 1
     When I press the "escape" key in the review
     Then the review is a board on stop 11 of 11
+
+
+  @review.canvas @review.media @swift-pending @web-runtime @windows-pending @linux-pending
+  Scenario: HTML stays a snapshot until Interact and marking restores it
+    Given the web runtime is installed
+    And the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "B", shot 2
+    Then nothing plays on the board
+    When I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    Then the board runs HTML in place
+    When I press "Circle a part (O)" on the board
+    Then nothing plays on the board
+
+
+  @review.canvas @review.media @swift-pending
+  Scenario: Double-clicking HTML only looks closer and keeps its marks
+    Given the agent shows options with several shots each
+    When I open that review
+    And I double-click HTML option "B", shot 2 on the board
+    Then nothing plays on the board
+
+  @review.canvas @review.media @swift-pending @web-runtime @windows-pending @linux-pending
+  Scenario: HTML interaction scales with the card and stops before navigation
+    Given the web runtime is installed
+    And the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "B", shot 2
+    And I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    Then the board runs HTML in place
+    And the live HTML keeps a desktop CSS viewport as the card scales
+    When I press the "escape" key in the review
+    Then nothing plays on the board
+    When I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    Then the board runs HTML in place
+    When I press "Next (→)" in the review
+    Then nothing plays on the board
+    When the board flies to option "B", shot 2
+    And I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    Then the board runs HTML in place
+    When the board flies to option "A"
+    Then nothing plays on the board
+    When the board flies to option "B", shot 2
+    And I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    Then the board runs HTML in place
+    When I press "See everything (0)" in the review
+    Then nothing plays on the board
+
+
+  @review.canvas @review.media @swift-pending @web-runtime @windows-pending @linux-pending
+  Scenario: Live HTML keeps native editing shortcuts and Stop returns the keys
+    Given the web runtime is installed
+    And the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "B", shot 2
+    And I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    Then the board runs HTML in place
+    And HTML input owns editing shortcuts and Stop returns the keyboard
+
+
+  @review.canvas @review.media @swift-pending @web-runtime @windows-pending @linux-pending
+  Scenario: A changed HTML file stops with a media notice that survives polling
+    Given the web runtime is installed
+    And the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "B", shot 2
+    And I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    Then the board runs HTML in place
+    And changing the HTML leaves a persistent dismissible media notice
+
+  @review.canvas @review.media @swift-pending @windows-pending @linux-pending
+  Scenario: Declining the runtime restores the snapshot
+    Given the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "B", shot 2
+    And I press "Interact with B. One picker, shot 2 here, sealed and offline" on the board
+    And I press "Show the source, and don't ask again until Threadbear restarts" on the board
+    Then nothing plays on the board

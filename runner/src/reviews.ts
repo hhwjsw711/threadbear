@@ -28,7 +28,7 @@ export const maxReviewImages = 40;
 const maxImageBytes = 25 * 1024 * 1024;
 const maxVideoBytes = 200 * 1024 * 1024;
 const maxAudioBytes = 100 * 1024 * 1024;
-const maxPageBytes = 5 * 1024 * 1024;
+const maxPageBytes = 10 * 1024 * 1024;
 // All of a review's videos, sounds and pages together, as each is copied in.
 export const maxReviewMediaBytes = 500 * 1024 * 1024;
 
@@ -54,7 +54,7 @@ function shotFile(raw: unknown, cwd: string): { path: string; kind: ReviewShotKi
     bad(`File not found: ${file}`);
   }
   if (/\.html?$/i.test(file)) {
-    if (size > maxPageBytes) bad(`An HTML page must be at most 5 MB: ${file}`);
+    if (size > maxPageBytes) bad(`An HTML page must be at most 10 MB: ${file}`);
     return { path: file, kind: 'page', size };
   }
   if (size <= maxImageBytes) {

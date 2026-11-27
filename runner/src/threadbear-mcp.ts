@@ -859,7 +859,7 @@ export function buildThreadbearTools(
   const reviewTools = [
     tool(
       'show_options',
-      'Shows the user design options (mockups, wireframes, screenshots, videos or HTML pages of variants) in a review window to choose between, instead of pinning them, listing them or reading every image into the transcript. Only for options whose look, sound or motion is the point: options that are words (names, plans, approaches, a shortlist) go in your reply, not on pages made for this. Give an option\u2019s other screens or states as its shots, never as options of their own. The window steps through every shot in order, then shows the options side by side; the user can pick any number or none, and reply. Returns a review ID promptly; finish your turn and the answer arrives later as a message. A reference option (today\u2019s version, say) can\u2019t be picked.',
+      'Shows visual or audible options (images, videos, sounds or HTML mockups) on the comparison canvas. Word options (names, plans, approaches, shortlists) go in your reply. HTML starts as a snapshot; Interact runs a single self-contained offline file, including buttons, tabs, toggles and local state, in the sealed live-pages runtime. Put other screens or states in shots, never separate options. Users can pick several or none, mark pictures and reply. Returns promptly with a review ID; finish your turn and their answer arrives later. Reference options cannot be picked.',
       {
         title: z.string().min(1).max(200).describe('What the user is reviewing.'),
         note: z.string().max(4000).optional().describe('A short lead, markdown: **bold** what matters.'),
@@ -867,7 +867,7 @@ export function buildThreadbearTools(
         options: z.array(z.object({
           id: z.string().min(1).max(200).describe('Stable option ID, such as A or B.'),
           title: z.string().min(1).max(200),
-          path: z.string().min(1).optional().describe('Image, video (MP4, MOV), sound (MP3, M4A, WAV) or HTML page path, absolute or relative to this thread\u2019s folder; videos and sounds play, pages show with scripts off. Or give shots.'),
+          path: z.string().min(1).optional().describe('Image, video (MP4, MOV), sound (MP3, M4A, WAV) or HTML page path, absolute or relative to this thread\u2019s folder; videos and sounds play. HTML stays a snapshot until Interact on the canvas: use a single self-contained offline file with buttons, tabs, toggles or local state; no network, dialogs, navigation, popups or printing. Or give shots.'),
           shots: z.array(z.object({
             path: z.string().min(1),
             title: z.string().max(200).optional().describe('What it shows: "Mid-drag". The same across options.'),

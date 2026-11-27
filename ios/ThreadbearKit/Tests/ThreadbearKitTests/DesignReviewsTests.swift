@@ -3,6 +3,13 @@ import Testing
 @testable import ThreadbearKit
 
 struct DesignReviewsTests {
+    @Test func deliveredHTMLKeepsItsOpaqueMediaSourceForTheSealedView() throws {
+        let value = try JSONDecoder().decode(PhoneDesignReview.self, from: Data(#"{"id":"r","title":"HTML","status":"pending","revision":0,"draft":{"notes":{}},"options":[{"id":"A","title":"Try it","shots":[{"src":"review:r:still","kind":"page","media":"review:r:html"},{"src":"review:r:old","kind":"page"}]}]}"#.utf8))
+        #expect(value.options[0].shots[0].media == "review:r:html")
+        #expect(value.options[0].shots[0].kind == "page")
+        #expect(value.options[0].shots[1].media == nil)
+    }
+
     private func review() throws -> PhoneDesignReview {
         try JSONDecoder().decode(PhoneDesignReview.self, from: Data(#"{"id":"r","title":"Layout","status":"pending","revision":0,"recommended":"A","draft":{"notes":{}},"options":[{"id":"A","title":"First","shots":[{"src":"review:r:a","kind":"page"}]},{"id":"B","title":"Today","reference":true,"shots":[]}]}"#.utf8))
     }

@@ -922,25 +922,26 @@ function ReviewBoard({
           ? board.options.flatMap((lo) =>
               lo.shots.map((sl) => {
                 const shot = review.options[lo.index]!.shots[sl.shot]!;
-                if (shot.kind !== 'video' && shot.kind !== 'audio') return null;
+                if (shot.kind !== 'video' && shot.kind !== 'audio' && shot.kind !== 'page') return null;
                 const r = screenRect(camera, sl.picture);
-                if (r.w < 90 || r.x + r.w <= 0 || r.x >= view.w || r.y + r.h <= 0 || r.y >= view.h) return null;
+                if (r.w < (shot.kind === 'page' ? 210 : 90) || r.x + r.w <= 0 || r.x >= view.w || r.y + r.h <= 0 || r.y >= view.h) return null;
                 const k = shotKey(lo.index, sl.shot);
                 const url = shot.media ? pictures.get(shot.media)?.url : undefined;
                 const playing = playback.key === k && playback.playing;
-                const failed = !url || playback.failed.has(k);
+                const page = shot.kind === 'page';
+                const failed = page || !url || playback.failed.has(k);
                 const top = view.top + 8;
-                const [right, y] = !playing ? [r.x + r.w - 8, Math.max(r.y + 8, Math.min(top, r.y + r.h - 34))] : r.y - 34 >= top ? [r.x + r.w, r.y - 34] : [r.x + r.w, r.y + r.h + 8];
-                const label = failed ? 'Play on the Mac' : playing ? 'Stop' : 'Play';
+                const [right, y] = page ? [r.x + r.w, r.y - 32] : !playing ? [r.x + r.w - 8, Math.max(r.y + 8, Math.min(top, r.y + r.h - 34))] : r.y - 34 >= top ? [r.x + r.w, r.y - 34] : [r.x + r.w, r.y + r.h + 8];
+                const label = page ? 'Interact on Mac or iPhone' : failed ? 'Play on the Mac' : playing ? 'Stop' : 'Play';
                 return (
                   <button
                     key={`play${k}`}
                     className="rb-play"
-                    style={{ right: view.w - right, top: y }}
+                    style={page ? { left: r.x + r.w - 210, width: 210, top: y, justifyContent: 'center' } : { right: view.w - right, top: y }}
                     disabled={failed}
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() => url && togglePlay(k, shot, url)}
-                    title={failed ? `This ${shot.kind === 'audio' ? 'sound' : 'video'} plays on the Mac` : `${label} ${review.options[lo.index]!.id}, ${shot.title ?? (shot.kind === 'audio' ? 'sound' : 'video')}`}
+                    title={page ? 'HTML stays a snapshot here. The Mac and iPhone seal its scripts with network and WebRTC blocked.' : failed ? `This ${shot.kind === 'audio' ? 'sound' : 'video'} plays on the Mac` : `${label} ${review.options[lo.index]!.id}, ${shot.title ?? (shot.kind === 'audio' ? 'sound' : 'video')}`}
                   >
                     {playback.loading === k ? <span className="spinner" /> : failed ? <Icon.Server /> : playing ? <Icon.StopFill /> : shot.kind === 'audio' ? <Icon.Note /> : <Icon.Play />}
                     {label}

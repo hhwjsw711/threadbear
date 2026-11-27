@@ -18,6 +18,20 @@ use crate::review::aspect;
 
 /// A picture's width on the board.
 pub const PICTURE_WIDTH: f32 = 640.;
+/// HTML controls have their own band, clear of titles, captions and content.
+pub const HTML_HEADER: f32 = 144.;
+/// Desktop CSS viewport used by HTML thumbnails; scale it with the card.
+pub const HTML_DESIGN_WIDTH: f64 = 1024.;
+
+pub fn html_zoom(width: f32) -> f64 {
+    f64::from(width) / HTML_DESIGN_WIDTH
+}
+
+/// Fixed-size pill anchored to the picture, never the previous frame's viewport.
+pub fn html_control_rect(picture: Rect) -> Option<Rect> {
+    (picture.w >= 160. && picture.y >= 84.)
+        .then(|| Rect::new(picture.x, picture.y - 32., picture.w, 26.))
+}
 /// Between an option's last picture and its words.
 pub const GAP: f32 = 22.;
 /// Between one of an option's pictures and the next one's caption.
@@ -281,7 +295,17 @@ fn lay_option(
         };
         let caption = Rect::new(x, y, PICTURE_WIDTH, caption_h);
         let h = PICTURE_WIDTH / aspect(&shot.image) as f32;
-        let picture = Rect::new(x, caption.bottom(), PICTURE_WIDTH, h);
+        let picture = Rect::new(
+            x,
+            caption.bottom()
+                + if shot.page().is_some() {
+                    HTML_HEADER
+                } else {
+                    0.
+                },
+            PICTURE_WIDTH,
+            h,
+        );
         y = picture.bottom() + SHOT_GAP;
         shots.push(BoardShot {
             option: index,
@@ -1039,6 +1063,42 @@ mod tests {
     }
 
     #[test]
+    fn html_header_stays_clear_of_content_captions_and_titles_at_every_supported_scale() {
+        let mut page = shot(None, vec![]);
+        page.media = Some(ImageRef {
+            path: "/tmp/index.html".into(),
+            media_type: "text/html".into(),
+            width: None,
+            height: None,
+        });
+        let mut titled = page.clone();
+        titled.title = Some("A second HTML state".into());
+        let r = review(None, vec![option("A", None, vec![page, titled])]);
+        let laid = layout(&r, &Guess);
+        for scale in [0.25, 0.4, 0.6, 1., 1.4] {
+            let cam = Camera {
+                s: scale,
+                tx: 80.,
+                ty: 200.,
+            };
+            for shot in &laid.options[0].shots {
+                let picture = cam.rect(&shot.picture);
+                let header = html_control_rect(picture).unwrap();
+                assert_eq!(header.right(), picture.right());
+                assert_eq!(header.x, picture.x);
+                assert!(header.bottom() <= picture.y - 6.);
+                assert!(header.y >= cam.rect(&shot.caption).bottom());
+                assert!(header.y >= cam.rect(&laid.options[0].title).bottom());
+                // The slot depends only on this card; stale window widths,
+                // first-frame defaults, and resize frames cannot move it.
+                assert_eq!(html_control_rect(picture), Some(header));
+            }
+        }
+        assert!(html_control_rect(Rect::new(20., 100., 159., 100.)).is_none());
+        assert!(html_control_rect(Rect::new(20., 83., 210., 100.)).is_none());
+    }
+
+    #[test]
     fn options_sit_left_to_right_after_the_lead_without_overlapping() {
         let r = review(
             Some("Three ways to do it."),
@@ -1389,5 +1449,78 @@ mod tests {
         );
         let cut = cut_out_box(&m(1));
         assert!(cut[0] < 0.1 && cut[2] > 0.1);
+    }
+}
+
+/// One media card on a comparison board. Stopping discards its runtime;
+/// activating another always replaces the previous card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Playback {
+    #[default]
+    Static,
+    Playing(usize, usize),
+}
+
+impl Playback {
+    pub fn active(self) -> Option<(usize, usize)> {
+        match self {
+            Self::Static => None,
+            Self::Playing(o, s) => Some((o, s)),
+        }
+    }
+
+    pub fn activate(&mut self, at: (usize, usize)) {
+        *self = Self::Playing(at.0, at.1);
+    }
+    pub fn stop(&mut self) {
+        *self = Self::Static;
+    }
+}
+
+/// A native overlay must fit wholly below the tools and above the band.
+/// Reserve room above it for Stop so that the page cannot cover its exit.
+pub fn live_fits(r: Rect, view: (f32, f32)) -> bool {
+    [r.x, r.y, r.w, r.h, view.0, view.1]
+        .iter()
+        .all(|n| n.is_finite())
+        && r.x >= 0.
+        && r.y >= 86.
+        && r.right() <= view.0
+        && r.bottom() <= view.1
+        && r.w >= 160.
+        && r.h >= 64.
+}
+
+#[cfg(test)]
+mod playback_tests {
+    use super::*;
+
+    #[test]
+    fn activating_another_card_replaces_the_first_and_stop_returns_to_static() {
+        let mut state = Playback::default();
+        assert_eq!(state.active(), None);
+        state.activate((0, 1));
+        assert_eq!(state.active(), Some((0, 1)));
+        state.activate((2, 0));
+        assert_eq!(state.active(), Some((2, 0)));
+        state.stop();
+        assert_eq!(state, Playback::Static);
+    }
+
+    #[test]
+    fn live_bounds_reserve_tools_stop_and_band_and_reject_clipped_or_tiny_cards() {
+        let fits = Rect::new(10., 100., 300., 200.);
+        assert!(live_fits(fits, (800., 600.)));
+        for r in [
+            Rect::new(-1., 100., 300., 200.),
+            Rect::new(10., 85., 300., 200.),
+            Rect::new(501., 100., 300., 200.),
+            Rect::new(10., 401., 300., 200.),
+            Rect::new(10., 100., 159., 200.),
+            Rect::new(10., 100., 300., 63.),
+            Rect::new(f32::NAN, 100., 300., 200.),
+        ] {
+            assert!(!live_fits(r, (800., 600.)), "{r:?}");
+        }
     }
 }
