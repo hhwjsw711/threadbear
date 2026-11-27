@@ -469,7 +469,7 @@ impl Threadbear {
                     "fiveHour": l.five_hour.as_ref().map(|c| &c.text),
                     "why": l.unknown.as_ref().map(|u| &u.text),
                     "signInEnds": l.sign_in_ends,
-                    "reset": l.reset.as_ref().map(|r| json!({ "line": r.words, "tip": r.tip, "expiring": r.expiring, "busy": self.resetting.contains(&l.id) })),
+                    "reset": l.reset.as_ref().map(|r| json!({ "line": r.words, "tip": r.tip, "expiring": r.expiring, "button": r.action.label(), "busy": r.action.has_pending_state() && self.resetting.contains(&l.id) })),
                     "yearToken": l.year_token,
                     "findWork": rules::can_find_work(l),
                     "findingWork": self.usage.finding_work.contains(&l.id),
@@ -1488,6 +1488,7 @@ fn login_row(
     // a reset. It spins and takes no clicks until the runner answers; the
     // row's numbers change with the login the answer brings.
     let reset = login.reset.as_ref().map(|r| {
+        let action = r.action;
         let words = div()
             .min_w_0()
             .text_size(px(11.))
@@ -1508,7 +1509,7 @@ fn login_row(
                 .bg(p.divider),
             r.tip.clone(),
         );
-        let chip = if resetting {
+        let chip = if action.has_pending_state() && resetting {
             chip.opacity(0.7)
                 .child(
                     h_flex()
@@ -1526,9 +1527,9 @@ fn login_row(
             let account = login.id.clone();
             chip.cursor_pointer()
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.use_reset(account.clone(), cx)
+                    this.take_reset_offer(action, None, account.clone(), cx)
                 }))
-                .child("Use a reset")
+                .child(action.label())
                 .into_any_element()
         };
         h_flex()
@@ -2419,17 +2420,16 @@ pub(crate) fn automation(
     // Use a reset on that login's row, as a click does: only where the row
     // offers one.
     if let Some(account) = cmd["useReset"].as_str() {
-        let offered = {
-            let t = app.read(cx);
-            t.logins
-                .account(account)
-                .is_some_and(|a| threadbear_core::reset_hint::hint(a, now_ms()).is_some())
-        };
-        if !offered {
+        let offer = app
+            .read(cx)
+            .logins
+            .account(account)
+            .and_then(|a| threadbear_core::reset_hint::offer(a, now_ms()));
+        let Some((action, _)) = offer else {
             return Err(format!("{account}'s row offers no reset"));
-        }
+        };
         let account = account.to_owned();
-        app.update(cx, |t, cx| t.use_reset(account, cx));
+        app.update(cx, |t, cx| t.take_reset_offer(action, None, account, cx));
         return Ok(json!("ok"));
     }
     // Opens or shuts a login's row in every pool it's in, as a click does.

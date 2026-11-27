@@ -185,6 +185,18 @@ Feature: The Usage panel and its honey pot
     And the "model" menu has no line ending "[2 resets left: Use a reset]"
 
   @usage.resets @swift-pending
+  Scenario: A Claude reset opens Claude Usage for confirmation
+    When "claude-main" is out of room with 2 resets left
+    And I click the honey pot in the activity bar
+    Then in the "Claude" card, "alex@example.com" offers "Open Claude Usage"
+    When a usage thread "Claude work" uses "claude-main" in pool "claude"
+    And I open the thread "Claude work"
+    Then the "model" menu has a line ending "[2 resets left: Open Claude Usage]"
+    When I open Claude Usage for "alex@example.com"
+    Then "https://claude.ai/settings/usage" was opened through the app
+    And in the "Claude" card, "alex@example.com" offers "Open Claude Usage"
+
+  @usage.resets @swift-pending
   Scenario: A reset about to expire on a login that has used its week says so, and one with room to spare doesn't
     When "codex-main" has a reset expiring in 2 days
     And I click the honey pot in the activity bar

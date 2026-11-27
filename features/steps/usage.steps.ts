@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import type { Dump } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 
-type Login = { name: string; reset?: { line: string; tip: string; expiring: boolean; busy: boolean } | null; open?: boolean; provider?: string | null; status?: string | null; logo?: string; line?: string | null; ring?: number | null; why?: string | null; signInEnds?: string | null; yearToken?: string | null; tokenButton?: boolean; findWork?: boolean; findingWork?: boolean; meters: { title: string; left: string; verdict?: string | null }[]; more: string[] };
+type Login = { name: string; reset?: { line: string; button?: string; tip: string; expiring: boolean; busy: boolean } | null; open?: boolean; provider?: string | null; status?: string | null; logo?: string; line?: string | null; ring?: number | null; why?: string | null; signInEnds?: string | null; yearToken?: string | null; tokenButton?: boolean; findWork?: boolean; findingWork?: boolean; meters: { title: string; left: string; verdict?: string | null }[]; more: string[] };
 type Usage = {
   shown: boolean;
   icon: { percent: number; login?: string | null; tip: string; dot?: boolean };
@@ -274,6 +274,10 @@ Then('in the {string} card, {string} offers a reset, saying {string}', async fun
   await this.until(`${name} in ${card} offering a reset`, (d) => !!login(d, card, name)?.reset?.line.startsWith(words) && /^Restores /.test(login(d, card, name)?.reset?.tip ?? ''));
 });
 
+Then('in the {string} card, {string} offers {string}', async function (this: ThreadbearWorld, card: string, name: string, button: string) {
+  await this.until(`${name} in ${card} offering ${button}`, (d) => login(d, card, name)?.reset?.button === button);
+});
+
 Then('in the {string} card, {string} offers no reset', async function (this: ThreadbearWorld, card: string, name: string) {
   await this.until(`${name} in ${card} offering no reset`, (d) => !!login(d, card, name) && !login(d, card, name)?.reset);
 });
@@ -282,3 +286,7 @@ When('I use a reset on {string} in the Usage panel', async function (this: Threa
   await this.app.do({ cmd: 'usage', useReset: account });
 });
 
+
+When('I open Claude Usage for {string}', async function (this: ThreadbearWorld, email: string) {
+  await this.app.do({ cmd: 'click', tipPrefix: `Opens Claude Usage. Check you're signed in as ${email},` });
+});

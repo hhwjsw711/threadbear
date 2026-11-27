@@ -890,9 +890,12 @@ thread to another login when the one it's on runs out of room.
   and only the limit box of a stopped thread would have said so. So the
   runner works out `resetHint` on each login (`runner/src/reset-hint.ts`,
   the one place the rule lives) and every client draws it where Mike looks
-  anyway: the Usage panel's row with Use a reset, the Usage button's dot
-  and tooltip, the login's line in the composer's login lists, and `tb
-  accounts`. A login gets one when it has a reset left (one that hasn't
+  anyway: the Usage panel's row, the Usage button's dot and tooltip, the
+  login's line in the composer's login lists, and `tb accounts`. The Mac
+  offers Use a reset for Codex and Open Claude Usage for Claude. The
+  latter opens Claude's Usage settings in the browser, where the user
+  checks the login and confirms Reset for free. `accounts.useReset`
+  is for Codex. A login gets a hint when it has a reset left (one that hasn't
   expired) and isn't signed out or plan ended, and either it's out of room
   (`why: "out"`: blocked, or under 1% in its 5-hour or weekly window) or the
   soonest reset expires within 3 days while its week is under 70% left

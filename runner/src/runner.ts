@@ -1166,7 +1166,12 @@ export class Runner {
     const account = this.safeAccounts().find((a) => a.id === accountId);
     if (!account) throw new RpcError(ErrorCode.accountNotFound, `No login ${accountId} on this runner.`);
     const adapter = this.adapters[account.provider];
-    if (!adapter?.useReset) throw new RpcError(ErrorCode.badParams, 'Only Codex logins have usage resets.');
+    if (!adapter?.useReset) {
+      const message = account.provider === 'claude'
+        ? 'To use a Claude reset, open https://claude.ai/settings/usage and choose Reset for free.'
+        : 'Threadbear can only redeem Codex resets here.';
+      throw new RpcError(ErrorCode.badParams, message);
+    }
     // A second click while the first is out would spend a second reset.
     if (this.resetting.has(accountId)) throw new RpcError(ErrorCode.busy, 'A reset for this login is already on its way.');
     this.resetting.add(accountId);

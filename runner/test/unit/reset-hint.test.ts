@@ -54,9 +54,11 @@ test('no hint with no resets, an expired one, room unknown, or a login nothing c
   assert.equal(resetHint(codex(usage([weekly(0)], { blocked: true, resets: two() }), { planEnded: true }), T0), undefined, 'plan ended');
 });
 
-test("a Claude login has no resets, so never a hint, however out it is", () => {
+test('a Claude login gets a hint when a reading includes a reset count', () => {
   const claude: Account = { id: 'claude-main', provider: 'claude', title: 'alex@example.net', configDir: '/tmp/claude', usage: usage([weekly(0)], { blocked: true }) };
   assert.equal(resetHint(claude, T0), undefined);
+  claude.usage = usage([weekly(0)], { blocked: true, resets: two() });
+  assert.deepEqual(resetHint(claude, T0), { why: 'out', available: 2, nextExpiresAt: at(20 * DAY) });
 });
 
 test('the hint in words, for tb and list_accounts', () => {

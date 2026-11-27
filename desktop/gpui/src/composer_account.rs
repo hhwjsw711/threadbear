@@ -249,9 +249,11 @@ pub(crate) fn reset_line(
     account: String,
     cx: &App,
 ) -> AnyElement {
-    let busy = app
-        .upgrade()
-        .is_some_and(|a| a.read(cx).resetting_login(runner.as_deref(), &account));
+    let action = offer.action;
+    let busy = action.has_pending_state()
+        && app
+            .upgrade()
+            .is_some_and(|a| a.read(cx).resetting_login(runner.as_deref(), &account));
     let chip = crate::highlights::tipped(
         div()
             .id(SharedString::from(format!("{key}-use-reset")))
@@ -286,10 +288,10 @@ pub(crate) fn reset_line(
                 // Only the button: the row under it picks the login.
                 cx.stop_propagation();
                 let (runner, account) = (runner.clone(), account.clone());
-                app.update(cx, |a, cx| a.use_reset_on(runner, account, cx))
+                app.update(cx, |a, cx| a.take_reset_offer(action, runner, account, cx))
                     .ok();
             })
-            .child("Use a reset")
+            .child(action.label())
             .into_any_element()
     };
     h_flex()

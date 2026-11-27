@@ -1794,14 +1794,14 @@ When a login with a reset left is out of room, or its soonest reset
 expires within 3 days while it has used more than 30% of its week (so
 using it still buys something back), Threadbear says so quietly where you
 already look: the Usage button gets a dot and its tooltip names the login,
-the login's row in Usage says how many resets it has and offers Use a
-reset (even when the row is shut), and the login lists in the message
-box (the login picker, and the Login line in the model menu) say "2
-resets left" beside it with Use a reset. It's one subscription however
-many machines it's signed in on, so the count is the newest from any of
-them, and a reset used on one counts on all. No notification and no new
-thread; the hint goes once you use the reset, the login's room comes
-back, or the reset expires. `tb accounts` and `list_accounts` say it too.
+the login's row in Usage says how many resets it has, even when the row
+is shut. You can also see the count in the message box's login lists.
+For Codex, Use a reset redeems it in Threadbear. For Claude, Open Claude
+Usage opens Claude's settings in your browser. Check which login is
+active there, then choose Reset for free. A Codex subscription shares one
+count across machines, so a reset used on one counts on all. The hint goes
+when the runner sees the login has room again, the count drops to zero, or
+the next reset expires. `tb accounts` and `list_accounts` say it too.
 A Codex login that reads as used up is asked for its limits again every
 10 minutes (free, no turn), so a reset you use in Codex itself shows up
 here within minutes and that login is used again.

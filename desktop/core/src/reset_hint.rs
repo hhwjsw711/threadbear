@@ -4,27 +4,58 @@
 // thread's limit box offered one. The runner decides when a login gets a
 // hint (runner/src/reset-hint.ts); this only words it for the Usage row, the
 // Usage button's tooltip and the composer's login lists. Nothing here spends
-// a reset: only Mike's click on Use a reset does (`accounts.useReset`).
+// a reset: Codex redeems it through the runner, Claude in its own settings.
 use crate::inbox::parse_ms;
 use crate::logins::{short_account_name, sign_in_label, Account, ResetHint};
 use crate::new_thread::reset_words;
 use chrono::TimeZone;
 
+pub const CLAUDE_USAGE_URL: &str = "https://claude.ai/settings/usage";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetAction {
+    RedeemCodex,
+    OpenClaudeUsage,
+}
+
+impl ResetAction {
+    fn for_account(account: &Account) -> Option<Self> {
+        match account.provider_id() {
+            "codex" => Some(Self::RedeemCodex),
+            "claude" => Some(Self::OpenClaudeUsage),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RedeemCodex => "Use a reset",
+            Self::OpenClaudeUsage => "Open Claude Usage",
+        }
+    }
+
+    pub fn has_pending_state(self) -> bool {
+        self == Self::RedeemCodex
+    }
+}
+
 /// The login's hint, unless it can't be counted on any more: none left, the
 /// soonest reset expired since the runner said (another runner's row that's
 /// gone quiet), or a login nothing runs on.
-pub fn hint(account: &Account, now: i64) -> Option<&ResetHint> {
+pub fn offer(account: &Account, now: i64) -> Option<(ResetAction, &ResetHint)> {
     if account.signed_out || account.plan_ended {
         return None;
     }
-    account.reset_hint.as_ref().filter(|h| {
+    let action = ResetAction::for_account(account)?;
+    let hint = account.reset_hint.as_ref().filter(|h| {
         h.available > 0
             && !h
                 .next_expires_at
                 .as_deref()
                 .and_then(parse_ms)
                 .is_some_and(|at| at <= now)
-    })
+    })?;
+    Some((action, hint))
 }
 
 /// Whether the runner said it's about to expire rather than that the login
@@ -63,12 +94,19 @@ pub fn row_words<Tz: TimeZone>(hint: &ResetHint, now: i64, zone: &Tz) -> String 
 /// left, the next expires 9 Dec." With one about to expire, that it's lost
 /// unused then.
 pub fn use_tip<Tz: TimeZone>(
+    action: ResetAction,
     account: &Account,
     accounts: &[Account],
     hint: &ResetHint,
     now: i64,
     zone: &Tz,
 ) -> String {
+    if action == ResetAction::OpenClaudeUsage {
+        return format!(
+            "Opens Claude Usage. Check you're signed in as {}, then choose Reset for free.",
+            account.name()
+        );
+    }
     let name = short_account_name(&account.id, accounts);
     let when = hint
         .next_expires_at
@@ -98,7 +136,7 @@ pub fn icon_lines<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) -> Ve
     accounts
         .iter()
         .filter_map(|a| {
-            let h = hint(a, now)?;
+            let (_, h) = offer(a, now)?;
             let who = sign_in_label(a);
             let when = h
                 .next_expires_at
@@ -119,7 +157,7 @@ pub fn icon_lines<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) -> Ve
 /// Whether any login has a hint: the Usage button's dot, as for a sign-in
 /// that's ending.
 pub fn any(accounts: &[Account], now: i64) -> bool {
-    accounts.iter().any(|a| hint(a, now).is_some())
+    accounts.iter().any(|a| offer(a, now).is_some())
 }
 
 #[cfg(test)]
@@ -151,7 +189,7 @@ mod tests {
             "alex@example.com",
             json!({ "why": "out", "available": 2, "nextExpiresAt": "2026-12-09T01:00:00.000Z" }),
         );
-        assert_eq!(hint(&out, now()).map(|h| h.available), Some(2));
+        assert_eq!(offer(&out, now()).map(|(_, h)| h.available), Some(2));
         assert!(any(std::slice::from_ref(&out), now()));
         let gone = codex(
             "codex-1",
@@ -159,7 +197,7 @@ mod tests {
             json!({ "why": "out", "available": 2, "nextExpiresAt": "2026-11-26T04:59:00.000Z" }),
         );
         assert!(
-            hint(&gone, now()).is_none(),
+            offer(&gone, now()).is_none(),
             "expired since the runner said"
         );
         let none = codex(
@@ -167,19 +205,19 @@ mod tests {
             "alex@example.com",
             json!({ "why": "out", "available": 0 }),
         );
-        assert!(hint(&none, now()).is_none());
+        assert!(offer(&none, now()).is_none());
         let mut signed_out = out;
         signed_out.signed_out = true;
-        assert!(hint(&signed_out, now()).is_none());
+        assert!(offer(&signed_out, now()).is_none());
         let bare = codex("codex-1", "alex@example.com", serde_json::Value::Null);
-        assert!(hint(&bare, now()).is_none(), "an older runner sends none");
+        assert!(offer(&bare, now()).is_none(), "an older runner sends none");
         let odd = codex(
             "codex-1",
             "alex@example.com",
             json!({ "why": 3, "available": "two" }),
         );
         assert!(
-            hint(&odd, now()).is_none(),
+            offer(&odd, now()).is_none(),
             "a field of the wrong type is dropped, not a failure"
         );
     }
@@ -191,7 +229,7 @@ mod tests {
             "alex@example.com",
             json!({ "why": "out", "available": 2, "nextExpiresAt": "2026-12-09T01:00:00.000Z" }),
         );
-        let h = hint(&out, now()).unwrap();
+        let (action, h) = offer(&out, now()).unwrap();
         assert_eq!(count_words(h), "2 resets left");
         assert_eq!(
             row_words(h, now(), &zone()),
@@ -202,7 +240,7 @@ mod tests {
             "sam@example.com",
             json!({ "why": "expiring", "available": 1, "nextExpiresAt": "2026-11-28T01:00:00.000Z" }),
         );
-        let s = hint(&soon, now()).unwrap();
+        let (soon_action, s) = offer(&soon, now()).unwrap();
         assert_eq!(count_words(s), "1 reset left");
         assert_eq!(
             row_words(s, now(), &zone()),
@@ -210,11 +248,11 @@ mod tests {
         );
         let accounts = vec![out.clone(), soon.clone()];
         assert_eq!(
-            use_tip(&out, &accounts, h, now(), &zone()),
+            use_tip(action, &out, &accounts, h, now(), &zone()),
             "Restores Codex alex's 5-hour and weekly limits now. 2 left, the next expires 9 Dec"
         );
         assert_eq!(
-            use_tip(&soon, &accounts, s, now(), &zone()),
+            use_tip(soon_action, &soon, &accounts, s, now(), &zone()),
             "Restores Codex sam's 5-hour and weekly limits now, rather than letting a reset expire unused Sat 9 am. 1 left"
         );
         assert_eq!(

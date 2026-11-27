@@ -1757,6 +1757,7 @@ pub struct LoginRow {
 /// rather than the login being out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResetLine {
+    pub action: crate::reset_hint::ResetAction,
     pub words: String,
     pub tip: String,
     pub expiring: bool,
@@ -1769,10 +1770,11 @@ pub fn reset_line<Tz: TimeZone>(
     now: i64,
     zone: &Tz,
 ) -> Option<ResetLine> {
-    let hint = crate::reset_hint::hint(account, now)?;
+    let (action, hint) = crate::reset_hint::offer(account, now)?;
     Some(ResetLine {
+        action,
         words: crate::reset_hint::row_words(hint, now, zone),
-        tip: crate::reset_hint::use_tip(account, accounts, hint, now, zone),
+        tip: crate::reset_hint::use_tip(action, account, accounts, hint, now, zone),
         expiring: crate::reset_hint::expiring(hint),
     })
 }

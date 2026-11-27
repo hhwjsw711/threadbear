@@ -1646,6 +1646,22 @@ impl Threadbear {
         json!({ "text": advice.text, "button": button, "logins": menu, "carryOn": carry_on, "reset": advice.reset.as_ref().map(|(id, tip)| json!({ "accountId": id, "tip": tip, "busy": self.resetting.contains(id) })) })
     }
 
+    pub(crate) fn take_reset_offer(
+        &mut self,
+        action: threadbear_core::reset_hint::ResetAction,
+        runner: Option<String>,
+        account: String,
+        cx: &mut Context<Self>,
+    ) {
+        use threadbear_core::reset_hint::{ResetAction, CLAUDE_USAGE_URL};
+        match action {
+            ResetAction::RedeemCodex => self.use_reset_on(runner, account, cx),
+            ResetAction::OpenClaudeUsage => {
+                crate::open_gate::open_web(CLAUDE_USAGE_URL, cx);
+            }
+        }
+    }
+
     /// The limit box's Use a reset (`accounts.useReset`): spends one of the
     /// Codex login's usage resets. The button spins and can't be pressed
     /// again until the runner answers; the runner's reading after the reset
