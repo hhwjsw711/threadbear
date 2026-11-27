@@ -1441,6 +1441,69 @@ test("OpenCode's edit, named one way while it runs and another when it asks, is 
   assert.equal(r.cards.length, 0);
 });
 
+test('card reviewer: paths through a link out of the folder, `..` or `~` go to Mike unreviewed', async () => {
+  const r = rig({ mode: 'auto' });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  fs.writeFileSync(path.join(r.root, 'secret'), 'x');
+  fs.symlinkSync(path.join(r.root, 'secret'), path.join(home, 'README.md'));
+  fs.mkdirSync(path.join(r.root, 'elsewhere'));
+  fs.symlinkSync(path.join(r.root, 'elsewhere'), path.join(home, 'sub'));
+  const cases: [string, Record<string, unknown>][] = [
+    ['a link out', { kind: 'read', locations: [{ path: `${home}/README.md` }], rawInput: { path: `${home}/README.md` } }],
+    ['a link then ..', { kind: 'read', locations: [{ path: `${home}/sub/../secret` }], rawInput: { path: `${home}/sub/../secret` } }],
+    ['a home path', { kind: 'read', rawInput: { path: '~/.ssh/id_rsa' } }],
+  ];
+  for (const [i, [why, call]] of cases.entries()) {
+    const before = r.cards.length;
+    const a = fakeRequest(r, s, { toolCallId: `o${i}`, ...call });
+    await until(() => a.length === 1);
+    assert.equal(r.cards.length, before + 1, why);
+    assert.equal(r.cards.at(-1)!.noReview, true, why);
+  }
+  assert.match(r.cards[0].title, /outside this thread's folder/);
+});
+
+test('a call that says something new while its card waits is not run on the old answer', async () => {
+  for (const back of [false, true]) {
+    let release!: () => void;
+    const r = rig({ mode: 'auto', answer: () => new Promise((res) => (release = () => res({ decision: 'allow' }))) });
+    const s = r.start();
+    await ready(r, s);
+    const file = path.join(fs.realpathSync(r.cwd), 'auth.ts');
+    // Going back to an earlier frame counts as new too.
+    if (back) frame(s, { toolCallId: 'w1', kind: 'edit', locations: [{ path: file }], rawInput: { path: file, content: 'evil' } });
+    const a = fakeRequest(r, s, { toolCallId: 'w1', kind: 'edit', locations: [{ path: file }], rawInput: { path: file, content: 'safe' } });
+    await until(() => r.cards.length === 1);
+    frame(s, { toolCallId: 'w1', kind: 'edit', locations: [{ path: file }], rawInput: { path: file, content: 'evil' } });
+    release();
+    await until(() => a.length === 1);
+    assert.ok(r.outputs.some((o) => o.kind === 'event' && o.event.type === 'system.note' && /changed while it waited/.test(o.event.text)), String(back));
+    assert.notDeepEqual(a[0], { outcome: { outcome: 'selected', optionId: 'once' } }, String(back));
+  }
+});
+
+test('an edit whose folder becomes a link out while its card waits is not run', async () => {
+  let release!: () => void;
+  const r = rig({ mode: 'auto', answer: () => new Promise((res) => (release = () => res({ decision: 'allow' }))) });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  fs.mkdirSync(path.join(home, 'notes'));
+  fs.mkdirSync(path.join(r.root, 'dotclaude'));
+  const file = path.join(home, 'notes', 'settings.json');
+  const a = fakeRequest(r, s, { toolCallId: 'p1', kind: 'edit', locations: [{ path: file }], rawInput: { path: file, content: '{}' } });
+  await until(() => r.cards.length === 1);
+  fs.rmSync(path.join(home, 'notes'), { recursive: true });
+  fs.symlinkSync(path.join(r.root, 'dotclaude'), path.join(home, 'notes'));
+  release();
+  await until(() => a.length === 1);
+  assert.ok(r.outputs.some((o) => o.kind === 'event' && o.event.type === 'system.note' && /changed while it waited/.test(o.event.text)));
+  assert.notDeepEqual(a[0], { outcome: { outcome: 'selected', optionId: 'once' } });
+  assert.ok(!fs.existsSync(path.join(r.root, 'dotclaude', 'settings.json')));
+});
+
 test('the saved edit rule never covers a file outside the thread\'s folder, by path or through a link', async () => {
   const r = agy({ deny: true });
   const s = r.start();

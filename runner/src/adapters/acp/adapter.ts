@@ -5,6 +5,7 @@
 // hook its args load: grok-guard.ts), and each request is answered from the
 // thread's permission mode at that moment. So Ask, Auto and Plan never run a
 // tool unguarded, and leaving Full takes effect at once, with no new process.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -443,7 +444,7 @@ export class AcpSession implements AgentSession {
   // can't wash out what an earlier one said (Codex's and Gemini's third
   // reviews, 20 Nov 2026). Kept for the session's life: a call can ask after
   // its turn.
-  private callFrames = new Map<string, { mcp: boolean; ids: Set<string>; names: Set<string>; acting: number; named: Map<string, number>; inputs: Record<string, unknown>[]; kinds: Set<string>; paths: Set<string>; diffs: Record<string, unknown>[]; otherContent: unknown[] }>();
+  private callFrames = new Map<string, { mcp: boolean; ids: Set<string>; names: Set<string>; acting: number; named: Map<string, number>; inputs: Record<string, unknown>[]; kinds: Set<string>; paths: Set<string>; diffs: Record<string, unknown>[]; otherContent: unknown[]; last?: string }>();
   private configOptions: ConfigOption[] = [];
   // The plugin whose hook must be reported running before the model does
   // anything in a turn (Grok's guard), and whether it has been this turn.
@@ -818,7 +819,14 @@ export class AcpSession implements AgentSession {
   // nearest part of its path that exists, links followed.
   private inFolder(f: string): boolean {
     const folder = realFolder(this.opts.cwd);
-    if (!folder || !path.isAbsolute(f) || f.split(/[\\/]/).includes('..')) return false;
+    const whole = this.diskPlace(f);
+    return Boolean(folder) && whole !== undefined && (whole === folder || whole.startsWith(folder + path.sep));
+  }
+
+  // Where a file is on the disk: its nearest part that exists with links
+  // followed, plus the rest. Undefined when that can't be said for certain.
+  private diskPlace(f: string): string | undefined {
+    if (!path.isAbsolute(f) || f.split(/[\\/]/).includes('..')) return undefined;
     let dir = f;
     let real: string | undefined;
     for (; ; dir = path.dirname(dir)) {
@@ -829,14 +837,13 @@ export class AcpSession implements AgentSession {
       // Gemini's seventh reviews, 20 Nov 2026).
       try {
         fs.lstatSync(dir);
-        return false;
+        return undefined;
       } catch {
         // Not there at all: a new file or folder, judged by its parent.
       }
     }
-    if (real === undefined) return false;
-    const whole = path.join(real, path.relative(dir, f));
-    return whole === folder || whole.startsWith(folder + path.sep);
+    if (real === undefined) return undefined;
+    return path.join(real, path.relative(dir, f));
   }
 
   private noteFrame(u: unknown): void {
@@ -859,6 +866,9 @@ export class AcpSession implements AgentSession {
       (Array.isArray(u.locations) && u.locations.length > 0) ||
       (Array.isArray(u.content) && u.content.length > 0);
     if (acting) {
+      // What its latest frame says, as a digest: a call that goes back to an
+      // earlier frame while its card waits still reads as changed (frameState).
+      f.last = crypto.createHash('sha256').update(JSON.stringify([u.rawInput ?? null, u.kind ?? null, id ?? null, u.name ?? null, u.locations ?? null, Array.isArray(u.content) ? u.content : null])).digest('hex');
       f.acting++;
       if (id) f.named.set(id, (f.named.get(id) ?? 0) + 1);
     }
@@ -1175,7 +1185,14 @@ export class AcpSession implements AgentSession {
     // binary/odd patch header; an empty command or unknown cwd; an unnamed or
     // conflicting MCP tool; or contradictory frames) goes straight to Mike.
     const rawPaths = edits && kind === 'edit' ? new Set(requestPaths({ rawInput: input }).map((f) => absolutePath(f, this.opts.cwd))) : undefined;
+    // Files outside the folder once links are followed, and paths spelled
+    // with `..`, `~` or relative to the agent's own folder: the reviewer
+    // reads the spelling, not where it lands (a link in the folder to ~/.ssh,
+    // `link/..`), so those are Mike's (Codex's and Gemini's reviews, 27 Nov).
+    const reachesOut = paths.some((f) => !this.inFolder(f));
     const opaque =
+      relative ||
+      reachesOut ||
       !consistent ||
       Object.hasOwn(input, 'arguments as sent') ||
       hasOddPatchHeader(input) ||
@@ -1199,6 +1216,13 @@ export class AcpSession implements AgentSession {
     const editRule = edits && !code && !outside && paths.length > 0;
     // The card names the call's row, so the row comes first.
     this.emit(this.normalizer.showCall(seen.id));
+    // What the call said and where its files are, to check again once it's
+    // answered: an allow is for this, not for what it says or where its files
+    // land by then (Codex's reviews, 27 Nov 2026: a frame during the card
+    // reviewer's look; a parent folder swapped for a link to ~/.claude).
+    const asked = frames ? frameState(frames) : '';
+    const placesNow = () => JSON.stringify([paths.map((f) => this.diskPlace(f) ?? null), this.runsAsCode(paths), paths.every((f) => this.inFolder(f))]);
+    const placed = paths.length ? placesNow() : '';
     const pending: Pending = { abort: new AbortController(), options };
     this.pending.set(id, pending);
     let a: ToolApprovalAnswer;
@@ -1210,7 +1234,7 @@ export class AcpSession implements AgentSession {
         // As an MCP tool's, for anything else: a card whose arguments say
         // what it does can only be allowed where all of them are shown.
         name: shellCard ? 'shell' : edits ? 'apply_patch' : `mcp__acp__${external ? 'mcp' : (kind ?? 'tool')}`,
-        title: code ? `${title} (${codeWriteNote(code)})` : outside ? `${title} (outside this thread's folder)` : title,
+        title: `${title}${code ? ` (${codeWriteNote(code)})` : ''}${outside || reachesOut ? " (outside this thread's folder)" : ''}`,
         input: card.input,
         wholeInput: shellCard ? shown : fullData!,
         ...(opaque ? { noReview: true as const } : {}),
@@ -1225,6 +1249,10 @@ export class AcpSession implements AgentSession {
     if (!this.pending.delete(id)) return;
     if (a.decision === 'expired') return void this.proc.respond(id, { outcome: { outcome: 'cancelled' } });
     const allow = a.decision === 'allow' || a.decision === 'allowAlways';
+    if (allow && ((frames && frameState(frames) !== asked) || (paths.length && placesNow() !== placed))) {
+      this.sink.output({ kind: 'event', event: { type: 'system.note', text: `"${firstLineSafely(title, 80, '…')}" changed while it waited for an answer (what it says, or where its files are), so it wasn't run. The agent can ask again.` } });
+      return this.answer(id, options, false, seen.id);
+    }
     // A link pointed somewhere else while the card waited: what was allowed
     // isn't where it would run now (Codex's second look, 10 Nov).
     if (allow && !external && kind === 'execute' && (named.length ? JSON.stringify(resolve()) !== JSON.stringify(places) : realFolder(this.opts.cwd) !== baseReal)) {
@@ -1529,6 +1557,13 @@ export class AcpSession implements AgentSession {
     this.resolveExit();
     this.sink.exited(error);
   }
+}
+
+// What a call's frames have said, to tell whether it changed while its card
+// waited: arguments, content, kinds, names, tools, files, and its latest frame.
+function frameState(f: { inputs: Record<string, unknown>[]; diffs: Record<string, unknown>[]; otherContent: unknown[]; last?: string; kinds: Set<string>; paths: Set<string>; ids: Set<string>; names: Set<string>; mcp: boolean }): string {
+  const distinct = (xs: unknown[]) => [...new Set(xs.map((x) => JSON.stringify(x)))];
+  return JSON.stringify([distinct(f.inputs), distinct(f.diffs), distinct(f.otherContent), f.last ?? null, [...f.kinds], [...f.paths], [...f.ids], [...f.names], f.mcp]);
 }
 
 // The MCP tool a frame says it is, as <server>__<tool>.
