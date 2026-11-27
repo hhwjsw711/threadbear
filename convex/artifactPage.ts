@@ -20,9 +20,11 @@ const reportLink = `(() => {
   const externalUrl = ${externalUrl};
   document.addEventListener('click', (event) => {
     if (!event.isTrusted || event.defaultPrevented || event.button !== 0) return;
+    const xlink = 'http://www.w3.org/1999/xlink';
     const anchor = event.composedPath().find((element) =>
-      element instanceof HTMLAnchorElement || element instanceof HTMLAreaElement || element instanceof SVGAElement);
-    const href = externalUrl(anchor?.getAttribute('href') ?? anchor?.getAttributeNS('http://www.w3.org/1999/xlink', 'href'));
+      (element instanceof HTMLAnchorElement || element instanceof HTMLAreaElement || element instanceof SVGAElement)
+      && (element.hasAttribute('href') || element.hasAttributeNS(xlink, 'href')));
+    const href = externalUrl(anchor?.getAttribute('href') ?? anchor?.getAttributeNS(xlink, 'href'));
     if (!href || anchor.hasAttribute('download')) return;
     event.preventDefault();
     window.parent.postMessage({ artifactLink: href }, '*');
