@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { AcpAdapter, AcpSession, ANTIGRAVITY_QUOTA_GRACE_MS, ANTIGRAVITY_QUOTA_TOOL_GRACE_MS, EDIT_RULE, LIMITS_POLL_MS, modelChoices } from '../../src/adapters/acp/adapter.ts';
+import { AcpAdapter, AcpSession, ANTIGRAVITY_QUOTA_GRACE_MS, ANTIGRAVITY_QUOTA_TOOL_GRACE_MS, EDIT_RULE, EXECUTOR_DIAGNOSTIC_GRACE_MS, LIMITS_POLL_MS, modelChoices } from '../../src/adapters/acp/adapter.ts';
 import { ACP_AGENTS, acpAccounts, antigravityInput, folderPlugins, isCursorBinary, isGoogleSigned, opencodeEnv } from '../../src/adapters/acp/agents.ts';
 import type { AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
@@ -2165,6 +2165,7 @@ for (const [scenario, description] of [
   ['quota_existing_edit_no_status', 'is announced without a status'],
   ['quota_existing_edit_no_path', 'begins running before its path arrives'],
   ['quota_existing_edit_other', 'first reports a generic tool kind'],
+  ['quota_existing_edit_header', 'has a path-like line in its Markdown content'],
 ] as const) {
   test(`Antigravity: the new wire ID for an earlier approved edit ${description} without clearing quota`, { timeout: 5000 }, async () => {
     const r = agy({ mode: 'full' });
@@ -2173,11 +2174,20 @@ for (const [scenario, description] of [
   });
 }
 
-test('Antigravity: a distinct edit can recover after an earlier approval was recognized late', { timeout: 5000 }, async () => {
-  const r = agy({ mode: 'full' });
-  await turn(r, r.start(), 'quota_existing_edit_recovers');
-  assert.equal(results(r.outputs)[0]?.outcome, 'completed');
-});
+for (const [scenario, description] of [
+  ['quota_existing_edit_recovers', 'after an earlier approval was recognized late'],
+  ['quota_existing_edit_partial', 'after an earlier edit completed on only part of its approved file set'],
+  ['quota_existing_edit_partial_failed', 'after an earlier partial edit went straight from pending to failed'],
+  ['quota_existing_edit_relative', 'after its relative path is confirmed by an absolute location'],
+  ['quota_existing_edit_relative_again', 'when a relative path repeats after its absolute location'],
+  ['quota_existing_edit_patch', 'when patch arguments are the only source of file paths'],
+] as const) {
+  test(`Antigravity: a distinct edit can recover ${description}`, { timeout: 5000 }, async () => {
+    const r = agy({ mode: 'full' });
+    await turn(r, r.start(), scenario);
+    assert.equal(results(r.outputs)[0]?.outcome, 'completed');
+  });
+}
 
 test('Antigravity: a cancellation from the harness after quota still reports a usage limit', { timeout: 5000 }, async () => {
   const r = agy({ mode: 'full' });
@@ -2201,14 +2211,20 @@ test('Antigravity: an executor 429 split across frames still ends the session if
   assert.ok(!(error instanceof SessionUsageLimitError));
 });
 
-test('Antigravity: a split executor billing error retains its HTTP 402 classification', { timeout: 5000 }, async () => {
-  const r = agy({ mode: 'full' });
-  r.start().send({ id: 'executor-402', text: 'executor_402', images: [] });
-  await r.exited();
-  const error = r.exitError();
-  assert.ok(error instanceof SessionUsageLimitError);
-  assert.match(error.message, /is out of Gemini usage.*Billing error/i);
-});
+for (const [scenario, description] of [
+  ['executor_402', 'split across tool updates'],
+  ['message_402', 'sent as an assistant message'],
+  ['message_402_split', 'split across assistant message chunks'],
+] as const) {
+  test(`Antigravity: an executor billing error ${description} retains its HTTP 402 classification`, { timeout: 5000 }, async () => {
+    const r = agy({ mode: 'full' });
+    r.start().send({ id: 'executor-402', text: scenario, images: [] });
+    await r.exited();
+    const error = r.exitError();
+    assert.ok(error instanceof SessionUsageLimitError);
+    assert.match(error.message, /is out of Gemini usage.*Billing error/i);
+  });
+}
 
 test('Antigravity: a fatal harness error followed by a separate failed status ends the session', { timeout: 5000 }, async () => {
   const r = agy({ mode: 'full' });
@@ -2238,6 +2254,21 @@ test('Antigravity: coordinator refusals preserve quota diagnostics and restore t
   fakeRequest(r, s, waiting);
   t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
   assert.match(r.exitError()?.message ?? '', /is out of Gemini usage.*Individual quota reached/i);
+});
+
+test('Antigravity: a bare executor banner still ends an unanswered prompt', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const banner = Promise.withResolvers<void>();
+  const r = agy({ mode: 'full', onOutput: (out) => {
+    if (out.kind === 'delta') banner.resolve();
+  } });
+  r.start().send({ id: 'bare-executor-error', text: 'message_bare_executor_error', images: [] });
+  await banner.promise;
+  t.mock.timers.tick(EXECUTOR_DIAGNOSTIC_GRACE_MS - 1);
+  assert.equal(r.exitError(), null);
+  t.mock.timers.tick(1);
+  await r.exited();
+  assert.match(r.exitError()?.message ?? '', /Agent execution terminated due to error/);
 });
 
 for (const status of ['success', 'failure', 'retry']) {

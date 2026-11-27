@@ -480,10 +480,20 @@ async function agyPrompt(id, p, s, word, rest) {
     send({ id, result: { stopReason: 'end_turn' } });
     return;
   }
+  else if (word.startsWith('message_402') || word === 'message_bare_executor_error') {
+    const banner = 'Agent execution terminated due to error.';
+    const detail = ' ("agent executor error: Error 402: Billing error")';
+    const chunks = word === 'message_402_split' ? [banner, detail] : [word === 'message_402' ? banner + detail : banner];
+    for (const text of chunks) update(p.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+    return;
+  }
   else if (word.startsWith('quota_') || ['rate_limit', 'retry_delay', 'executor_429', 'executor_402', 'split_harness'].includes(word)) {
     const askQuestion = () => ask('elicitation/create', { mode: 'form', sessionId: p.sessionId, message: 'Finish the test prompt?' });
     const allow = [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }];
     const edit = { kind: 'edit', title: 'Edit before quota', locations: [{ path: path.join(where, 'old.txt') }] };
+    const partialEdit = word === 'quota_existing_edit_partial' || word === 'quota_existing_edit_partial_failed';
+    if (partialEdit) edit.locations.push({ path: path.join(where, 'other.txt') });
+    if (word === 'quota_existing_edit_header') edit.rawInput = { file_path: edit.locations[0].path, content: '# Doc\n--- /example/other.md\n' };
     const oldEdit = word.startsWith('quota_existing_edit')
       ? ask('session/request_permission', { sessionId: p.sessionId, toolCall: { ...edit, toolCallId: 'old-edit-approval', status: 'pending' }, options: allow })
       : undefined;
@@ -530,6 +540,22 @@ async function agyPrompt(id, p, s, word, rest) {
     if (oldEdit) {
       const approved = await oldEdit;
       if (approved.outcome?.outcome === 'selected') {
+        if (word === 'quota_existing_edit_relative' || word === 'quota_existing_edit_relative_again' || word === 'quota_existing_edit_patch') {
+          if (word === 'quota_existing_edit_patch') {
+            update(p.sessionId, { sessionUpdate: 'tool_call', kind: 'edit', toolCallId: 'next-edit', status: 'completed',
+              rawInput: { patchText: `*** Begin Patch\n*** Update File: ${path.join(where, 'new.txt')}\n@@\n-a\n+b\n*** End Patch` } });
+            return send({ id, result: { stopReason: 'end_turn' } });
+          }
+          update(p.sessionId, { sessionUpdate: 'tool_call', kind: 'edit', toolCallId: 'next-edit', rawInput: { file_path: 'new.txt' } });
+          const locations = [{ path: path.join(where, 'new.txt') }];
+          if (word === 'quota_existing_edit_relative_again') {
+            update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'next-edit', status: 'in_progress', locations });
+            update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'next-edit', status: 'completed', rawInput: { file_path: 'new.txt' } });
+          } else {
+            update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'next-edit', status: 'completed', locations });
+          }
+          return send({ id, result: { stopReason: 'end_turn' } });
+        }
         const wire = { toolCallId: 'old-edit-running' };
         const first = {
           quota_existing_edit_empty: { ...wire, rawInput: {} },
@@ -537,12 +563,23 @@ async function agyPrompt(id, p, s, word, rest) {
           quota_existing_edit_no_path: { ...wire, kind: 'edit', status: 'in_progress' },
           quota_existing_edit_other: { ...wire, kind: 'other', status: 'in_progress' },
           quota_existing_edit_recovers: { ...wire, kind: 'edit', status: 'in_progress' },
+          quota_existing_edit_header: { ...edit, ...wire },
+          quota_existing_edit_partial: { ...wire, kind: 'edit', status: 'in_progress', locations: edit.locations.slice(0, 1) },
+          quota_existing_edit_partial_failed: { ...wire, kind: 'edit', status: 'pending', locations: edit.locations.slice(0, 1) },
         }[word];
         if (first) update(p.sessionId, { sessionUpdate: 'tool_call', ...first });
-        const progress = word === 'quota_existing_edit_empty' ? { rawInput: { file_path: edit.locations[0].path } } : edit;
-        update(p.sessionId, { sessionUpdate: first ? 'tool_call_update' : 'tool_call', ...progress, ...wire, status: 'in_progress' });
-        update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'old-edit-running', status: 'completed' });
-        if (word === 'quota_existing_edit_recovers') {
+        const progress = {
+          quota_existing_edit_empty: { rawInput: { file_path: edit.locations[0].path } },
+          quota_existing_edit_partial: { locations: edit.locations.slice(0, 1) },
+          quota_existing_edit_header: { locations: edit.locations },
+        }[word] ?? edit;
+        if (word === 'quota_existing_edit_partial_failed') {
+          update(p.sessionId, { sessionUpdate: 'tool_call_update', ...wire, status: 'failed' });
+        } else {
+          update(p.sessionId, { sessionUpdate: first ? 'tool_call_update' : 'tool_call', ...progress, ...wire, status: 'in_progress' });
+          update(p.sessionId, { sessionUpdate: 'tool_call_update', ...wire, status: 'completed' });
+        }
+        if (word === 'quota_existing_edit_recovers' || partialEdit) {
           update(p.sessionId, { sessionUpdate: 'tool_call', ...edit, toolCallId: 'next-edit', status: 'in_progress' });
           update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'next-edit', status: 'completed' });
         }

@@ -407,6 +407,9 @@ export const ANTIGRAVITY_QUOTA_GRACE_MS = 30_000;
 // Give a tool that was already running time to finish, with a ceiling if
 // the executor died and will never send another update for it.
 export const ANTIGRAVITY_QUOTA_TOOL_GRACE_MS = 30 * 60_000;
+// The executor can send its banner in one chunk and its HTTP error in the next.
+export const EXECUTOR_DIAGNOSTIC_GRACE_MS = 5_000;
+const EXECUTOR_BANNER = /^Agent execution terminated due to error/i;
 const ANTIGRAVITY_EXECUTOR_429 = /^Agent execution terminated due to error\. \("agent executor error: Error 429\b/i;
 const ANTIGRAVITY_INDIVIDUAL_QUOTA = /^, Message: Individual quota reached\./i;
 const ANTIGRAVITY_EXHAUSTED_STATUS = /, Status: RESOURCE_EXHAUSTED\b/;
@@ -421,6 +424,7 @@ type Turn = {
   interrupted: boolean;
   dropped: string[];
   failure?: { message: string; httpStatus?: number };
+  executorDiagnosticTimer?: NodeJS.Timeout;
   dispatched?: boolean;
   quota?: { message: string; earlierTools: ReadonlySet<string>; deadline?: { kind: 'idle' | 'tools'; timer: NodeJS.Timeout } };
 };
@@ -520,7 +524,7 @@ export class AcpSession implements AgentSession {
     this.proc.onRequest = (id, method, params) => this.request(id, method, params);
     this.proc.onExit = (err) => {
       const turn = this.turn;
-      if (err && turn?.quota && !turn.interrupted) {
+      if (err && turn && (turn.quota || turn.executorDiagnosticTimer) && !turn.interrupted) {
         this.exited(new Error(this.failureFor(turn).error ?? err.message, { cause: err }));
       } else {
         this.exited(err);
@@ -782,11 +786,7 @@ export class AcpSession implements AgentSession {
         if (chunkText && this.chunkBuffer.length < 300) {
           this.chunkBuffer += chunkText;
           if (isFatalExecutionError(this.chunkBuffer)) {
-            const text = this.chunkBuffer;
-            if (this.turn) {
-              this.turn.failure = laterFailure(this.turn.failure, { message: text });
-            }
-            this.failFatal(text);
+            this.failFatalDiagnostic(this.chunkBuffer, true);
             return;
           }
         }
@@ -794,7 +794,7 @@ export class AcpSession implements AgentSession {
         this.chunkBuffer = '';
         const text = textFromUpdate(u);
         if (text && isFatalExecutionError(text)) {
-          this.failFatalTool(text);
+          this.failFatalDiagnostic(text);
           return;
         }
       } else {
@@ -816,7 +816,7 @@ export class AcpSession implements AgentSession {
       if (prefix && ANTIGRAVITY_INDIVIDUAL_QUOTA.test(message.slice(prefix.length)) && ANTIGRAVITY_EXHAUSTED_STATUS.test(message)) {
         turn.quota ??= { message, earlierTools: new Set(this.callFrames.keys()) };
       } else if (!prefix || !ANTIGRAVITY_RATE_RETRY.test(message) || outOfUsage({ message })) {
-        this.failFatalTool(message);
+        this.failFatalDiagnostic(message);
       }
       this.syncQuotaDeadline();
       return true;
@@ -835,9 +835,20 @@ export class AcpSession implements AgentSession {
     return false;
   }
 
-  private failFatalTool(message: string): void {
+  private failFatalDiagnostic(message: string, streamed = false): void {
     const code = /(?:status|error)[:\s]+(\d{3})\b/i.exec(message)?.[1];
-    if (this.turn) this.turn.failure = laterFailure(this.turn.failure, { message, ...(code ? { httpStatus: Number(code) } : {}) });
+    const turn = this.turn;
+    if (turn) {
+      turn.failure = laterFailure(turn.failure, { message, ...(code ? { httpStatus: Number(code) } : {}) });
+      // An executor banner alone may be the start of a billing diagnostic.
+      // Keep its failure if the prompt replies, and cap the wait if it hangs.
+      if (streamed && !code && EXECUTOR_BANNER.test(message.trimStart()) && !message.trimEnd().endsWith('")')) {
+        turn.executorDiagnosticTimer ??= setTimeout(() => {
+          if (this.turn === turn && this.state === 'turn') this.failFatal(turn.failure?.message ?? message);
+        }, EXECUTOR_DIAGNOSTIC_GRACE_MS).unref();
+        return;
+      }
+    }
     this.failFatal(message);
   }
 
@@ -1596,6 +1607,7 @@ export class AcpSession implements AgentSession {
       if (!turn.interrupted) Object.assign(result, auth ? { error: (e as Error).message } : this.failureFor(turn, e));
     } finally {
       clearTimeout(turn.quota?.deadline?.timer);
+      clearTimeout(turn.executorDiagnosticTimer);
     }
     if (this.turn !== turn) return;
     turn.dispatched = dispatched;
@@ -1779,6 +1791,7 @@ export class AcpSession implements AgentSession {
     this.emit(this.normalizer.closeOpen('Interrupted'));
     this.suppressedToolIds.clear();
     clearTimeout(this.turn?.quota?.deadline?.timer);
+    clearTimeout(this.turn?.executorDiagnosticTimer);
     this.turn = undefined;
     if (this.ownFolder) removeQuietly(this.ownFolder);
     this.resolveExit();
