@@ -1,0 +1,128 @@
+{
+  "release": "2026-11-27",
+  "highlights": [
+    {
+      "kind": "added",
+      "title": "Design reviews on a board",
+      "text": "When an agent shows you options, they're laid out on a board you drag and zoom. The agent can circle and underline parts of its pictures, Next tours them in its order, and you can circle a part to talk about it.",
+      "media": {
+        "type": "clip",
+        "src": "review-board.mp4",
+        "poster": "review-board.webp",
+        "width": 1600,
+        "height": 968,
+        "alt": "A design review for a meetup poster opens as a board with three colour schemes. Next flies in on option A, where the agent's handwritten notes circle the sun and underline the title, then to a second page of its colours, then to B with a note that cyan may print dull, then C, and See everything zooms out to all three side by side."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "Model picker by pool and provider",
+      "text": "The model picker has your pools along the top, providers down the side and their models on the right. Logins outside any pool get a No pool tab.",
+      "media": {
+        "type": "clip",
+        "src": "model-picker.mp4",
+        "poster": "model-picker.webp",
+        "width": 1040,
+        "height": 1150,
+        "alt": "The model chip opens a picker with pools along the top. Clicking Personal, then Codex in the provider strip down the left, lists GPT-6.1-Sol and GPT-6-Luna, and picking GPT-6.1-Sol changes the chip to Personal, GPT-6.1-Sol."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Drag sidebar sections into order",
+      "text": "Drag a section's heading, like Running or Starred, up or down the sidebar. The order stays after a restart.",
+      "media": {
+        "type": "clip",
+        "src": "sidebar-sections.mp4",
+        "poster": "sidebar-sections.webp",
+        "width": 680,
+        "height": 1100,
+        "alt": "The sidebar shows the Inbox above Running. Dragging the Running heading folds the sections, Running moves above Inbox, and on dropping it the sections open again with Running's threads first."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "Code reviews come back as a checklist",
+      "text": "When another lab's review comes back, each finding is a row with its file and line. Once the agent answers, each says Fixed, Disputed or Left in place, with why.",
+      "media": {
+        "type": "image",
+        "src": "review-checklist.webp",
+        "width": 1040,
+        "height": 340,
+        "alt": "A review from Codex with 3 findings, each a row with a coloured severity dot, a file and line like upload.ts:48, and the finding. On the right they say Fixed, Disputed and Left for you, and the heading says 1 fixed, 1 disputed, 1 left for you, with Full reply."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Pick one next step",
+      "text": "When an agent's next steps are different directions, the done card lets you pick one, with the one it would pick marked Recommended.",
+      "media": {
+        "type": "image",
+        "src": "pick-one.webp",
+        "width": 1000,
+        "height": 500,
+        "alt": "A done card titled Done with Or pick one and three choices with round radio buttons: cache thumbnails on disk, marked Recommended with a star, load smaller thumbnails first, or leave it and look at the upload screen next."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Star each thread a schedule starts",
+      "text": "Tick Star each new thread in a schedule's editor, and every thread it starts waits in Starred.",
+      "media": {
+        "type": "image",
+        "src": "schedule-star.webp",
+        "width": 1040,
+        "height": 975,
+        "alt": "The Edit schedule dialog for Weekly dependency check, set to repeat every Monday at 10 am. Under Sends to, A new thread each time, the Star each new thread box is ticked."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Usage says when a reset would help",
+      "text": "A login that's out of room, or has a reset about to expire, offers Use a reset in Usage, with a dot on the honey pot. Nothing is spent until you click it.",
+      "media": {
+        "type": "clip",
+        "src": "usage-reset.mp4",
+        "poster": "usage-reset.webp",
+        "width": 580,
+        "height": 450,
+        "alt": "In the Usage panel, a Codex login is used up, with 2 resets left, the next expires 9 Dec, and a Use a reset button. Clicking it shows Using a reset, then the login's ring fills to 100%."
+      }
+    }
+  ],
+  "added": [
+    "Pick a model and effort when starting a thread on the website.",
+    "Turn on Use this Mac's Claude logins on another runner's card in Runners, and that runner can use them too.",
+    "Gemini and OpenCode models show their own effort levels in the model picker, and none for a model that has none.",
+    "A threadbear://new?text=... link opens a new thread with the words filled in, ready for you to send.",
+    "Titles, summaries and other small jobs can run on Codex too, and you can drag providers into the order they're tried in Settings > Models."
+  ],
+  "changed": [
+    "Threads scroll at up to 120 frames a second on ProMotion screens.",
+    "The Usage honey pot follows the open thread's pool.",
+    "The design review window opens filling the screen.",
+    "The done card on an archived thread offers Back to Inbox instead of Archive.",
+    "The sidebar's search box shows ⌘P, the quick way to search threads from anywhere.",
+    "The Connectors panel marks signed-in services with a green dot.",
+    "The old Mac app now says at every launch that it stops being updated on 2 December."
+  ],
+  "fixed": [
+    "The grey lines saying who archived, hibernated, woke or brought back a thread stay in sight under its reply, instead of folding away with its work.",
+    "A mouse wheel stops at the top and bottom of a thread instead of bouncing.",
+    "On Windows, moving the pointer out of the window clears hover buttons and tooltips.",
+    "On the iPhone, a thread's asks show while its sub-agents are still working.",
+    "A Claude login whose organisation turned Claude Code off is skipped rather than used.",
+    "A long thread title in a Waiting on card no longer runs under the Archive button.",
+    "Signing in to the website from the Mac opens your default browser, not always Chrome.",
+    {
+      "text": "With following main off, a build staged by hand is offered with Restart to Update.",
+      "credit": "Michał Frączek"
+    },
+    {
+      "text": "A thread link's address in the message box isn't underlined as misspelt or autocorrected.",
+      "credit": "Tyler Lusk"
+    },
+    "Security: a cloud box can no longer turn off other threads on its login, and the public relay caps request sizes.",
+    "Security: on Windows, a limited thread can no longer make itself the owner of a runner on the same PC."
+  ]
+}
