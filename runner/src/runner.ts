@@ -1603,7 +1603,7 @@ export class Runner {
     if (turn && !st.rec.coordinatorHelperFor) {
       // Output can confirm the only input when this provider sends no
       // receipts. It cannot confirm a later message waiting in its queue.
-      const onlyInputWasRead = !turn.deliveryKnown && turn.modelOutput && turn.inputs?.size === 1;
+      const onlyInputWasRead = !turn.auto && !turn.deliveryKnown && turn.modelOutput && turn.inputs?.size === 1;
       const unread = onlyInputWasRead ? [] : turn.messages.filter(id => !turn.startedMessages?.has(id));
       if (unread.length) {
         this.saveInterruptedMessages(st, { outcome: 'interrupted', durationMs: 0, unreceived: unread }, true);

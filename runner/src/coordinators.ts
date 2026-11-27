@@ -359,6 +359,8 @@ export class Coordinators {
     const coordinator = this.deps.host.threads.get(row.threadId);
     const pendingUserMessage = coordinator && (coordinator.rec.interruptedMessages?.length || coordinator.rt.turn?.byMike ||
       coordinator.rec.queue.some((q) => fromMike(q.text, q)));
+    const coordinatorHold = !coordinator ? 'the coordinator had not reached this runner yet'
+      : pendingUserMessage ? 'the coordinator has a user message to handle first' : undefined;
     let reconcile = false;
     for (const task of row.tasks) {
       const run = task.run;
@@ -366,7 +368,7 @@ export class Coordinators {
       // Done since: the coordinator has dealt with it.
       if (task.state === 'done') { this.unmark(run); this.changed(row); continue; }
       const kind = run.restart;
-      const why = pendingUserMessage ? 'the coordinator has a user message to handle first' : this.cannotCarryOn(row, task, kind);
+      const why = coordinatorHold ?? this.cannotCarryOn(row, task, kind);
       const failed = why ? undefined : this.carryOn(row, task, kind);
       if (!why && !failed) continue;
       const reason = why ?? failed!;

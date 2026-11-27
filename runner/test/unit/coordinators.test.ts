@@ -891,6 +891,25 @@ test('handover saves a coordinator message the CLI may not have read', async () 
   fresh.c.stop();
 });
 
+test('a CLI-owned turn cannot count its output as a receipt for a steered user message', async () => {
+  const { c, h, project, home, claude } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  claude.last.init();
+  claude.last.result();
+  claude.last.out({ kind: 'cliTurn' });
+  h.runner.send(coordinator.threadId, 'Cancel the deployment.');
+  claude.last.text('partial', 'The background check finished.');
+  await c.handover();
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+
+  const fresh = recoverFresh(h, home);
+  await tick();
+  assert.equal(fresh.adapter.sessions.length, 0);
+  assert.equal(fresh.host.mustGet(coordinator.threadId).rec.interruptedMessages?.length, 1);
+  fresh.c.stop();
+});
+
 test('handover does not resume a coordinator while coordinators are turned off', async () => {
   const { c, h, project, home, claude } = setup();
   const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
@@ -981,6 +1000,23 @@ test('handover leaves a helper stopped when its coordinator has a user message t
   assert.equal(run?.helperThreadId, started.helperId);
   assert.equal(run?.status, 'interrupted');
   assert.match(run?.summary ?? '', /a user message to handle first/);
+  fresh.c.stop();
+});
+
+test('handover defers a helper to reconciliation if its coordinator is still draining', async () => {
+  const { c, h, project, home, coordinator, started } = await workingHelper();
+  await c.handover();
+  await h.runner.beginDrain([], { onHandedOver: () => {} });
+
+  // A clean handover can keep the coordinator on the old runner for a
+  // turn-end hook. The replacement skips its record until it comes across.
+  const fresh = recoverFresh(h, home, (host) => { host.threads.delete(coordinator.threadId); });
+  await tick();
+  assert.equal(fresh.adapter.sessions.length, 0);
+  const run = fresh.c.get(project.id).tasks[0]?.run;
+  assert.equal(run?.helperThreadId, started.helperId);
+  assert.equal(run?.status, 'interrupted');
+  assert.match(run?.summary ?? '', /the coordinator had not reached this runner yet/);
   fresh.c.stop();
 });
 test('resumeHelper updates the exact running helper without replacing its run', async () => {
