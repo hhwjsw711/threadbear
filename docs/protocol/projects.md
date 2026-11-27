@@ -783,7 +783,9 @@ records after compaction.
 
 The coordinator tool adds `addWorkItem`, `updateWorkItem`, `removeWorkItem`,
 `addWorkTask`, `updateWorkTask`, `moveWorkTask`, and `postponeTask`. Use
-`taskId` or `workItemId` to select a row. Task edits accept `title`,
+`taskId` or `workItemId` to select a row. `addWorkTask` and `addTask`
+require a nonblank `title` (up to 200 characters) and `doneWhen` (up to
+1,000 characters describing how to tell the task is done). Task edits accept `title`,
 `doneWhen`, `kind`, `owner`, `state`, `now`, `due`, `workItemId`,
 `parentTaskId`, `decisionOptions` (objects with `label` and optional `does`),
 and `recommendation` (the recommended option's label). Omitted edit fields

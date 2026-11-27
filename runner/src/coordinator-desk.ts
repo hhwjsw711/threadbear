@@ -64,7 +64,8 @@ const decisionSchema = z.object({
   answer: nonblank.max(4000).optional(),
 });
 const detailsSchema = z.object({
-  owner: ownerSchema, now: nonblank.max(1000).optional(), doneWhen: nonblank.max(1000).optional(),
+  owner: ownerSchema, now: nonblank.max(1000).optional(),
+  doneWhen: z.string().trim().refine((value) => value.length > 0 && value.length <= 1000, 'doneWhen must contain 1 to 1000 characters.').optional(),
   source: sourceSchema.optional(), workItemId: idSchema.optional(), parentTaskId: idSchema.optional(),
   due: dueSchema.optional(), state: z.literal('postponed').optional(),
   openState: z.enum(['working', 'waiting']).optional(),

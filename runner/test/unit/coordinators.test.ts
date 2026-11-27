@@ -2455,6 +2455,37 @@ test('a loop-backed entry cannot become a child that blocks its parent from arch
   assert.deepEqual(c.get(project.id).taskBoard.tasks.map(({ id }) => id), [loopId]);
 });
 
+test('coordinator task creation names the invalid field', async (t) => {
+  const { c, h, project } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id });
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { coordinators: () => c })
+    .find((item) => item.name === 'coordinator')!;
+  const call = (p: Record<string, unknown>) => tool.handler(p as never, {});
+  const now = 'x'.repeat(725);
+  for (const p of [
+    { action: 'addWorkTask', title: 'Read the results', now },
+    { action: 'addWorkTask', title: 'Read the results', doneWhen: '  ' },
+    { action: 'addWorkTask', title: 'Read the results', doneWhen: 'x'.repeat(1001) },
+    { action: 'addTask', title: 'Read the results' },
+    { action: 'addTask', title: 'Read the results', doneWhen: 'x'.repeat(1001) },
+  ]) {
+    const result = await call(p);
+    assert.equal(result.isError, true);
+    assert.match(said(result), /doneWhen/);
+    assert.match(said(result), /1000/);
+  }
+  for (const title of [undefined, '  ', 'x'.repeat(201)]) {
+    const result = await call({ action: 'addWorkTask', title, doneWhen: 'Results read' });
+    assert.equal(result.isError, true);
+    assert.match(said(result), /title.*200/);
+  }
+  assert.deepEqual(c.get(project.id).taskBoard.tasks, []);
+  const result = await call({ action: 'addWorkTask', title: 'Read the results', doneWhen: 'Results read', now });
+  assert.ok(!result.isError, said(result));
+  assert.equal(c.get(project.id).taskBoard.tasks[0]!.now, now);
+});
+
 test('the scoped coordinator tool organizes work, decisions and one level of sub-tasks', async (t) => {
   const { c, h, project } = setup();
   t.after(() => c.stop());

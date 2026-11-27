@@ -2209,7 +2209,7 @@ export function buildThreadbearTools(
     endTurn(),
     ...(isCoordinator ? [tool(
       'coordinator',
-      'Read your project Tasks board, group work under Work items and manage actions or decisions. Delegate implementation with startHelper / resumeHelper. Put decisions to the user via end_turn with the taskId if already on the board.',
+      'Read and organize your project Tasks board. addWorkTask and addTask need title and doneWhen. Delegate implementation with startHelper / resumeHelper. Put decisions to the user via end_turn with the taskId if already on the board.',
       {
         action: z.enum(['get', 'addWorkItem', 'updateWorkItem', 'removeWorkItem', 'addWorkTask', 'updateWorkTask', 'moveWorkTask', 'postponeTask', 'addTask', 'selectTask', 'completeTask', 'archiveTask', 'dropTask', 'startHelper', 'resumeHelper', 'openLoop', 'updateLoop', 'closeLoop', 'update', 'answer']),
         ...workTaskEditShape,

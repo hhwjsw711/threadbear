@@ -704,7 +704,7 @@ export class Coordinators {
     const createdAt = this.now();
     const { doneWhen, ...work } = this.parseTaskDetails(input.work);
     const task = {
-      id: crypto.randomUUID(), title: text(input.title, 200), doneWhen: text(doneWhen ?? input.doneWhen, 1000),
+      id: crypto.randomUUID(), title: text(input.title, 200, 'title'), doneWhen: text(doneWhen ?? input.doneWhen, 1000, 'doneWhen'),
       state: this.legacyTaskState(input.state ?? 'todo'), work, createdAt, updatedAt: createdAt,
     };
     this.checkDueTarget(row, task.id, work.due);
@@ -2301,8 +2301,10 @@ export class Coordinators {
   }
 }
 
-function text(value: string, max: number): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > max) throw bad(`Use nonempty text of at most ${max} characters.`);
+function text(value: string, max: number, field?: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > max) {
+    throw bad(field ? `${field} must contain 1 to ${max} characters.` : `Use nonempty text of at most ${max} characters.`);
+  }
   return value.trim();
 }
 function normLoopTitle(value: string): string {
