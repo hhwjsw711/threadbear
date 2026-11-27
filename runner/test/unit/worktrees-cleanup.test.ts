@@ -131,6 +131,59 @@ test("archiving a thread with work that isn't on main keeps the worktree and bra
   assert.ok(h.runner.get(id).worktree, 'still shown');
 });
 
+test('a worktree whose work landed under other commit ids goes, at archive or at the daily sweep', async () => {
+  const { main } = makeRepo();
+  const h = harness();
+  // Landed as a copy (tb land's rebase, or another thread's cherry-pick)
+  // before the archive: removed then.
+  const a = await threadWithWorktree(h, main);
+  commit(a.w.path, { 'runner/a.ts': 'a\n' }, 'Copied to main');
+  sh(main, `git cherry-pick ${sh(a.w.path, 'git rev-parse HEAD')}`);
+  commit(main, { 'README.md': 'moved on\n' }, 'Another landing');
+  h.runner.update({ threadId: a.id, archived: true });
+  await until(() => notes(h, a.id).some((n) => n.startsWith('Removed')), "a's cleanup");
+  assert.ok(!fs.existsSync(a.w.path));
+
+  // Not on main at the archive: it stays. Copied to main later, the sweep
+  // removes it, and a sweep that finds work still unlanded says nothing.
+  const b = await threadWithWorktree(h, main);
+  const c = await threadWithWorktree(h, main);
+  commit(b.w.path, { 'runner/b.ts': 'b\n' }, 'Landed later');
+  commit(c.w.path, { 'runner/c.ts': 'c\n' }, 'Never landed');
+  h.runner.update({ threadId: b.id, archived: true });
+  h.runner.update({ threadId: c.id, archived: true });
+  await until(() => notes(h, b.id).some((n) => n.includes(' stay: ')) && notes(h, c.id).some((n) => n.includes(' stay: ')), 'the first cleanups');
+  sh(main, `git cherry-pick ${sh(b.w.path, 'git rev-parse HEAD')}`);
+  const cNotes = notes(h, c.id).length;
+  assert.equal(await h.runner.sweepArchivedWorktrees(), 1);
+  assert.ok(!fs.existsSync(b.w.path));
+  assert.equal(sh(main, `git branch --list ${b.w.branch}`), '');
+  assert.equal(notes(h, b.id).at(-1), `Removed this thread's worktree and its branch ${b.w.branch}: everything on it is on main.`);
+  assert.ok(fs.existsSync(c.w.path));
+  assert.equal(notes(h, c.id).length, cNotes, 'no second "stays" note');
+  const asks = () => [...h.runner.threads.values()].filter((st) => st.rec.title?.startsWith('Remove a leftover worktree'));
+  assert.equal(asks().length, 0, 'archived just now: not asked about yet');
+
+  // Archived 3 days ago and still unlanded: a thread asks about it, once.
+  h.runner.threads.get(c.id)!.rec.archivedAt = new Date(Date.parse(h.runner.isoNow()) - 3 * 86_400_000).toISOString();
+  await h.runner.sweepArchivedWorktrees();
+  assert.equal(asks().length, 1);
+  const ask = asks()[0];
+  assert.equal(ask.rec.startedBy?.kind, 'runner');
+  assert.equal(ask.rec.cwd, main, 'in the repo, with no worktree of its own');
+  assert.equal(ask.rec.worktree, undefined);
+  const first = h.adapter.sessions.find((s) => s.opts.threadId === ask.rec.id)!.sent[0].text;
+  assert.ok(first.includes(`- ${c.w.path} (branch ${c.w.branch}, in ${main}), from the thread`), first);
+  assert.ok(first.includes(`It stays because ${c.w.branch} has commits that aren't on main.`));
+  assert.ok(fs.existsSync(c.w.path), 'nothing removed without a yes');
+  await h.runner.sweepArchivedWorktrees();
+  assert.equal(asks().length, 1, 'not asked twice');
+  // Even once that thread is archived, the same branch tip isn't asked about again.
+  h.runner.update({ threadId: ask.rec.id, archived: true });
+  await h.runner.sweepArchivedWorktrees();
+  assert.equal(asks().length, 1);
+});
+
 test('cleanUpWorktree keeps a worktree with uncommitted changes to tracked files', async () => {
   const { main } = makeRepo();
   const t = makeBranch(main);

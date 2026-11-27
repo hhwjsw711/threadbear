@@ -7,7 +7,7 @@ import type { RunnerPart } from './part.ts';
 import type { Action, EventBody } from '../protocol.ts';
 import type { ThreadRecord } from '../store.ts';
 import { threadBinDir, threadEnv } from '../restart.ts';
-import { cleanUpWorktree, clearBuildCaches, mainCheckoutOf, makeWorktree, readPlainFile, realpath, sameSubfolder, stillCheckedOut, worktreeFolderNow, worktreeGone, type WorktreeRecord } from '../worktrees.ts';
+import { cleanUpWorktree, clearBuildCaches, git, mainCheckoutOf, makeWorktree, readPlainFile, realpath, sameSubfolder, stillCheckedOut, worktreeFolderNow, worktreeGone, type WorktreeRecord } from '../worktrees.ts';
 import { isDirectory } from '../fsutil.ts';
 import { CLICKS_ONLY_NOTE } from '../platform.ts';
 import { sweepBorrows } from '../borrows.ts';
@@ -662,10 +662,97 @@ export const worktreesPart = {
     return res;
   },
 
+  // Archived threads whose worktree stayed get their cleanup again: what
+  // kept it (work not on main yet, uncommitted changes, a git that timed
+  // out) may have gone since, as their work landed through another thread
+  // or under other commit ids. Quietly: a worktree that still stays says
+  // nothing new in its thread. Ones that still stay after ASK_AFTER_MS
+  // look abandoned, so a thread asks about them (askAboutStayed).
+  // Returns how many went.
+  async sweepArchivedWorktrees(this: Runner): Promise<number> {
+    let removed = 0;
+    const stayed: Stayed[] = [];
+    for (const st of [...this.threads.values()]) {
+      const { rec, rt } = st;
+      const w = rec.worktree;
+      if (!rec.archivedAt || !w || w.removedAt || w.cleanupOwed || rt.cleaning || rt.deleted) continue;
+      const again: { reason?: string } = {};
+      const cleaning: Promise<void> = this.cleanUpWorktree(st, false, again)
+        .catch((e: unknown) => this.log.warn('archived worktree sweep failed', { threadId: rec.id, error: String(e) }))
+        .finally(() => {
+          if (rt.cleaning === cleaning) rt.cleaning = undefined;
+        });
+      rt.cleaning = cleaning;
+      await cleaning;
+      if (w.removedAt) removed++;
+      else if (again.reason) stayed.push({ st, w, reason: again.reason });
+    }
+    if (removed) this.log.info('archived worktree sweep', { removed });
+    try {
+      await this.askAboutStayed(stayed);
+    } catch (e) {
+      this.log.warn("couldn't ask about archived threads' worktrees", { error: String(e) });
+    }
+    return removed;
+  },
+
+  // Worktrees the sweep can't remove safely, of threads archived at least
+  // ASK_AFTER_MS ago: a thread (in the inbox, so on the phone too) looks at
+  // what each holds and asks whether to drop it. Each branch tip is asked
+  // about once; nothing new is asked while that thread is still open.
+  // Ville asked for this on 20 Nov 2026.
+  async askAboutStayed(this: Runner, stayed: Stayed[]): Promise<string | undefined> {
+    const file = path.join(this.cfg.home, 'runner', 'worktree-question.json');
+    let state: { threadId?: string; asked?: string[] } = {};
+    try {
+      state = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      // None yet.
+    }
+    const open = state.threadId && this.threads.has(state.threadId) && !this.threads.get(state.threadId)!.rec.archivedAt;
+    if (open) return undefined;
+    const now = Date.parse(this.isoNow());
+    const asked = new Set(state.asked ?? []);
+    const fresh: (Stayed & { key: string })[] = [];
+    for (const x of stayed) {
+      if (now - Date.parse(x.st.rec.archivedAt!) < ASK_AFTER_MS) continue;
+      const tip = await git(x.w.mainCheckout, ['rev-parse', '--verify', '--quiet', x.w.branch]);
+      const key = `${x.w.path}@${tip.ok ? tip.stdout.trim() : 'gone'}`;
+      if (!asked.has(key)) fresh.push({ ...x, key });
+    }
+    if (!fresh.length) return undefined;
+    const list = fresh.map(({ st, w, reason }) =>
+      `- ${w.path} (branch ${w.branch}, in ${w.mainCheckout}), from the thread "${st.rec.title ?? st.rec.id}" (${st.rec.id}), archived ${st.rec.archivedAt!.slice(0, 10)}. It stays because ${reason}.`).join('\n');
+    const text =
+      "Threadbear's daily cleanup found worktrees of archived threads that it can't remove safely by itself. " +
+      `Each thread was archived at least ${ASK_AFTER_MS / 86_400_000} days ago, so they look abandoned:\n\n${list}\n\n` +
+      'For each one, work out what removing it would lose. Read git log --oneline main..<branch> and git cherry -v main <branch> in its repo, ' +
+      'and git status --short and git diff --stat in the worktree. Check whether that work is on main in another form. ' +
+      "Don't remove or change anything yet.\n\n" +
+      'Then end the turn with needs "you" and one ask per worktree (or one for all of them, if they are alike). ' +
+      'Each ask says in a line what would be lost, with the options "Remove it" and "Keep it". ' +
+      'Remove only what I say to: git -C <repo> worktree remove --force <path>, then git -C <repo> branch -D <branch>. ' +
+      'Once every one is answered, end the turn with needs "nothing" and archive: true.';
+    const n = fresh.length;
+    const threadId = this.create({
+      text,
+      title: n === 1 ? 'Remove a leftover worktree?' : `Remove ${n} leftover worktrees?`,
+      cwd: fresh[0].w.mainCheckout,
+      worktree: false,
+      startedBy: { kind: 'runner', label: 'Threadbear', why: "archived threads' worktrees that the daily cleanup can't remove safely" },
+    }).thread.id;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ threadId, asked: [...asked, ...fresh.map((x) => x.key)] }, null, 2) + '\n');
+    this.log.info("started a thread to ask about archived threads' worktrees", { threadId, worktrees: fresh.map((x) => x.w.path) });
+    return threadId;
+  },
+
   // When the thread is archived or deleted: its worktree and branch go if
   // everything on them is on main; otherwise they stay, and the thread (or,
   // once it's deleted, a notice) says so and how to land or drop them.
-  async cleanUpWorktree(this: Runner, st: ThreadState, deleted = false): Promise<void> {
+  // `again` (the daily sweep): staying says nothing, as it said so before,
+  // and why it stays goes in again.reason.
+  async cleanUpWorktree(this: Runner, st: ThreadState, deleted = false, again?: { reason?: string }): Promise<void> {
     const { rec } = st;
     const w = rec.worktree;
     if (!w || w.removedAt) return;
@@ -724,6 +811,10 @@ export const worktreesPart = {
       if (cleared.length) this.log.info("cleared a kept worktree's build caches", { threadId: rec.id, path: w.path, cleared });
     }
     const freed = cleared.length ? ` Its build caches (${cleared.join(', ')}) were cleared to save space, and get built again if it carries on.` : '';
+    if (again) {
+      again.reason = result.reason;
+      return;
+    }
     if (deleted) {
       this.notice('info', `"${rec.title}" was deleted, but its worktree at ${w.path} and branch ${w.branch} stay: ${result.reason}. ${how}${freed}`);
       return;
@@ -734,6 +825,37 @@ export const worktreesPart = {
 };
 
 export type WorktreesPart = RunnerPart<typeof worktreesPart>;
+
+// A worktree the daily sweep left, and why.
+type Stayed = { st: ThreadState; w: WorktreeRecord; reason: string };
+
+// How long a thread is archived before its worktree that stays is asked about.
+export const ASK_AFTER_MS = 2 * 86_400_000;
+
+// The daily cleanup: archived threads' worktrees that stayed get another
+// go (sweepArchivedWorktrees). Ten minutes after start, then every day.
+export function startArchivedWorktreeSweep(runner: Runner, log: Logger): () => void {
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try {
+      await runner.sweepArchivedWorktrees();
+    } catch (e) {
+      log.warn('archived worktree sweep failed', { error: String(e) });
+    } finally {
+      running = false;
+    }
+  };
+  const first = setTimeout(() => void run(), 10 * 60_000);
+  const timer = setInterval(() => void run(), 24 * 3_600_000);
+  first.unref();
+  timer.unref();
+  return () => {
+    clearTimeout(first);
+    clearInterval(timer);
+  };
+}
 
 // A slot a thread works in that isn't its own any more (lentFolder): the
 // slot, its repo's main checkout, and what became of it, for the notes.

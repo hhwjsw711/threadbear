@@ -419,6 +419,12 @@ output cannot renew image work. Rejected oversized output imports no images.
   a spare, `borrow-worktree.sh` reads the thread records in the runner's
   data dir (`threads/*/thread.json`, through `runner/src/lived-in.ts`) to
   pass over any slot an open thread works in.
+- **Archived worktree sweep** (`runner/src/runner/worktrees.ts`): ten minutes
+  after start and then daily, re-runs archive cleanup on archived threads
+  whose worktree stayed (counting branches whose changes are already on
+  `main` under other commit ids). If a worktree still stays two days after
+  its thread was archived, it starts a thread in the inbox asking whether to
+  remove or keep it, tracking asked branch tips in `runner/worktree-question.json`.
 - **The runner** listens on `127.0.0.1:8797` only, and needs a token
   (`runner/src/config.ts`). It starts the official `claude` and `codex`
   CLIs for your threads. Each thread's CLI gets a key of its own in its

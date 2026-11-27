@@ -2826,6 +2826,20 @@ export async function stillCheckedOut(w: WorktreeRecord): Promise<boolean> {
   return Boolean(checkouts?.some((c) => realpath(c.path) === here && c.branch === w.branch));
 }
 
+// Everything on `branch` is on main: its tip is in main's history, or
+// merging it into main would change no file. The second is for a branch
+// whose commits landed under other ids: tb land rebases and batches, and a
+// thread can cherry-pick another's commit. Before 20 Nov 2026 only the first
+// counted, so those worktrees stayed after their threads were archived
+// (three on Ville's Mac).
+export async function landedOnMain(mainCheckout: string, branch: string): Promise<boolean> {
+  if ((await git(mainCheckout, ['merge-base', '--is-ancestor', branch, MAIN])).ok) return true;
+  const merged = await git(mainCheckout, ['merge-tree', '--write-tree', MAIN, branch]);
+  if (!merged.ok) return false; // a conflict, or git couldn't tell
+  const main = await gitOut(mainCheckout, ['rev-parse', `${MAIN}^{tree}`]);
+  return Boolean(main) && merged.stdout.split('\n')[0].trim() === main;
+}
+
 // When its thread is archived or deleted: a worktree whose branch is all
 // on main is removed with its branch (`--force` only for untracked
 // files), or, with `keep` and room for another spare, set aside as one;
@@ -2841,9 +2855,8 @@ export async function cleanUpWorktree(w: WorktreeRecord, stillOurs: () => boolea
   const ref = await git(w.mainCheckout, ['rev-parse', '--verify', '--quiet', `refs/heads/${w.branch}`]);
   if (!ref.ok && ref.code !== 1) return { removed: false, reason: `git couldn't tell whether ${w.branch} is still there` };
   let branchThere = ref.ok;
-  if (branchThere) {
-    const merged = await git(w.mainCheckout, ['merge-base', '--is-ancestor', w.branch, MAIN]);
-    if (!merged.ok) return { removed: false, reason: `${w.branch} has commits that aren't on ${MAIN}` };
+  if (branchThere && !(await landedOnMain(w.mainCheckout, w.branch))) {
+    return { removed: false, reason: `${w.branch} has commits that aren't on ${MAIN}` };
   }
   // The branch goes only as it is now, and only if that's all on main: a
   // commit made since the look above stays on it (Codex's review, 21 Nov:
@@ -2851,7 +2864,7 @@ export async function cleanUpWorktree(w: WorktreeRecord, stillOurs: () => boolea
   const dropBranch = async (): Promise<string | undefined> => {
     const at = await gitOut(w.mainCheckout, ['rev-parse', '--verify', '--quiet', `refs/heads/${w.branch}`]);
     if (!at) return `git couldn't read it`;
-    if (!(await git(w.mainCheckout, ['merge-base', '--is-ancestor', at, MAIN])).ok) return `it has commits that aren't on ${MAIN}`;
+    if (!(await landedOnMain(w.mainCheckout, at))) return `it has commits that aren't on ${MAIN}`;
     // Not one some checkout is on (moved there with git worktree move, say):
     // update-ref, unlike branch -D, would delete it from under it.
     const using = await listCheckouts(w.mainCheckout);
@@ -2924,7 +2937,7 @@ export async function cleanUpWorktree(w: WorktreeRecord, stillOurs: () => boolea
       if (!tip) return { removed: false, reason: `git couldn't read ${w.path}` };
       // What it's set aside at must be on main too: a commit made since the
       // branch was looked at would be left on no branch (Codex's review).
-      if (!(await git(w.mainCheckout, ['merge-base', '--is-ancestor', tip, MAIN])).ok) return { removed: false, reason: `${w.branch} has commits that aren't on ${MAIN}` };
+      if (!(await landedOnMain(w.mainCheckout, tip))) return { removed: false, reason: `${w.branch} has commits that aren't on ${MAIN}` };
       if (!stillOurs()) return LET_GO;
       if (!(here = worktreeFolderNow(w, head))) return CHANGED;
       if ((await git(here, ['checkout', '-q', '--detach'])).ok) {
@@ -2955,7 +2968,7 @@ export async function cleanUpWorktree(w: WorktreeRecord, stillOurs: () => boolea
     // the first look stays, with its folder). Before the last status, so
     // nothing slow comes between that and the removal.
     const at = await gitOut(here, ['rev-parse', 'HEAD']);
-    if (!at || !(await git(w.mainCheckout, ['merge-base', '--is-ancestor', at, MAIN])).ok) return { removed: false, reason: `${w.branch} has commits that aren't on ${MAIN}` };
+    if (!at || !(await landedOnMain(w.mainCheckout, at))) return { removed: false, reason: `${w.branch} has commits that aren't on ${MAIN}` };
     if (!stillOurs()) return LET_GO;
     if (!(here = worktreeFolderNow(w, head))) return CHANGED;
     const edited = await editedSince(here);
