@@ -13,7 +13,7 @@ import { ThreadStore } from '../../src/store.ts';
 import { toPhoneAsk } from '../../src/sync.ts';
 import { makePng } from '../helpers/png.ts';
 import { CallerGate } from '../../src/rpc-gate.ts';
-import type { Account, Schedule, ThreadSummary } from '../../src/protocol.ts';
+import type { Account, PermissionMode, Schedule, ThreadSummary } from '../../src/protocol.ts';
 import type { Settings } from '../../src/settings.ts';
 import { buildThreadbearTools, type ProjectControl } from '../../src/threadbear-mcp.ts';
 import { CARRY_ON_HELPER_RESTART } from '../../src/runner/carry-on.ts';
@@ -821,7 +821,7 @@ test('a runner handover ends coordinator and helper sessions and prevents the dr
 });
 
 // A helper at work on the runner, whose session has an id to resume.
-async function workingHelper() {
+async function workingHelper(permissionMode?: PermissionMode) {
   const s = setup();
   const { coordinator } = s.c.create({ projectId: s.project.id, accountId: 'claude-3' });
   await tick();
@@ -829,6 +829,7 @@ async function workingHelper() {
   coordSession.init('coord-session');
   coordSession.result('completed');
   await tick();
+  if (permissionMode) s.h.runner.update({ threadId: coordinator.threadId, permissionMode });
   const started = s.c.startHelper(s.project.id, { title: 'Deploy', doneWhen: 'Deployed', brief: 'Deploy it' });
   await tick();
   const helperSession = s.claude.sessions.find((x) => x.opts.threadId === started.helperId)!;
@@ -837,6 +838,139 @@ async function workingHelper() {
   const said = () => s.h.runner.events(coordinator.threadId, { limit: 10_000 }).events.filter((e) => e.type === 'user.message').length;
   return { ...s, coordinator, started, helperSession, saidBefore: said() };
 }
+test('resumeHelper updates the exact running helper without replacing its run', async () => {
+  const { c, h, project, projects, coordinator, started, helperSession, claude } = await workingHelper();
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, projectControl(projects), undefined, { coordinators: () => c })
+    .find((entry) => entry.name === 'coordinator') as unknown as { handler: (p: Record<string, unknown>) => Promise<{ content: { text: string }[]; isError?: boolean }> };
+  const run = () => c.get(project.id).tasks[0]!.run!;
+  const before = run();
+  assert.throws(() => c.resumeHelper(project.id, { taskId: started.taskId, helperId: 'another-helper', brief: 'Wrong target' }), /already working|known helper/);
+  assert.throws(() => c.resumeHelper(project.id, { helperId: started.helperId, model: 'sonnet', brief: 'Change model' }), /model|login/);
+
+  const answer = await tool.handler({ action: 'resumeHelper', taskId: started.taskId, brief: 'Skip the deploy and report the diff.' });
+  assert.notEqual(answer.isError, true, answer.content[0]!.text);
+  assert.match(answer.content[0]!.text, /Update accepted for the running helper/);
+  assert.match(helperSession.sent.at(-1)?.text ?? '', /Skip the deploy and report the diff/);
+  assert.equal(run().id, before.id);
+  assert.equal(run().nativeRunId, before.nativeRunId);
+  assert.equal(run().status, 'running');
+  assert.throws(() => c.startHelper(project.id, { brief: 'Unrelated job' }), /already working/);
+
+  helperSession.result('completed');
+  assert.equal(run().status, 'running', 'an adapter can read the update after its reply');
+  helperSession.text('m1', 'The diff, with deployment skipped.');
+  helperSession.result('completed');
+  await tick();
+  assert.equal(run().status, 'completed');
+  assert.equal(claude.sessions.flatMap((s) => s.sent).filter((m) => m.text.includes('A helper turn finished')).length, 1);
+  c.stop();
+});
+
+test('a coordinator cannot update another project or a running helper with higher access', async () => {
+  const { c, h, project, projects, coordinator, started, helperSession } = await workingHelper();
+  const other = projects.create({ title: 'Other project', by: 'mike' });
+  c.create({ projectId: other.id, accountId: 'claude-3' });
+  assert.throws(() => c.resumeHelper(other.id, { helperId: started.helperId, brief: 'Keep working' }), /known helper/);
+  h.runner.update({ threadId: started.helperId, permissionMode: 'full' });
+  h.runner.update({ threadId: coordinator.threadId, permissionMode: 'ask' });
+  const before = helperSession.sent.length;
+  assert.throws(() => c.resumeHelper(project.id, { helperId: started.helperId, brief: 'Keep working' }), /more access/);
+  assert.equal(helperSession.sent.length, before);
+  c.stop();
+});
+
+test('a queued update for a working helper survives the runner handover', async () => {
+  const { c, h, project, home, started, helperSession } = await workingHelper();
+  const helper = h.runner.threads.get(started.helperId)!;
+  helper.rt.turn!.noSteer = true;
+  c.resumeHelper(project.id, { helperId: started.helperId, brief: 'Use the staging account.' });
+  assert.ok(helper.rec.queue.some((m) => m.text.includes('Use the staging account')));
+  assert.ok(!helperSession.sent.some((m) => m.text.includes('Use the staging account')));
+  await c.handover();
+  const fresh = recoverFresh(h, home);
+  await tick();
+  const resumed = fresh.adapter.sessions.find((session) => session.opts.threadId === started.helperId)!;
+  assert.match(resumed.sent[0]?.text ?? '', /Check what's already done first[\s\S]*Use the staging account/);
+  fresh.c.stop();
+});
+
+test('a queued helper update cannot run with permissions raised after it was accepted', async () => {
+  const { c, h, project, started, helperSession, coordinator, claude } = await workingHelper('ask');
+  c.resumeHelper(project.id, { helperId: started.helperId, brief: 'Check the staging account.' });
+  assert.equal(helperSession.sent.length, 1, 'the runner queues restricted text instead of letting the adapter hold it');
+  const helper = h.runner.threads.get(started.helperId)!;
+  helper.rt.holds = new Set(['setup']);
+  h.runner.update({ threadId: started.helperId, permissionMode: 'full' });
+  helperSession.result('completed');
+  await tick();
+  assert.equal(c.get(project.id).tasks[0]!.run?.status, 'running', 'a delayed queue drain still owes a result');
+  helper.rt.holds.clear();
+  h.runner.kickQueue(helper);
+  await tick();
+  assert.ok(!helperSession.sent.some((m) => m.text.includes('Check the staging account')));
+  const task = c.get(project.id).tasks[0]!;
+  assert.equal(task.run?.status, 'interrupted');
+  assert.equal(task.state, 'blocked');
+  const report = claude.sessions.filter((session) => session.opts.threadId === coordinator.threadId).flatMap((session) => session.sent).at(-1);
+  assert.match(report?.text ?? '', /permissions rose before it received one of your updates/);
+  c.stop();
+});
+
+test('a helper turn reading a restricted update holds its ceiling until it ends', async () => {
+  const { c, h, project, started, helperSession } = await workingHelper('ask');
+  c.resumeHelper(project.id, { helperId: started.helperId, brief: 'Review the staging change.' });
+  helperSession.result('completed');
+  await tick();
+  assert.match(helperSession.sent.at(-1)?.text ?? '', /Review the staging change/);
+  assert.throws(() => h.runner.update({ threadId: started.helperId, permissionMode: 'full' }), /after the turn finishes/);
+  assert.equal(h.runner.get(started.helperId).permissionMode, 'ask');
+  helperSession.result('completed');
+  await tick();
+  assert.equal(h.runner.update({ threadId: started.helperId, permissionMode: 'full' }).thread.permissionMode, 'full');
+  c.stop();
+});
+
+test('an update queued on a paused helper run does not reach a later explicit resume', async () => {
+  const { c, h, project, started, claude } = await workingHelper();
+  h.runner.threads.get(started.helperId)!.rt.turn!.noSteer = true;
+  c.resumeHelper(project.id, { helperId: started.helperId, brief: 'Deploy the change.' });
+  await c.pause(project.id, true);
+  await c.pause(project.id, false);
+  c.resumeHelper(project.id, { helperId: started.helperId, brief: 'Check the diff only.' });
+  await tick();
+  const sent = claude.sessions.filter((session) => session.opts.threadId === started.helperId).flatMap((session) => session.sent);
+  assert.ok(sent.some((m) => m.text.includes('Check the diff only')));
+  assert.ok(sent.every((m) => !m.text.includes('Deploy the change')));
+  c.stop();
+});
+
+test('background grace cannot finish a helper while its update waits in the runner queue', async () => {
+  const { c, h, project, started, helperSession, coordinator, claude } = await workingHelper('ask');
+  const helper = h.runner.threads.get(started.helperId)!;
+  helperSession.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'Finish checks' }] });
+  helperSession.text('m1', 'Waiting for checks.');
+  helperSession.result('completed');
+  await tick();
+  helper.rt.holds = new Set(['setup']);
+  c.resumeHelper(project.id, { helperId: started.helperId, brief: 'Add the check output to your report.' });
+  helperSession.out({ kind: 'tasks', tasks: [] });
+  h.clock.advance(20_000);
+  await tick();
+  assert.equal(c.get(project.id).tasks[0]!.run?.status, 'running');
+  helper.rt.holds.clear();
+  assert.equal(h.runner.kickQueue(helper), true);
+  await tick();
+  assert.match(helperSession.sent.at(-1)?.text ?? '', /Add the check output/);
+  helperSession.text('m2', 'Checks passed. Output verified.');
+  helperSession.result('completed');
+  await tick();
+  assert.equal(c.get(project.id).tasks[0]!.run?.status, 'completed');
+  const reports = claude.sessions.filter((session) => session.opts.threadId === coordinator.threadId).flatMap((session) => session.sent).filter((m) => m.text.includes('A helper turn finished'));
+  assert.equal(reports.length, 1);
+  assert.match(reports[0]!.text, /Output verified/);
+  c.stop();
+});
+
 const userMessages = (host: Runner, threadId: string) => host.events(threadId, { limit: 10_000 }).events.filter((e) => e.type === 'user.message').length;
 const editRegistry = (home: string, edit: (rows: { state: string; tasks: { run?: Record<string, unknown> }[]; reports?: unknown[] }[]) => void) => {
   const file = path.join(home, 'coordinators.json');
@@ -2088,7 +2222,7 @@ test('coordinator refusals say what to use instead, and the ids it is given work
   assert.throws(() => c.startHelper(project.id, { brief: 'Another job' }), new RegExp(`"Check pantry" \\(task ${started.taskId}, helper ${started.helperId}\\).*don't retry`));
   // ...and dropping it waits for its result.
   assert.throws(() => c.dropTask(project.id, started.taskId, 'Moot'), /helper is working/);
-  assert.match((await coordTool.handler({ action: 'resumeHelper', taskId: started.taskId, brief: 'More' })).content[0]!.text, /"Check pantry"/);
+  assert.match((await coordTool.handler({ action: 'resumeHelper', taskId: 'another-task', brief: 'More' })).content[0]!.text, /"Check pantry"/);
   // selectTask on started work says to resume it.
   assert.throws(() => c.selectTask(project.id, started.taskId), new RegExp(`already working on that task \\(helper ${started.helperId}\\)`));
 
@@ -2108,7 +2242,7 @@ test('coordinator refusals say what to use instead, and the ids it is given work
   const send = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, projectControl(projects), undefined, { coordinators: () => c })
     .find((t) => t.name === 'send_message') as unknown as { handler: (p: Record<string, unknown>, extra: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }> };
   assert.match((await send.handler({ threadId: started.helperId.slice(0, 8), text: 'Hi' }, {})).content[0]!.text, /No thread with id/);
-  assert.match((await send.handler({ threadId: started.helperId, text: 'Hi' }, {})).content[0]!.text, /hidden helper/);
+  assert.match((await send.handler({ threadId: started.helperId, text: 'Hi' }, {})).content[0]!.text, /resumeHelper.*helperId.*brief/);
   c.stop();
 });
 

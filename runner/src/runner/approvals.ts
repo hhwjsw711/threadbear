@@ -137,6 +137,7 @@ export const approvalsPart = {
   leavePlan(this: Runner, st: ThreadState): PermissionMode {
     const { rec, rt } = st;
     const mode = rec.modeBeforePlan && rec.modeBeforePlan !== 'plan' ? rec.modeBeforePlan : 'full';
+    if (rec.permissionMode === 'plan') this.checkHelperPermissionChange(st, mode);
     if (rec.openPlan) this.emit(st, { type: 'plan.resolved', itemId: rec.openPlan, decision: 'go' }, rt.turn?.turnId);
     delete rec.openPlan;
     delete rec.modeBeforePlan;

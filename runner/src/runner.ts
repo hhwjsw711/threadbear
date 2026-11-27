@@ -292,6 +292,7 @@ export type PendingApproval =
 
 export type Turn = {
   turnId: string;
+  helperRunId?: string;
   startedAt: number;
   interruptRequested: boolean;
   // A slash command the runner answered itself (runner/commands.ts): no
@@ -536,13 +537,10 @@ export type Runtime = {
   // it's in and opens none, so once the wake grace passes with no turn
   // (or the CLI exits) it finishes after all (settlePendingFinish).
   finishPending?: { seq: number; turnId: string; lastText?: string; next: boolean; owed?: { turnId: string; seq?: number; reply?: string } };
-  // A coordinator's helper whose turn ended with background work still
-  // going (a shell, a monitor, a subagent), which the CLI wakes for: the
-  // run isn't over, so its coordinator hears when the turn that wake opens
-  // ends, or this turn's result once nothing more is coming
-  // (settleHelperPending).
-  // Not evicted for room meanwhile (makeRoomForCli): that would end it.
-  helperPending?: { outcome: 'completed'; text: string; turnId: string };
+  // The helper's last result, held while a queued update, background job
+  // or network retry could start another turn (settleHelperPending). Keep
+  // its CLI for the same interval rather than evicting it for room.
+  helperPending?: { outcome: TurnOutcome; text: string; turnId: string };
   activeAt: number; // last turn start or end, for picking which CLI to release
   approvals: Map<string, PendingApproval>;
   // Calls the card reviewer is deciding on (runner/card-review.ts), which
@@ -2186,7 +2184,7 @@ export class Runner {
     // Written with less access than it has now: Mike's to read, not its
     // agent's (runner/ceiling.ts). Checked again as it leaves the queue.
     if (!this.underCeiling(st, opts.ceiling)) {
-      this.withholdMessage(st, { text, origin: opts.origin, scheduleId: opts.scheduleId });
+      this.withholdMessage(st, { text, origin: opts.origin, scheduleId: opts.scheduleId, helperRunId: opts.helperRunId });
       return opts.messageId ?? crypto.randomUUID();
     }
     if (opts.answers?.length && fromMike(text, opts)) {
@@ -2259,6 +2257,7 @@ export class Runner {
     if (opts.origin) msg.origin = opts.origin;
     if (opts.wakeReason && opts.origin === 'runner') msg.wakeReason = opts.wakeReason;
     if (opts.scheduleId) msg.scheduleId = opts.scheduleId;
+    if (opts.helperRunId) msg.helperRunId = opts.helperRunId;
     if (opts.preserveSchedule !== undefined) msg.preserveSchedule = opts.preserveSchedule;
     if (opts.scheduledSince !== undefined) msg.scheduledSince = opts.scheduledSince;
     if (opts.answers?.length) msg.answers = opts.answers;
@@ -2574,6 +2573,7 @@ export class Runner {
     if (!isCarryOn(msg)) rt.turn.newWork = true;
     if (fromMike(msg.text, msg)) rt.turn.byMike = true;
     if (msg.ceiling !== undefined) rt.turn.ceilings = new Map([[msg.turnId, msg.ceiling]]);
+    if (msg.helperRunId) rt.turn.helperRunId = msg.helperRunId;
     this.markOlderInputs(st, msg);
     rt.activeAt = this.clock.now();
     rec.turnId = msg.turnId;
@@ -3548,24 +3548,12 @@ export class Runner {
     const loginBefore = rec.accountId;
     this.endTurn(st, ev.seq, outcome === 'failed' ? 'error' : 'idle', outcome, limitHit, netLost, holdQueue, signedOut);
     if (rec.coordinatorHelperFor) {
-      const retrying = Boolean(rt.turn || rec.queue.length || rec.waitingForNetwork);
-      if (retrying) {
-        if (rt.turn) this.coordinators?.noteHelperTurn(rec.id, rt.turn.turnId);
-      } else {
-        if (rec.waitingForRoom) {
-          delete rec.waitingForRoom;
-          this.armRoomTimer();
-          this.markDirty(st);
-        }
-        // Background work the CLI will wake for: the helper said it's
-        // waiting on it, and finishing the run now refused every tool call
-        // of the turn that read its result, whose words never reached the
-        // coordinator (the Convex AI guidance coordinator, 26 Nov 2026).
-        if (outcome === 'completed' && this.wakes(st) && runningSession(rt) && !this.stopping && (rt.tasks.length > 0 || rt.wakeTimer)) {
-          rt.helperPending = { outcome, text: turn.lastText || r.error || '', turnId: turn.turnId };
-        } else {
-          this.coordinators?.onHelperTurn(rec.id, outcome, turn.lastText || r.error || '', turn.turnId);
-        }
+      if (rt.turn) this.coordinators?.noteHelperTurn(rec.id, rt.turn.turnId);
+      else {
+        // A queued update can be waiting on the folder check. Keep this
+        // result until the queued input starts or is withheld.
+        rt.helperPending = { outcome, text: turn.lastText || r.error || '', turnId: turn.turnId };
+        this.settleHelperPending(st);
       }
       return;
     }
@@ -3858,14 +3846,19 @@ export class Runner {
     this.coordinators?.noteHelperTurn(st.rec.id, turnId);
   }
 
-  // A helper turn held for its background work (helperPending): once no
-  // turn has come for it (the grace passed, or the CLI went), the run ends
-  // on that turn's result, as it would have then.
+  // A helper waits to report its latest result while it may have more work
+  // from a background job, the runner's queue or a network retry. The next
+  // turn takes over, or queue drain and wake grace settle this result.
   settleHelperPending(st: ThreadState): void {
     const { rec, rt } = st;
     const p = rt.helperPending;
-    if (!p || rt.turn || this.stopping) return;
-    if (runningSession(rt) && (rt.tasks.length > 0 || rt.wakeTimer)) return;
+    if (!p || rt.turn || rec.queue.length || rec.waitingForNetwork || this.stopping) return;
+    if (p.outcome === 'completed' && this.wakes(st) && runningSession(rt) && (rt.tasks.length > 0 || rt.wakeTimer)) return;
+    if (rec.waitingForRoom) {
+      delete rec.waitingForRoom;
+      this.armRoomTimer();
+      this.markDirty(st);
+    }
     rt.helperPending = undefined;
     this.coordinators?.onHelperTurn(rec.id, p.outcome, p.text, p.turnId);
   }
@@ -3906,7 +3899,10 @@ export class Runner {
     // stops: the next runner reconciles interrupted helpers itself.
     if (rec.coordinatorHelperFor && !this.stopping) {
       if (rt.turn) this.coordinators?.noteHelperTurn(rec.id, rt.turn.turnId);
-      else if (!rec.queue.length && !rec.waitingForNetwork) this.coordinators?.onHelperTurn(rec.id, interrupted ? 'interrupted' : 'failed', turn.lastText || message, turn.turnId);
+      else {
+        rt.helperPending = { outcome: interrupted ? 'interrupted' : 'failed', text: turn.lastText || message, turnId: turn.turnId };
+        this.settleHelperPending(st);
+      }
     }
     // A review whose CLI died or wouldn't start: the thread it reviews
     // hears, rather than sleeping a day. Not one Mike stopped.
@@ -4047,7 +4043,7 @@ export class Runner {
           const first = msgs[0];
           // Raised above a message's ceiling since it was first sent: held
           // before anything kept for the next message is taken.
-          if (first && first.type === 'user.message' && this.heldAtDispatch(st, { ...first, turnId: turn.turnId, ceiling: turn.ceilings?.get(turn.turnId) })) return;
+          if (first && first.type === 'user.message' && this.heldAtDispatch(st, { ...first, turnId: turn.turnId, ceiling: turn.ceilings?.get(turn.turnId), helperRunId: turn.helperRunId })) return;
           if (first && first.type === 'user.message') {
             // The fresh session starts knowing where the thread got to: a
             // transcript carried to a new folder that wouldn't resume gets
@@ -4205,6 +4201,7 @@ export class Runner {
   }): { thread: ThreadSummary } {
     const st = this.mustGet(params.threadId);
     const { rec, rt } = st;
+    if (params.permissionMode !== undefined) this.checkHelperPermissionChange(st, params.permissionMode);
     if (this.activeCoordinator(rec.id) && (params.archived || params.snoozedUntil)) {
       throw new RpcError(ErrorCode.badParams, 'Pause this project’s coordinator before archiving or hibernating its conversation.');
     }
@@ -4944,6 +4941,14 @@ export class Runner {
     // reports on a pause or handover (Gemini's review, 26 Nov 2026). Resume
     // and turning coordinators back on kick it again.
     if (this.coordinators?.dispatchRefusal(st.rec.id)) return false;
+    // A paused run may have left updates queued behind its old turn. A
+    // later explicit resume supplies its own brief. The restart recap is
+    // restored separately from the coordinator's registry.
+    const queue = st.rec.queue.filter((msg) => !msg.helperRunId || this.coordinators?.helperRunActive(st.rec.id, msg.helperRunId));
+    if (queue.length !== st.rec.queue.length) {
+      st.rec.queue = queue;
+      this.markDirty(st);
+    }
     try {
       this.prepareQueue(st);
     } catch (e) {
@@ -4952,7 +4957,11 @@ export class Runner {
       this.log.error('could not prepare queued messages', { threadId: st.rec.id, error: String(e) });
       return false;
     }
-    if (st.rt.turn || st.rec.queue.length === 0) return false;
+    if (st.rt.turn) return false;
+    if (st.rec.queue.length === 0) {
+      this.settleHelperPending(st);
+      return false;
+    }
     // A draining runner hands a thread over with its queue rather than
     // start another turn on the old release; the primary starts it. Not if
     // background work is holding the thread here: that can be half an hour
@@ -5817,7 +5826,7 @@ for (const part of [looseEndsPart, quietInboxPart, inboxGuessPart, nestedPart, c
 // starts ("14 h later · The app restarted", Mike 19 Nov).
 // `ceiling`: the most access the thread may have when these words reach its
 // agent, for words a thread with less access wrote earlier (runner/ceiling.ts).
-export type SendOptions = { ceiling?: PermissionMode; origin?: MessageOrigin; wakeReason?: string; scheduleId?: string; preserveSchedule?: boolean; queue?: boolean; answers?: AskAnswer[]; editOf?: number; messageId?: string; scheduledSince?: number };
+export type SendOptions = { ceiling?: PermissionMode; helperRunId?: string; origin?: MessageOrigin; wakeReason?: string; scheduleId?: string; preserveSchedule?: boolean; queue?: boolean; answers?: AskAnswer[]; editOf?: number; messageId?: string; scheduledSince?: number };
 
 type ScheduledDelivery = { seq: number; started: boolean; text: string; images: ImageRef[]; superseded?: false } | { superseded: true; started: true };
 

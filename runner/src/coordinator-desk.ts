@@ -20,6 +20,10 @@ const runSchema = z.object({
   // how many of those in a row came after a crash.
   restartResumes: z.number().int().nonnegative().optional(),
   crashResumes: z.number().int().nonnegative().optional(),
+  // Updates sent while the run was active may still be waiting in the CLI
+  // when it is stopped. The restart recap carries them with their ceilings.
+  updates: z.array(z.object({ text: z.string(), ceiling: z.enum(['ask', 'auto', 'full', 'plan']) })).optional(),
+  updateWithheld: z.literal(true).optional(),
 });
 const taskStates = ['todo', 'working', 'blocked', 'review', 'done'] as const;
 export type LegacyTaskState = typeof taskStates[number];
@@ -295,7 +299,7 @@ export function boardView(row: Coordinator) {
   return { workItems, tasks };
 }
 
-const publicRunSchema = runSchema.omit({ brief: true, restart: true, restartResumes: true, crashResumes: true });
+const publicRunSchema = runSchema.omit({ brief: true, restart: true, restartResumes: true, crashResumes: true, updates: true, updateWithheld: true });
 const publicDeskSchema = recordSchema.pick({
   projectId: true, threadId: true, state: true, charter: true, interests: true,
   updatedAt: true, wakeAt: true, selectedTaskId: true,

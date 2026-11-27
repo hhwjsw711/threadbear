@@ -2528,7 +2528,11 @@ export function buildThreadbearTools(
         const asked = threadId ?? alias;
         if (!asked) throw new Error('threadId is required. list_threads shows the ids.');
         // A hidden helper is driven by its coordinator's desk, never steered around it.
-        if (opts.coordinators?.()?.helperOwner(asked)) throw new Error("That's a project coordinator's hidden helper. Its coordinator carries it on with coordinator action resumeHelper; nothing was sent.");
+        const helperOwner = opts.coordinators?.()?.helperOwner(asked);
+        if (helperOwner) {
+          if (helperOwner.threadId === selfId) throw new Error('Use coordinator action resumeHelper with this helperId and your brief to update its run.');
+          throw new Error('This is a hidden helper. Ask its coordinator to pass on the update.');
+        }
         const hit = await find(asked).catch(async (e: unknown) => {
           // The thread on another Mac that started this one, which this
           // runner's key may not reach: the main Mac passes this thread's

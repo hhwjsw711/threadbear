@@ -19,10 +19,10 @@ import type { Runner, ThreadState } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import type { PermissionMode } from '../protocol.ts';
 import type { QueuedSend } from '../store.ts';
-import { above, CEILING_REFUSED, ceilingMode, higherMode, lowerMode, type Authority } from '../access.ts';
+import { above, CEILING_REFUSED, ceilingMode, higherMode, lowerMode, raises, type Authority } from '../access.ts';
 export { CEILING_REFUSED, ceilingMode, higherMode, lowerMode };
 import { senderPrefix } from './nested.ts';
-import { sentByAgent } from '../protocol.ts';
+import { ErrorCode, RpcError, sentByAgent } from '../protocol.ts';
 
 export const ceilingPart = {
   // Whether words with this ceiling may go to the agent of a thread with
@@ -39,6 +39,17 @@ export const ceilingPart = {
   underCeiling(this: Runner, st: ThreadState, ceiling: unknown): boolean {
     if (ceiling === undefined) return true;
     return !above(this.authorityNow(st.rec.id), { mode: ceilingMode(ceiling) });
+  },
+
+  // A restricted helper update may be with the adapter while it prepares
+  // the prompt. Keep that turn within its ceiling until it settles, since
+  // the runner cannot tell when every provider has read the input.
+  checkHelperPermissionChange(this: Runner, st: ThreadState, mode: PermissionMode): void {
+    const turn = st.rt.turn;
+    const ceiling = turn?.helperRunId ? turn.ceilings?.get(turn.turnId) : undefined;
+    if (ceiling && raises(mode, ceiling)) {
+      throw new RpcError(ErrorCode.busy, 'This helper is reading an update from its coordinator. Try raising its permissions after the turn finishes.');
+    }
   },
 
   // The ceiling of another thread's message as it's accepted for `st`: what
@@ -69,7 +80,7 @@ export const ceilingPart = {
   // waited for (a CLI closing, a worktree, a compaction): raised above its
   // ceiling meanwhile, it isn't sent, and the turn ends there with nothing
   // sent, as a command the runner answers itself does. True if so.
-  heldAtDispatch(this: Runner, st: ThreadState, msg: Pick<QueuedSend, 'turnId' | 'text' | 'origin' | 'scheduleId' | 'ceiling'>): boolean {
+  heldAtDispatch(this: Runner, st: ThreadState, msg: Pick<QueuedSend, 'turnId' | 'text' | 'origin' | 'scheduleId' | 'ceiling' | 'helperRunId'>): boolean {
     const turn = st.rt.turn;
     const ceilings = [msg.ceiling, ...(turn?.ceilings ? [...turn.ceilings.values()] : [])].filter((c) => c !== undefined);
     if (!turn || ceilings.every((c) => this.underCeiling(st, c))) return false;
@@ -132,7 +143,8 @@ export const ceilingPart = {
 
   // A message about to be handed to `st`'s agent whose ceiling it's above
   // now: held back, with a note saying what it was.
-  withholdMessage(this: Runner, st: ThreadState, q: Pick<QueuedSend, 'text' | 'origin' | 'scheduleId' | 'seq'>): void {
+  withholdMessage(this: Runner, st: ThreadState, q: Pick<QueuedSend, 'text' | 'origin' | 'scheduleId' | 'seq' | 'helperRunId'>): void {
+    if (q.helperRunId) this.coordinators?.helperUpdateWithheld(st.rec.id, q.helperRunId);
     // Queued again after its first showing never reached the agent: that
     // row is kept out of what an agent is told the thread said too.
     if (q.seq !== undefined) st.rec.withheldSeqs = [...new Set([...(st.rec.withheldSeqs ?? []), q.seq])];

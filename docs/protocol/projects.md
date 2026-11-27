@@ -746,8 +746,20 @@ thread of their own, or it's moot) goes with `dropTask` and a `summary` of why
 done, and refused while a helper is working on it or once it's done. A session
 whose tool list predates `dropTask` drops it with `archiveTask` and a `summary`.
 `read_thread` reaches a coordinator's own hidden helpers by short id too;
-`send_message` refuses any helper (its coordinator uses `resumeHelper`). These actions use the scoped coordinator tool,
-with `taskId`, rather than a manual running-task checkbox.
+`send_message` refuses hidden helpers. Its owning coordinator can use the
+`resumeHelper` action with the exact `taskId` or `helperId` and a new `brief`
+to pass an update to a helper already at work. The update reaches that run
+as another message. The usual runner queue applies if the message cannot go
+into the current turn. The run keeps its identity and the task stays in
+progress, and the coordinator can still start only one helper at a time.
+Model and login changes wait for a later dispatch. An update can only reach
+a helper that has no more access than the coordinator has saved. The
+runner keeps restricted updates in its own queue so it can check that
+limit again just before sending. The helper report tells the coordinator if
+a change of permissions kept an update from reaching the helper. Wait
+until the turn reading a restricted update finishes before raising the
+helper's permissions above that update's limit. Pausing ends that run and
+a later explicit resume uses its new brief.
 
 **Restarts.** A runner update (a handover or a plain restart), a crash or a
 reboot cuts off a helper mid-turn: its CLI is one of the coordinator's sessions, which never stay
@@ -759,7 +771,11 @@ the runner's message, as a new run generation like `resumeHelper`, saying the
 runner restarted partway through its turn and to check what's already done
 rather than repeat a send, merge, release or deploy. The coordinator isn't woken
 and nothing is added to its conversation (the helper's Activity row says it's
-working again); it hears as usual when the helper's turn ends. Before 26 Nov
+working again); it hears as usual when the helper's turn ends. The carry-on
+recaps the updates saved during that run. Delivery can be uncertain at
+restart, so the helper checks what it already read or acted on before doing
+anything in the recap. If its access was raised above an update's limit,
+the runner leaves the work for the coordinator to reconcile. Before 26 Nov
 2026 every update woke the coordinator, which then told the user it had started
 the helper again. When the runner can't carry a helper on, it wakes the
 coordinator to reconcile it instead, once: the helper has no session to resume,

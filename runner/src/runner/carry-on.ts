@@ -28,7 +28,9 @@ export function stoppedWorkMessage(what: string[], last: boolean): string {
 // The runner's own message carrying on a turn that was cut off (CARRY_ON_*
 // below): the same work going on, not a new message to the thread.
 export function isCarryOn(msg: { text: string; origin?: MessageOrigin }): boolean {
-  return msg.origin === 'runner' && [CARRY_ON_SIGNED_OUT, CARRY_ON_MOVED, CARRY_ON_RESTART, CARRY_ON_NETWORK, CARRY_ON_TOKEN, CARRY_ON_BACK, CARRY_ON_HELPER_RESTART].includes(msg.text);
+  if (msg.origin !== 'runner') return false;
+  return [CARRY_ON_SIGNED_OUT, CARRY_ON_MOVED, CARRY_ON_RESTART, CARRY_ON_NETWORK, CARRY_ON_TOKEN, CARRY_ON_BACK, CARRY_ON_HELPER_RESTART].includes(msg.text)
+    || msg.text.startsWith(CARRY_ON_HELPER_RESTART + '\n\n');
 }
 
 // What the agent is told when Mike writes a message while its question or

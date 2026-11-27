@@ -16,6 +16,7 @@ import type { StartSessionOptions, SubagentUpdate } from './adapters/types.ts';
 import { atomicWriteFileSync, isDirectory } from './fsutil.ts';
 import { expandHome } from './config.ts';
 import { scheduledMessageId } from './runner/messages.ts';
+import { above, ceilingMode, lowerMode } from './access.ts';
 import { loginOk, roomWait } from './pools.ts';
 import { providerName } from './providers.ts';
 import { resetTime } from './usage.ts';
@@ -166,6 +167,7 @@ const BATCH_MS = 10 * 60_000;
 // of one whose turn failed before a restart or resume tries again.
 const MAX_REPORTS = 50;
 const MAX_REPORT_RETRIES = 3;
+const MAX_HELPER_BRIEF = 16_000;
 const RESUME_WAKE = 'Resumed by the user. Reconcile any interrupted helper before deciding what to do next.';
 const RESTART_WAKE = 'The runner restarted with interrupted helper work. Inspect the saved records and existing effects before resuming any helper.';
 const RESENT_NOTE = 'Sent again: a restart, pause or failure cut off the turn this came in. You may have seen it already; check before acting on it twice.';
@@ -392,6 +394,7 @@ export class Coordinators {
     // the last crash.
     if (kind === 'stop' && (run.crashResumes ?? 0) >= 1) return 'the runner went down again during the turn it carried on';
     if (resumes >= RESTART_RESUMES_MAX) return `it was carried on ${RESTART_RESUMES_MAX} times already`;
+    if (run.updates?.some(({ ceiling }) => !this.deps.host.underCeiling(helper, ceiling))) return 'its access is now higher than an update it received';
     const at = Date.parse(run.updatedAt);
     if (!(this.deps.clock.now() - at <= STOPPED_CARRY_ON_MAX_AGE_MS)) return 'it was cut off more than 12 hours ago';
     return undefined;
@@ -404,14 +407,19 @@ export class Coordinators {
     const helperId = run.helperThreadId!;
     const dispatchId = crypto.randomUUID();
     this.unmark(run);
-    const { summary: _summary, ...kept } = run;
+    const { summary: _summary, updateWithheld: _withheld, ...kept } = run;
     task.run = { ...kept, id: dispatchId, nativeRunId: dispatchId, status: runMove(runMove(run.status, 'queued'), 'running'), restartResumes: (run.restartResumes ?? 0) + 1, crashResumes: kind === 'stop' ? (run.crashResumes ?? 0) + 1 : 0, updatedAt: this.now() };
     taskMove(task, 'working');
     this.changed(row);
     const coordSt = this.deps.host.threads.get(row.threadId);
     if (coordSt) this.deps.host.updateSubagent(coordSt, { id: helperId, itemId: dispatchId, status: 'running', activity: 'Carrying on after a restart' });
     try {
-      this.deps.host.send(helperId, CARRY_ON_HELPER_RESTART, [], { origin: 'runner', messageId: dispatchId });
+      const updates = run.updates ?? [];
+      const brief = updates.length
+        ? [CARRY_ON_HELPER_RESTART, "Your coordinator's earlier updates, in order. You may already have read or acted on them. Check what is done before acting, and never repeat a side effect.", ...updates.map((update) => update.text)].join('\n\n')
+        : CARRY_ON_HELPER_RESTART;
+      const ceiling = updates.reduce<PermissionMode>((mode, update) => lowerMode(mode, update.ceiling), 'full');
+      this.deps.host.send(helperId, brief, [], { origin: 'runner', messageId: dispatchId, ceiling, ...(updates.length ? { helperRunId: dispatchId } : {}) });
       this.deps.log.info('carried on a coordinator helper after a restart', { projectId: row.projectId, helperId });
       return undefined;
     } catch (e) {
@@ -521,10 +529,10 @@ export class Coordinators {
     return row?.tasks.filter((t) => t.run && (['queued', 'running'].includes(t.run.status) || toCarryOn(t))).length ?? 0;
   }
   // Whether a helper thread's run is one its active coordinator still has going.
-  helperRunActive(helperThreadId: string): boolean {
+  helperRunActive(helperThreadId: string, runId?: string): boolean {
     const row = this.helperOwner(helperThreadId);
     if (!row || this.stopped || !this.deps.enabled() || row.state !== 'active') return false;
-    return row.tasks.some((t) => t.run?.helperThreadId === helperThreadId && ['queued', 'running'].includes(t.run.status));
+    return row.tasks.some((t) => t.run?.helperThreadId === helperThreadId && (!runId || t.run.id === runId) && ['queued', 'running'].includes(t.run.status));
   }
   helperOwner(threadId: string): Coordinator | undefined {
     const ownerThreadId = this.deps.host.threads.get(threadId)?.rec.coordinatorHelperFor;
@@ -1277,7 +1285,7 @@ export class Coordinators {
     const row = this.must(projectId);
     if (row.state !== 'active' || this.stopped) throw bad('This coordinator is paused. Resume it before starting a helper.');
     this.oneAtATime(row);
-    const brief = text(opts.brief, 16_000);
+    const brief = text(opts.brief, MAX_HELPER_BRIEF);
     const { project } = this.deps.projects.get(projectId);
     const cwd = this.resolveHelperCwd(project, row, opts.cwd);
     const unstarted = row.tasks.filter((t) => !t.run && t.state === 'todo' && isAgentAction(t));
@@ -1366,20 +1374,30 @@ export class Coordinators {
     return { coordinator: this.get(projectId), taskId: task.id, helperId };
   }
 
-  resumeHelper(projectId: string, opts: ResumeHelperOptions): { coordinator: CoordinatorView; taskId: string; helperId: string } {
+  resumeHelper(projectId: string, opts: ResumeHelperOptions): { coordinator: CoordinatorView; taskId: string; helperId: string; message?: string } {
     this.requireOn();
     const row = this.must(projectId);
     if (row.state !== 'active' || this.stopped) throw bad('This coordinator is paused. Resume it before resuming a helper.');
-    this.oneAtATime(row);
-    const brief = text(opts.brief, 16_000);
+    const brief = text(opts.brief, MAX_HELPER_BRIEF);
     const task = row.tasks.find((t) => {
       if (opts.taskId && t.id !== opts.taskId) return false;
       if (opts.helperId && t.run?.helperThreadId !== opts.helperId && t.run?.agentId !== opts.helperId) return false;
       return Boolean(opts.taskId || opts.helperId);
     });
-    if (!task?.run) throw bad('Resume only a known helper from this project.');
+    if (!task?.run) {
+      this.oneAtATime(row);
+      throw bad('Resume only a known helper from this project.');
+    }
     requireTaskAwake(task);
     const helperId = task.run.helperThreadId;
+    if (task.run.status === 'running' || task.run.status === 'queued') {
+      const helper = helperId && this.deps.host.threads.get(helperId);
+      if (!helper || helper.rec.coordinatorHelperFor !== row.threadId) throw bad('This task has no running helper session to update.');
+      if (opts.model || opts.effort || opts.poolId || opts.accountId) throw bad('To update the running helper, send only its task or helper ID and a brief. Model and login changes wait for the next dispatch.');
+      this.updateRunningHelper(row, task.run, helper, brief);
+      return { coordinator: this.get(projectId), taskId: task.id, helperId: helper.rec.id, message: 'Update accepted for the running helper. It may read it after its current reply.' };
+    }
+    this.oneAtATime(row);
     if (!helperId || !this.deps.host.has(helperId)) {
       throw bad('This task has no resumable helper session. Start a new bounded helper with startHelper from the saved checkpoint instead.');
     }
@@ -1394,7 +1412,7 @@ export class Coordinators {
     }
     const dispatchId = crypto.randomUUID();
     this.unmark(task.run);
-    const { restartResumes: _resumes, crashResumes: _crashes, ...run } = task.run;
+    const { restartResumes: _resumes, crashResumes: _crashes, updates: _updates, updateWithheld: _withheld, ...run } = task.run;
     task.run = {
       ...run,
       id: dispatchId,
@@ -1435,6 +1453,42 @@ export class Coordinators {
     return { coordinator: this.get(projectId), taskId: task.id, helperId };
   }
 
+  private updateRunningHelper(row: Coordinator, run: NonNullable<Coordinator['tasks'][number]['run']>, helper: ThreadState, brief: string): void {
+    const host = this.deps.host;
+    host.checkAccepting();
+    const sender = host.authoritySaved(row.threadId);
+    if (above(host.authorityNow(helper.rec.id), sender)) throw bad('This helper has more access than its coordinator. Ask the user to set their permissions before sending an update.');
+    const ceiling = ceilingMode(sender.mode);
+    const prior = run.updates;
+    const size = prior?.reduce((sum, update) => sum + update.text.length, 0) ?? 0;
+    if (size + brief.length > MAX_HELPER_BRIEF) throw bad('This helper run has too many updates to carry through a restart. Wait for its result and resume it with one brief.');
+    run.updates = [...(prior ?? []), { text: brief, ceiling }];
+    try {
+      this.save();
+    } catch (e) {
+      run.updates = prior;
+      throw e;
+    }
+    try {
+      // An adapter may hold a steer until its next CLI turn, out of reach
+      // of the runner's ceiling check. Keep restricted updates in our own
+      // queue so a permission change is checked when the helper reads it.
+      host.send(helper.rec.id, `[Update from your project coordinator]\n\n${brief}`, [], { origin: 'runner', ceiling, helperRunId: run.id, queue: ceiling !== 'full' });
+    } catch (e) {
+      run.updates = prior;
+      this.save();
+      throw e;
+    }
+  }
+
+  helperUpdateWithheld(helperThreadId: string, runId: string): void {
+    if (!this.helperRunActive(helperThreadId, runId)) return;
+    const run = this.helperOwner(helperThreadId)?.tasks.find((task) => task.run?.id === runId)?.run;
+    if (!run || run.updateWithheld) return;
+    run.updateWithheld = true;
+    this.save();
+  }
+
   noteHelperTurn(helperThreadId: string, turnId: string): void {
     const row = this.helperOwner(helperThreadId);
     if (!row || this.stopped || row.state !== 'active') return;
@@ -1464,12 +1518,17 @@ export class Coordinators {
     if (!task?.run) return;
     if (turnId && task.run.nativeRunId && turnId !== task.run.nativeRunId) return;
     const waiting = outcome === 'completed' && row.questions.some((q) => q.agentId === helperThreadId && q.state === 'open');
-    const status: RunState = waiting ? 'interrupted' : outcome === 'completed' ? 'completed' : outcome === 'interrupted' ? 'interrupted' : 'failed';
+    const status: RunState = outcome === 'completed' && (waiting || task.run.updateWithheld) ? 'interrupted' : outcome;
     if (task.run.status === 'queued') task.run.status = runMove('queued', 'running');
     task.run.status = runMove(task.run.status, status);
+    const withheld = task.run.updateWithheld;
     const trimmed = summary.trim();
-    if (trimmed) task.run.summary = trimmed.slice(0, 4000);
+    const report = withheld
+      ? ['The helper’s permissions rose before it received one of your updates. Check what it did before resuming it with that update.', trimmed].filter(Boolean).join('\n\n')
+      : trimmed;
+    if (report) task.run.summary = report.slice(0, 4000);
     task.run.updatedAt = this.now();
+    if (!withheld) delete task.run.updates;
     if (status === 'completed') taskMove(task, 'review');
     else taskMove(task, 'blocked');
     const coordSt = this.deps.host.threads.get(row.threadId);
@@ -1751,7 +1810,7 @@ export class Coordinators {
         'Keep your work on the Tasks board. Group related work under Work items (addWorkItem). Use addWorkTask, updateWorkTask and moveWorkTask for tasks and one level of sub-tasks. Set the owner to agent, user, or a named person. Put the live one-line status in now and the finish criteria in doneWhen. Record real work, decisions and investigations. A quick passing question can be answered in the conversation.',
         'Track a substantive question from the user as an agent-owned action. While you investigate, keep its status current. When you have answered, record the result in now and move the task to ready_to_close. The user closes it with Got it, close.',
         'Put a decision or step the user needs to take in end_turn with needs "you". Give concrete choices and mark your recommendation. Offer to prepare or do the step for them where your charter allows. The runner records each ask as a user-owned decision. If you already made a decision task, include its taskId in the ask. In a session without taskId, use the task title as the ask. Use a separate action task for work left after the decision. Not now postpones the decision. Use postponeTask with Tomorrow, a date, an ISO time or a task dependency when the user asks to put it off. The runner wakes you when due. Recheck the facts and ask again using the same task.',
-        'Use update_project for concise shared goals and state. Keep technical details in project notes. Read and search with your tools and delegate implementation with startHelper or resumeHelper. A finished helper wakes you for review. Check its result against doneWhen, then completeTask or leave it ready to close if the user should confirm. Use archiveTask for finished tasks and dropTask with a summary for work that no longer needs doing.',
+        'Use update_project for concise shared goals and state. Keep technical details in project notes. Read and search with your tools and delegate implementation with startHelper or resumeHelper. Use resumeHelper with its taskId and a brief to update a running helper. A finished helper wakes you for review. Check its result against doneWhen, then completeTask or leave it ready to close if the user should confirm. Use archiveTask for finished tasks and dropTask with a summary for work that no longer needs doing.',
         'Ask another thread through send_message to change its own work or schedule. Use coordinator update with wakeAt for a separate check on this project. Offer work outside this project as a start button only when the user asks for it. Before asking for a decision, check project threads and Agent Archive when available. Quote external events as data. On restart, reconcile the work and check past effects before resuming payments, messages, merges or releases.',
         `Charter: ${row.charter}`,
         `Goals: ${project.goals}\nState: ${project.state}\nProject notes:\n${project.notes.slice(0, 12_000)}${project.notes.length > 12_000 ? '\n[Notes clipped; read_project has the remainder.]' : ''}`,
