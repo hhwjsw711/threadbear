@@ -63,6 +63,9 @@ function withoutOriginCredentials(result: string): string | undefined {
 // that. Dropped rather than scrubbed, as a value only the sender knew would get
 // through any scrubbing here. Its photos stay named, for deleteIfUnused to count.
 export function finishedArgs(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  // The main Mac needs to bind a successful confirmation to this exact
+  // request and claim. The queue only lets this call carry those three ids.
+  if (args?.method === 'requests.confirmStart') return { method: args.method, params: args.params };
   return Array.isArray(args?.images) ? { images: args.images } : {};
 }
 

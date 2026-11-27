@@ -1179,3 +1179,62 @@ test('runnerAlive knows a runner on Windows by its program alone', () => {
   assert.equal(runnerAlive(1, info('node /x/releases/r/src/main.ts'), false), true);
   assert.equal(runnerAlive(1, info('node'), false), false);
 });
+
+
+test('Start it on a draining runner only wins while the live request is open', async () => {
+  for (const approved of [false, true]) {
+    const h = makeHarness();
+    const t = create(h).thread;
+    h.adapter.last.init();
+    const approvalId = 'request-1';
+    const card = h.runner.requestCard(t.id, {
+      approvalId, title: 'Start a thread on another runner?', input: {}, minutes: 60,
+      check: async () => ({ status: 'started', runnerId: 'elsewhere', runnerName: 'Mac', threadId: 'new' }),
+    });
+    const handed: string[] = [];
+    await h.runner.beginDrain([t.id], { onHandedOver: (id) => handed.push(id), checkMs: MIN });
+    const b = primary(h, [t.id]);
+    const commands = phoneCommands(b.runner, {
+      owns: (id) => h.runner.has(id),
+      call: async (id, method, params) => {
+        assert.equal(method, 'drain.confirmRequestStart');
+        return h.runner.confirmRequestStart(id, String(params.approvalId), String(params.claim), params.release === true);
+      },
+    });
+    if (approved) assert.equal(await commands.confirmRequestStart?.(t.id, approvalId, 'claim-a', false), true);
+    h.clock.advance(31 * MIN);
+    await tick();
+    if (approved) {
+      assert.deepEqual(handed, [], 'an accepted request is not unanswered');
+      assert.ok(!h.events(t.id).some((e) => e.type === 'system.note' && /lapsed/.test(e.text)));
+      h.clock.advance(29 * MIN);
+      await tick();
+      assert.equal((await card).status, 'authorized');
+      assert.ok(h.events(t.id).some((e) => e.type === 'approval.resolved' && e.decision === 'allow' && /result is still pending/.test(e.message ?? '')));
+    } else {
+      assert.deepEqual(handed, [t.id]);
+      assert.equal((await card).status, 'expired');
+      b.runner.adopt(t.id);
+    }
+    assert.equal(await commands.confirmRequestStart?.(t.id, approvalId, 'claim-a', false), false);
+  }
+});
+
+
+test('handing back a failed start reopens the normal decline on the asking runner', async () => {
+  const h = makeHarness();
+  const t = create(h).thread;
+  h.adapter.last.init();
+  const approvalId = 'request-1';
+  const card = h.runner.requestCard(t.id, {
+    approvalId, title: 'Start a thread on another runner?', input: {}, minutes: 60,
+    check: async () => { throw new Error('The request is still being started.'); },
+  });
+  assert.equal(h.runner.confirmRequestStart(t.id, approvalId, 'claim-a', false), true);
+  assert.equal(h.runner.confirmRequestStart(t.id, approvalId, 'claim-b', false), true);
+  assert.equal(h.runner.confirmRequestStart(t.id, approvalId, 'claim-b', true), true);
+  await assert.rejects(async () => h.runner.respondApproval({ threadId: t.id, approvalId, decision: 'deny' }), /being started/);
+  assert.equal(h.runner.confirmRequestStart(t.id, approvalId, 'claim-a', true), true);
+  h.runner.respondApproval({ threadId: t.id, approvalId, decision: 'deny' });
+  assert.equal((await card).status, 'declined');
+});

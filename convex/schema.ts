@@ -945,6 +945,10 @@ export const appSchema = defineSchema({
     // convex/migrations.json); optional only in the deploy that runs it
     // (stepping.ts). It has no timers.
     requestState: requiredUnlessStepping('requestState', requestStateV),
+    // The asking runner closed the card after accepting Start it. Its proof
+    // can still claim the request, but a failed start should close it.
+    // eslint-disable-next-line machines/no-optional-on-machine-tables -- The asking card has a separate lifetime from the backend request and can close independently.
+    closeWhenHandedBack: v.optional(v.literal(true)),
     // Once allowed: where it was started.
     result: v.optional(v.object({ runnerId: v.string(), runnerName: v.string(), threadId: v.string() })),
     decidedAt: v.optional(v.number()),

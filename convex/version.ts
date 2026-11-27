@@ -519,4 +519,6 @@
 //    and `provider`, and phone:update takes `{ accountId?, poolId?,
 //    provider?, model?, effort? }`. A runner sends the new fields only to
 //    a backend of 107 or later; older phones ignore them.
-export const API_VERSION = 107;
+// 108: a runner request's claim requires a completed requests.confirmStart
+//    command from the runner that still held its approval card.
+export const API_VERSION = 108;

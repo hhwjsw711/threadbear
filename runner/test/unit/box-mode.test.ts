@@ -821,6 +821,8 @@ test("a box's key isn't the owner's: create_thread on another runner files a req
     createThere: async () => (created.push('there'), { id: 'x' }),
     card: async () => ({ status: 'declined' }),
     openCard: async () => undefined,
+    confirmStart: async () => assert.fail('a runner key cannot accept an approval'),
+    releaseStart: async () => {},
     respondThere: async () => {},
     home: () => h.home,
     realDir: () => undefined,

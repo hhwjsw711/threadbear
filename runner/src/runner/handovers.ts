@@ -186,6 +186,9 @@ export const handoversPart = {
   lapseCards(this: Runner, st: ThreadState, d: Drain): boolean {
     const { rec, rt } = st;
     if (rt.approvals.size === 0) return false;
+    // Start it won on this runner. Let the request hear the result or hit
+    // its own timeout, instead of telling the agent to ask again.
+    if ([...rt.approvals.values()].some((p) => p.kind === 'request' && p.start.phase === 'authorized')) return false;
     const now = this.clock.now();
     // Something else going (a hook, an action, an edit, setup, wake grace):
     // the wait counts again from when it ends (Codex's review, 27 Nov 2026).

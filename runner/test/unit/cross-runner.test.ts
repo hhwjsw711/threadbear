@@ -40,7 +40,7 @@ function realDirIn(dirs: Set<string>) {
 }
 const realDir = realDirIn(DIRS);
 
-function fake(opts: { owner: boolean; loseClaimAnswer?: number; self?: { id: string; name: string }; failCreate?: Error; failThere?: unknown; failRespond?: Error; runners?: RunnerRef[]; beforeOpen?: () => void }) {
+function fake(opts: { owner: boolean; loseClaimAnswer?: number; loseHandBackAnswer?: boolean; releaseStart?: CrossRunnerDeps['releaseStart']; self?: { id: string; name: string }; failCreate?: Error; failThere?: unknown; failRespond?: Error; runners?: RunnerRef[]; beforeOpen?: () => void; confirmStart?: CrossRunnerDeps['confirmStart'] }) {
   const log: string[] = [];
   // This fake's own disk, so a test can make a folder appear.
   const dirs = new Set(DIRS);
@@ -59,10 +59,10 @@ function fake(opts: { owner: boolean; loseClaimAnswer?: number; self?: { id: str
         open = p.requestId;
       },
       runnerRequest: async (id) => rows.get(id) ?? null,
-      closeRequest: async (id) => {
+      closeRequest: async (id, afterConfirmation) => {
         log.push(`close ${id}`);
         const r = rows.get(id);
-        if (r?.state === 'pending') rows.set(id, { ...r, state: 'closed' });
+        if (!afterConfirmation && r?.state === 'pending') rows.set(id, { ...r, state: 'closed' });
       },
       decideRequest: async (p) => {
         log.push(`decide ${p.requestId} ${p.state}${p.result ? ` ${p.result.runnerId}/${p.result.threadId}` : ''}`);
@@ -72,10 +72,14 @@ function fake(opts: { owner: boolean; loseClaimAnswer?: number; self?: { id: str
         // As relay:decideRequest: the same claim asked again is told yes, any other move is checked.
         if (p.state === 'claimed' && r.state === 'claimed' && p.claim !== undefined && r.claim === p.claim) return;
         const from: Record<string, string[]> = { claimed: ['pending'], allowed: ['claimed'], pending: ['claimed'], denied: ['pending'] };
+        if ((p.state === 'pending' || p.state === 'allowed') && p.claim !== undefined && p.claim !== r.claim) {
+          throw Object.assign(new Error('That claim no longer holds the request.'), { data: { kind: 'badArgs' } });
+        }
         if (!from[p.state]!.includes(r.state)) throw Object.assign(new Error(`that request is ${r.state}`), { data: { kind: 'badArgs' } });
         rows.set(p.requestId, { ...r, state: p.state, ...(p.result ? { result: p.result } : {}), claim: p.state === 'claimed' ? p.claim : undefined });
         // The claim went through, but its answer never came back.
         if (p.state === 'claimed' && opts.loseClaimAnswer && opts.loseClaimAnswer-- > 0) throw new Error('fetch failed');
+        if (p.state === 'pending' && opts.loseHandBackAnswer) throw new Error('fetch failed');
         if (opts.failCreate && p.state === 'claimed') return;
       },
     }),
@@ -100,6 +104,8 @@ function fake(opts: { owner: boolean; loseClaimAnswer?: number; self?: { id: str
       opts.beforeOpen?.();
       return open;
     },
+    confirmStart: opts.confirmStart ?? (async () => 'confirmation'),
+    releaseStart: opts.releaseStart ?? (async () => {}),
     respondThere: async (threadId, approvalId, decision, message) => {
       if (opts.failRespond) throw opts.failRespond;
       log.push(`respond ${threadId} ${approvalId} ${decision}${message ? ` ${message}` : ''}`);
@@ -495,4 +501,74 @@ test('answering on the main Mac: one answer to a request at a time, Start it or 
   assert.equal(f.rows.get('req-two')!.state, 'allowed');
   // Answered, it's free again: a later click is told it's allowed, not busy.
   await assert.rejects(f.cross.answer('c', 'req-two', false), /already allowed/);
+});
+
+
+test('a card that closed on the asking runner cannot start from a stale synced card', async () => {
+  const f = fake({
+    owner: true,
+    confirmStart: async () => { throw new RpcError(ErrorCode.badParams, 'That request has closed.'); },
+  });
+  const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-stale', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', createdAt: 1, state: 'pending' };
+  f.rows.set(row.requestId, row);
+  f.setOpen(row.requestId);
+  for (const target of ['laptop', 'mini1']) {
+    const shown = (await f.cross.get(row.threadId, row.requestId)).fingerprint;
+    await assert.rejects(f.cross.answer(row.threadId, row.requestId, true, target, shown), /has closed/);
+  }
+  assert.deepEqual(f.log, []);
+});
+
+
+test('an accepted card that closes before the reply checks whether the thread started', async () => {
+  const f = fake({ owner: false, self: { id: 'cloud1', name: 'Cloud box' } });
+  const said = f.cross.start('cloud-thread', { runner: 'main', text: 'x' });
+  await new Promise((r) => setImmediate(r));
+  const id = [...f.rows.keys()][0]!;
+  const result = { runnerId: 'laptop', runnerName: 'Laptop', threadId: 'new-here' };
+  f.rows.set(id, { ...f.rows.get(id)!, state: 'allowed', result });
+  f.settle({ status: 'authorized' });
+  assert.match((await said)!, /started thread new-here on Laptop/);
+});
+
+
+test('a lost hand-back reply still releases the acceptance after a definite start failure', async () => {
+  const released: string[] = [];
+  const claimIds: string[] = [];
+  const f = fake({
+    owner: true,
+    failCreate: new RpcError(ErrorCode.badParams, 'no such folder'),
+    loseHandBackAnswer: true,
+    confirmStart: async (_row, claim) => { claimIds.push(claim); return 'confirmation'; },
+    releaseStart: async (_row, claim) => { released.push(claim); },
+  });
+  const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-retry', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', createdAt: 1, state: 'pending' };
+  f.rows.set(row.requestId, row);
+  f.setOpen(row.requestId);
+  await assert.rejects(f.cross.answer(row.threadId, row.requestId, true, undefined, fingerprint(row)), /no such folder/);
+  assert.equal(f.rows.get(row.requestId)?.state, 'pending');
+  assert.equal(claimIds.length, 1);
+  assert.deepEqual(released, claimIds);
+});
+
+
+test('a lost claim is handed back if the live request can no longer confirm it', async () => {
+  let confirmed = false;
+  const f = fake({
+    owner: true,
+    loseClaimAnswer: 1,
+    confirmStart: async () => {
+      if (confirmed) throw new RpcError(ErrorCode.badParams, 'That request has closed.');
+      confirmed = true;
+      return 'confirmation';
+    },
+  });
+  const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-reconfirm', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', createdAt: 1, state: 'pending' };
+  f.rows.set(row.requestId, row);
+  f.setOpen(row.requestId);
+  await assert.rejects(f.cross.answer(row.threadId, row.requestId, true, undefined, fingerprint(row)), /fetch failed/);
+  assert.equal(f.rows.get(row.requestId)?.state, 'claimed');
+  await assert.rejects(f.cross.answer(row.threadId, row.requestId, true, undefined, fingerprint(row)), /has closed/);
+  assert.equal(f.rows.get(row.requestId)?.state, 'pending');
+  assert.equal(f.log.some((line) => line.startsWith('here') || line.startsWith('there')), false);
 });

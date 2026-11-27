@@ -964,6 +964,8 @@ export function phoneCommands(runner: Runner, remote?: Pick<Peers, 'owns' | 'cal
   };
   return {
     send: (id, text, images, o) => at(id, 'threads.send', { text, ...(images.length ? { images } : {}), origin: o.origin, ...(o.answers ? { answers: o.answers } : {}) }, () => runner.send(id, text, images, o)) as { turnId: string },
+    confirmRequestStart: (id, approvalId, claim, release) =>
+      at(id, 'drain.confirmRequestStart', { approvalId, claim, release }, () => runner.confirmRequestStart(id, approvalId, claim, release)),
     respondApproval: (p) => at(p.threadId, 'approvals.respond', { ...p }, () => runner.respondApproval(p)),
     // Opened by sync.ts already; a thread still on a draining runner gets
     // it over the local link, both runners sharing the one data dir.

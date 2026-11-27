@@ -173,7 +173,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 107;
+export const BACKEND_API_VERSION = 108;
 export const INDEX_POOL_API_VERSION = 101;
 export const COORDINATORS_API_VERSION = 102;
 export const NEXT_PICK_API_VERSION = 103;
@@ -186,6 +186,8 @@ export const SHARE_LOGINS_API_VERSION = 105;
 // modelInUse / effort / effortInUse, account model descriptions & planEnded,
 // and phone:update settings changes.
 export const MOBILE_PICKER_API_VERSION = 107;
+// The main Mac must confirm Start it with the runner that holds the card.
+export const LIVE_REQUEST_API_VERSION = 108;
 // A logins call older than this is refused (the clocks' drift included).
 const SHARE_STALE_MS = 5 * 60_000;
 // From this one sync:removeThreads takes the runner's id and leaves a row
@@ -696,6 +698,7 @@ type Host = {
 export type CommandHost = {
   // origin: absent for a message Mike sent from the main Mac (a command `from: "mac"`).
   send(threadId: string, text: string, images: ImageRef[], opts: { origin?: 'phone'; answers?: AskAnswer[] }): unknown;
+  confirmRequestStart?(threadId: string, approvalId: string, claim: string, release: boolean): unknown;
   respondApproval(p: { threadId: string; approvalId: string; decision: ApprovalDecision; message?: string; answers?: Record<string, string>; remote?: boolean }): unknown;
   answerSecret(p: { threadId: string; approvalId: string; secret?: string; decline?: boolean }): unknown;
   update(p: {
@@ -2229,7 +2232,7 @@ export class ConvexSync {
     return ((await this.backend('query', 'relay:runnerRequest', { key: this.deps.key, requestId })) as RunnerRequestRow | null) ?? null;
   }
 
-  async decideRequest(p: { requestId: string; docId: string; state: 'claimed' | 'allowed' | 'pending' | 'denied'; result?: { runnerId: string; runnerName: string; threadId: string }; claim?: string }): Promise<void> {
+  async decideRequest(p: { requestId: string; docId: string; state: 'claimed' | 'allowed' | 'pending' | 'denied'; result?: { runnerId: string; runnerName: string; threadId: string }; claim?: string; confirmation?: string }): Promise<void> {
     this.mustBeOn();
     // Not before a heartbeat this start has said which backend this is: a
     // claim without its id (a cached version, out of date) is the one a lost
@@ -2241,9 +2244,9 @@ export class ConvexSync {
     await this.backend('mutation', 'relay:decideRequest', { key: this.deps.key, ...rest, ...(claim !== undefined && this.backendHeard && (this.backendApiVersion ?? 0) >= COMMAND_ATTEMPT_API_VERSION ? { claim } : {}) });
   }
 
-  async closeRequest(requestId: string): Promise<void> {
+  async closeRequest(requestId: string, afterConfirmation?: true): Promise<void> {
     this.mustBeOn();
-    await this.backend('mutation', 'relay:closeRequest', { key: this.deps.key, requestId });
+    await this.backend('mutation', 'relay:closeRequest', { key: this.deps.key, requestId, ...(afterConfirmation ? { afterConfirmation } : {}) });
   }
 
   private mustBeOn(): void {
@@ -5234,6 +5237,16 @@ export class ConvexSync {
         const params = a.params && typeof a.params === 'object' ? (a.params as Record<string, unknown>) : {};
         // The Mac's Move sheet (threads.movePreview): this runner's thread
         // described, or, as the target, where it would go. Both only plan.
+        if (a.method === 'requests.confirmStart') {
+          if (a.from !== 'mac' || typeof params.approvalId !== 'string' || typeof params.claim !== 'string' || !host.confirmRequestStart) {
+            throw new Error("This runner can't confirm a request to start a thread.");
+          }
+          const release = params.release === true;
+          // An old queued click can no longer lead to a claim. Leave the
+          // live card alone if the main Mac has already waited for its reply.
+          if (!release && this.deps.clock.now() - c.createdAt >= 30_000) return { result: false };
+          return { result: (await host.confirmRequestStart(needThread(), params.approvalId, params.claim, release)) === true };
+        }
         if (a.method === 'moves.describe') {
           if (!host.moveDescribe) throw new Error("This runner can't move threads.");
           return { result: await host.moveDescribe(needThread()) };

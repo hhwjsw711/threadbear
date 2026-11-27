@@ -13,6 +13,7 @@ import { ConvexError, v } from 'convex/values';
 import type { OrderedQuery } from 'convex/server';
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { DataModel, Doc, Id } from './_generated/dataModel';
+import { internal } from './_generated/api';
 import { checkRunnerId, forbidden, isSeq, MAX_SEQ, ownerFenced, pageLimit, runnerAuth, sha256, withoutCredentials } from './lib';
 import { docBytes, isThreadId, mayTouch, ownThreadOnly } from './runnerAccess';
 import { queued, request as requestMachine } from './machines';
@@ -239,7 +240,7 @@ type Kind = (typeof KINDS)[number];
 // this Mac's Claude logins (docs/protocol/settings.md, "This Mac's logins
 // on another runner"): that runner's public sealing key, then each login
 // sealed to it. Only ciphertext is held, and only until it's finished.
-export const CALLS = new Set(['files.list', 'moves.describe', 'moves.preview', 'accounts.yearToken', 'accounts.useReset', 'logins.sealKey', 'logins.share']);
+export const CALLS = new Set(['files.list', 'moves.describe', 'moves.preview', 'requests.confirmStart', 'accounts.yearToken', 'accounts.useReset', 'logins.sealKey', 'logins.share']);
 // A logins.share's shape: an email and a sealed box (base64) each.
 const SHARED_LOGINS_MAX = 20;
 const SHARED_BOX_MAX = 2800;
@@ -350,6 +351,12 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
       if (a.method === 'moves.preview') {
         const p = (a.params && typeof a.params === 'object' ? a.params : {}) as Record<string, unknown>;
         out = { method: a.method, params: { info: moveInfoArg(p.info), ...(typeof p.cwd === 'string' ? { cwd: p.cwd } : {}), ...(typeof p.accountId === 'string' ? { accountId: p.accountId } : {}) } };
+      } else if (a.method === 'requests.confirmStart') {
+        const p = (a.params && typeof a.params === 'object' ? a.params : {}) as Record<string, unknown>;
+        if (typeof p.approvalId !== 'string' || !REQUEST_ID.test(p.approvalId)
+          || typeof p.docId !== 'string' || p.docId.length > 128
+          || typeof p.claim !== 'string' || !CLAIM.test(p.claim)) throw bad('requests.confirmStart needs a request and claim');
+        out = { method: a.method, params: { approvalId: p.approvalId, docId: p.docId, claim: p.claim, ...(p.release === true ? { release: true } : {}) } };
       } else if (a.method === 'moves.describe') {
         out = { method: a.method, params: {} };
       } else if (a.method === 'accounts.useReset') {
@@ -709,7 +716,7 @@ export const runnerRequest = query({
     const caller = await runnerAuth(ctx, key, 'runnerRequest');
     const r = await ctx.db.query('runnerRequests').withIndex('by_requestId', (q) => q.eq('requestId', requestId)).first();
     if (!r || (!caller.owner && r.runnerId !== caller.runnerId) || !ownThreadOnly(caller, r.threadId)) return null;
-    const { _id, _creationTime, requestState: _s, ...rest } = r;
+    const { _id, _creationTime, requestState: _s, closeWhenHandedBack: _c, ...rest } = r;
     return { ...rest, docId: String(_id), runnerName: await runnerNameOf(ctx, r.runnerId) };
   },
 });
@@ -722,6 +729,7 @@ export const runnerRequest = query({
 // is that machine's event.
 const EVENTS = { claimed: 'CLAIM', allowed: 'ALLOW', pending: 'HAND_BACK', denied: 'DENY' } as const;
 const CLAIM = /^[A-Za-z0-9_-]{8,64}$/;
+const CONFIRMATION_MS = 60_000;
 
 /** Mike's answer, recorded by the main Mac's runner as it starts the thread (or he said no). */
 export const decideRequest = mutation({
@@ -736,13 +744,27 @@ export const decideRequest = mutation({
     // asked again (its first answer was lost) is told yes, and nothing
     // changes; any other claim of a claimed request is refused, as before.
     claim: v.optional(v.string()),
+    confirmation: v.optional(v.id('commands')),
   },
   returns: v.null(),
-  handler: async (ctx, { key, requestId, state, docId, result, claim }) => {
+  handler: async (ctx, { key, requestId, state, docId, result, claim, confirmation }) => {
     await runnerAuth(ctx, key, 'decideRequest');
     if (claim !== undefined && !CLAIM.test(claim)) throw new ConvexError({ kind: 'badArgs', message: 'claim must be 8 to 64 letters, digits, - or _' });
     const r = await ctx.db.query('runnerRequests').withIndex('by_requestId', (q) => q.eq('requestId', requestId)).first();
     if (!r || String(r._id) !== docId) throw new ConvexError({ kind: 'notFound', message: 'no such request' });
+    if (state === 'claimed') {
+      const c = confirmation === undefined ? null : await ctx.db.get('commands', confirmation);
+      const params = c?.args?.params as { approvalId?: unknown; docId?: unknown; claim?: unknown; release?: unknown } | undefined;
+      if (claim === undefined || c?.commandState.kind !== 'done' || c.kind !== 'call' || c.result !== 'true'
+        || c.runnerId !== r.runnerId || c.threadId !== r.threadId || c.args?.method !== 'requests.confirmStart'
+        || params?.approvalId !== requestId || params.docId !== docId || params.claim !== claim || params.release === true
+        || Date.now() - c.createdAt >= CONFIRMATION_MS) {
+        throw new ConvexError({ kind: 'badArgs', message: 'Start it needs a fresh confirmation from the runner with the card. Update both runners and try again.' });
+      }
+    }
+    if ((state === 'pending' || state === 'allowed') && claim !== undefined && r.claim !== claim) {
+      throw new ConvexError({ kind: 'badArgs', message: 'That claim no longer holds the request.' });
+    }
     if (steppingFor('requestState')) return await decideAsBefore(ctx, r, state, result, claim);
     if (state === 'allowed' && !result && r.state === 'claimed') throw new ConvexError({ kind: 'badArgs', message: 'an allowed request says where it started' });
     const type = EVENTS[state];
@@ -751,28 +773,48 @@ export const decideRequest = mutation({
     // the request's state doesn't take is refused as it always was.
     const r2 = await requestMachine.send(ctx, r._id, event);
     if (r2.status !== 'done') throw new ConvexError({ kind: 'badArgs', message: `that request is ${r.state}` });
+    if (state === 'pending' && r.closeWhenHandedBack) await requestMachine.send(ctx, r._id, { type: 'CLOSE' });
     return null;
   },
 });
 
 /** The asking runner gave up on one of its own requests (its card closed without it starting). */
 export const closeRequest = mutation({
-  args: { key: v.string(), requestId: v.string() },
+  args: { key: v.string(), requestId: v.string(), afterConfirmation: v.optional(v.literal(true)) },
   returns: v.null(),
-  handler: async (ctx, { key, requestId }) => {
+  handler: async (ctx, { key, requestId, afterConfirmation }) => {
     const caller = await runnerAuth(ctx, key, 'closeRequest');
     const r = await ctx.db.query('runnerRequests').withIndex('by_requestId', (q) => q.eq('requestId', requestId)).first();
     // The asking runner's alone: the owner key files none, and doesn't close
     // one of a runner with a live key of its own (lib.ts ownerFenced; Mike's
     // no is decideRequest's).
     if (!r || (!caller.owner && r.runnerId !== caller.runnerId) || !ownThreadOnly(caller, r.threadId) || (await ownerFenced(ctx, caller, r.runnerId))) throw new ConvexError({ kind: 'notFound', message: 'no such request' });
-    // Only one nobody has started: a claimed one may be starting now.
-    if (r.state !== 'pending') return null;
-    if (steppingFor('requestState')) await asBefore(ctx, r, { state: 'closed', decidedAt: Date.now() });
-    else await requestMachine.send(ctx, r._id, { type: 'CLOSE' });
+    // If Start it won locally, give its confirmation time to reach the
+    // claim mutation. Once the proof is too old, we can close an unused row.
+    if (!afterConfirmation) await closePendingRequest(ctx, r);
+    else if (!r.closeWhenHandedBack && (r.state === 'pending' || r.state === 'claimed')) {
+      await ctx.db.patch('runnerRequests', r._id, { closeWhenHandedBack: true });
+      await ctx.scheduler.runAfter(CONFIRMATION_MS, internal.relay.closeAfterConfirmation, { docId: r._id });
+    }
     return null;
   },
 });
+
+export const closeAfterConfirmation = internalMutation({
+  args: { docId: v.id('runnerRequests') },
+  returns: v.null(),
+  handler: async (ctx, { docId }) => {
+    const r = await ctx.db.get('runnerRequests', docId);
+    if (r) await closePendingRequest(ctx, r);
+    return null;
+  },
+});
+
+async function closePendingRequest(ctx: MutationCtx, r: Doc<'runnerRequests'>): Promise<void> {
+  if (r.state !== 'pending') return;
+  if (steppingFor('requestState')) await asBefore(ctx, r, { state: 'closed', decidedAt: Date.now() });
+  else await requestMachine.send(ctx, r._id, { type: 'CLOSE' });
+}
 
 // While the deploy's stepping stone has the machine off (stepping.ts), the
 // main Mac's answer and the asking runner's close go through the way they
@@ -785,7 +827,8 @@ async function decideAsBefore(ctx: MutationCtx, r: Doc<'runnerRequests'>, state:
   if (state === 'claimed' && r.state === 'claimed' && claim !== undefined && r.claim === claim) return null;
   if (!MOVES_BEFORE[state]!.includes(r.state)) throw new ConvexError({ kind: 'badArgs', message: `that request is ${r.state}` });
   if (state === 'allowed' && !result) throw new ConvexError({ kind: 'badArgs', message: 'an allowed request says where it started' });
-  await asBefore(ctx, r, { state, ...(state === 'allowed' && result ? { result } : {}), ...(state === 'claimed' ? { claim } : state === 'pending' ? { claim: undefined } : {}), decidedAt: Date.now() });
+  const next = state === 'pending' && r.closeWhenHandedBack ? 'closed' : state;
+  await asBefore(ctx, r, { state: next, ...(state === 'allowed' && result ? { result } : {}), ...(state === 'claimed' ? { claim } : state === 'pending' ? { claim: undefined } : {}), decidedAt: Date.now() });
   return null;
 }
 

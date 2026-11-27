@@ -1449,7 +1449,7 @@ export class Relay {
    * (or, with `done`, finished). A runner that's offline is said at once
    * rather than left to pick it up whenever it's back.
    */
-  private async command(runnerId: string, threadId: string | undefined, kind: string, args: Record<string, unknown>, opts: { done?: boolean; ms?: number; settleBy?: number; anyway?: boolean } = {}): Promise<{ state: string; note?: string; threadId?: string; result?: unknown }> {
+  private async command(runnerId: string, threadId: string | undefined, kind: string, args: Record<string, unknown>, opts: { done?: boolean; ms?: number; settleBy?: number; anyway?: boolean } = {}): Promise<{ state: string; note?: string; threadId?: string; result?: unknown; commandId?: string }> {
     // settleBy: a send carrying pictures, and when it must answer by
     // (REPLY_BUDGET_MS). That runner marks it taken before it fetches them,
     // and a fetch that fails then fails the command, so taken isn't enough
@@ -1506,7 +1506,9 @@ export class Relay {
           if (!s) return end(() => reject(new RpcError(ErrorCode.other, `${name} didn't get it.`)));
           if (s.state === 'failed') return end(() => reject(new RpcError(ErrorCode.other, s.note ?? `${name} couldn't do that.`)));
           if (s.state === 'taken' && settleBy !== undefined) taken = s;
-          else if (s.state === 'done' || (s.state === 'taken' && !opts.done)) return end(() => resolve(s));
+          else if (s.state === 'done' || (s.state === 'taken' && !opts.done)) {
+            return end(() => resolve({ ...s, ...(typeof commandId === 'string' ? { commandId } : {}) }));
+          }
         },
         (e) => end(() => reject(new RpcError(ErrorCode.other, String(e)))),
       );
@@ -1881,6 +1883,18 @@ export class Relay {
         runnerId,
       },
     };
+  }
+
+  async confirmRequestStart(runnerId: string, threadId: string, approvalId: string, docId: string, claim: string): Promise<string> {
+    const params = { approvalId, docId, claim };
+    const done = await this.command(runnerId, threadId, 'call', { method: 'requests.confirmStart', params }, { done: true, ms: CALL_MS });
+    if (done.result !== true || !done.commandId) throw new RpcError(ErrorCode.badParams, 'That request has closed: its thread is no longer waiting for it.');
+    return done.commandId;
+  }
+
+  async releaseRequestStart(runnerId: string, threadId: string, approvalId: string, docId: string, claim: string): Promise<void> {
+    const params = { approvalId, docId, claim, release: true };
+    await this.command(runnerId, threadId, 'call', { method: 'requests.confirmStart', params }, { done: true, ms: CALL_MS });
   }
 
   /** files.list on another runner, through an allow-listed `call` command. */

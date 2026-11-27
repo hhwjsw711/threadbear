@@ -29,7 +29,7 @@ export type StartRequest = RunnerRequestInput & { runner: string; askerMode?: Pe
 
 export type RequestAnswer =
   | { status: 'started'; runnerId: string; runnerName: string; threadId: string }
-  | { status: 'declined' | 'expired'; message?: string };
+  | { status: 'declined' | 'expired' | 'authorized'; message?: string };
 
 export type RunnerRef = { id: string; name: string; self: boolean; online?: boolean };
 
@@ -41,8 +41,8 @@ export type CrossRunnerDeps = {
         ownerKey(): boolean;
         fileRequest(p: { requestId: string; threadId: string; target: string; request: RunnerRequestInput }): Promise<void>;
         runnerRequest(requestId: string): Promise<RunnerRequestRow | null>;
-        decideRequest(p: { requestId: string; docId: string; state: 'claimed' | 'allowed' | 'pending' | 'denied'; result?: { runnerId: string; runnerName: string; threadId: string }; claim?: string }): Promise<void>;
-        closeRequest(requestId: string): Promise<void>;
+        decideRequest(p: { requestId: string; docId: string; state: 'claimed' | 'allowed' | 'pending' | 'denied'; result?: { runnerId: string; runnerName: string; threadId: string }; claim?: string; confirmation?: string }): Promise<void>;
+        closeRequest(requestId: string, afterConfirmation?: true): Promise<void>;
       }
     | undefined;
   // Every runner the owner key can see, this one first (schedules.ts runners()).
@@ -61,6 +61,10 @@ export type CrossRunnerDeps = {
   card: (threadId: string, c: { approvalId: string; title: string; input: Record<string, unknown>; minutes: number; check: () => Promise<RequestAnswer> }) => Promise<RequestAnswer>;
   // The open card on another runner's thread, as the backend's row has it.
   openCard: (threadId: string) => Promise<string | undefined>;
+  // Accepts Start it on the runner with the live card. Returns the relay
+  // command id, which the backend checks before letting us claim the request.
+  confirmStart: (row: RunnerRequestRow, claim: string) => Promise<string>;
+  releaseStart: (row: RunnerRequestRow, claim: string) => Promise<void>;
   // Answers another runner's card through the relay.
   respondThere: (threadId: string, approvalId: string, decision: 'allow' | 'deny', message?: string) => Promise<void>;
   // This Mac's home folder and disk, for the folder a request names.
@@ -206,7 +210,7 @@ export class CrossRunner {
     if (request.permissionMode === 'plan') request.permissionMode = 'ask';
     await backend.fileRequest({ requestId: approvalId, threadId, target: runner, request });
     const input: Record<string, unknown> = { runner, ...request };
-    const answer = await this.deps.card(threadId, {
+    let answer = await this.deps.card(threadId, {
       approvalId,
       title: `Start a thread on ${runner}?`,
       input,
@@ -221,12 +225,22 @@ export class CrossRunner {
     });
     // Closed here without starting (declined, expired, Mike wrote instead):
     // so it stops counting against this runner's few, and can't be started late.
-    if (answer.status !== 'started') await backend.closeRequest(approvalId).catch(() => {});
+    if (answer.status !== 'started') await backend.closeRequest(approvalId, answer.status === 'authorized' ? true : undefined).catch(() => {});
+    if (answer.status === 'authorized') {
+      // Stop, a message, or the timeout may release the tool while the main
+      // Mac is still starting it. Read the result before saying what happened.
+      const row = await backend.runnerRequest(approvalId).catch(() => null);
+      if (row?.state === 'allowed' && row.result) answer = { status: 'started', ...row.result };
+      else if (row?.state === 'closed' || row?.state === 'denied') return 'The request closed before a thread started.';
+      else return 'Start was approved, but the result is still unknown. Check the other runner before asking again.';
+    }
     if (answer.status === 'started') return `The user allowed it: started thread ${answer.threadId} on ${answer.runnerName}. It can report back here with send_message; this thread can't read or message it.`;
     // A reason with it (the main Mac's runner couldn't start it, or Mike
     // wrote one) is the agent's to act on; a plain no is final.
     if (answer.status === 'declined') return answer.message ? `It wasn't started: ${answer.message}` : "The user said no. Don't ask again unless they say so.";
-    return `Nobody answered in ${REQUEST_WAIT_MIN} minutes, so nothing was started.`;
+    return answer.message && answer.message !== 'No answer in time.'
+      ? `The request closed before it was accepted. ${answer.message}`
+      : `Nobody answered in ${REQUEST_WAIT_MIN} minutes, so nothing was started.`;
   }
 
   /** requests.get, on the main Mac: the request as it was filed, and where it would start. */
@@ -277,17 +291,38 @@ export class CrossRunner {
     const ours = this.lostClaims.get(approvalId);
     const reclaim = row.state === 'claimed' && ours !== undefined && row.claim === ours;
     if (row.state !== 'pending' && !reclaim) throw bad(`That request is ${row.state === 'claimed' ? 'being started' : `already ${row.state}`}.`);
+    const releaseStart = (claim: string) => this.deps.releaseStart(row, claim).catch(() => {});
+    const handBack = async (claim: string) => {
+      const giveBack = () => backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'pending', claim });
+      try {
+        await giveBack();
+      } catch (e) {
+        // Its answer can be lost after the transition commits. A retry
+        // names the same claim, so it cannot undo a later Start it.
+        if (!refused(e)) await giveBack().catch(() => {});
+      } finally {
+        // We know this attempt made no thread, even if the backend reply
+        // was lost. Clear only this attempt's acceptance.
+        await releaseStart(claim);
+      }
+    };
     const target = allow ? (runnerId ? (await this.deps.runners()).find((r) => r.id === runnerId) : await this.resolve(row.target)) : undefined;
     if (allow && !target) throw bad(`No runner called ${runnerId ?? row.target}. Pick one.`);
     const place = this.place(row);
     if (allow && shown !== fingerprint(row, place)) throw bad('That request has changed since the card showed it. Open the thread again to read it.');
     // Only while its card is still open: one that expired or was answered
     // from the phone has an agent that's no longer waiting.
-    if ((await this.deps.openCard(threadId)) !== approvalId) throw bad('That request has closed: its thread is no longer waiting for it.');
+    if ((await this.deps.openCard(threadId)) !== approvalId) {
+      if (reclaim) {
+        await handBack(ours);
+        this.lostClaims.delete(approvalId);
+      }
+      throw bad('That request has closed: its thread is no longer waiting for it.');
+    }
     if (!allow) {
       // Our lost claim goes back first: only a pending request can be declined.
       if (reclaim) {
-        await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'pending' });
+        await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'pending', claim: ours });
         this.lostClaims.delete(approvalId);
       }
       await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'denied' });
@@ -322,12 +357,26 @@ export class CrossRunner {
       // Kept only while the claim's own answer is unknown: once it's through,
       // something may start under it, so asking again must never reuse it.
       const claim = ours ?? crypto.randomUUID();
+      const confirmation = await this.deps.confirmStart(row, claim).catch(async (e: unknown) => {
+        if (reclaim) {
+          // A lost claim answer never reached create. If the card can no
+          // longer confirm, hand that claim back before releasing it.
+          await handBack(claim);
+          this.lostClaims.delete(approvalId);
+        } else if (e instanceof RpcError && e.code !== ErrorCode.badParams) {
+          await releaseStart(claim);
+        }
+        throw e;
+      });
       this.lostClaims.set(approvalId, claim);
       try {
-        await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'claimed', claim });
+        await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'claimed', claim, confirmation });
       } catch (e) {
         // Refused for good (another claim has it, or it was decided): not ours.
-        if (refused(e)) this.lostClaims.delete(approvalId);
+        if (refused(e)) {
+          this.lostClaims.delete(approvalId);
+          await releaseStart(claim);
+        }
         throw e;
       }
       this.lostClaims.delete(approvalId);
@@ -339,7 +388,7 @@ export class CrossRunner {
           // Turned down before anything was made (a folder that isn't one):
           // it can be tried again. Anything else may have made it (a
           // handover passing it to the new runner), so the claim stays.
-          if (e instanceof RpcError && e.code === ErrorCode.badParams) await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'pending' }).catch(() => {});
+          if (e instanceof RpcError && e.code === ErrorCode.badParams) await handBack(claim);
           throw e;
         }
       } else {
@@ -347,14 +396,14 @@ export class CrossRunner {
         // claim stays (never a second one), unless nothing was sent.
         made = await this.deps.createThere(target.id, p).catch(async (e: unknown) => {
           if (wasNotSent(e)) {
-            await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'pending' }).catch(() => {});
+            await handBack(claim);
             throw e;
           }
           throw other(`${target.name} didn't say it started it (${e instanceof Error ? e.message : String(e)}). It may still: look there before asking again.`);
         });
       }
       const result = { runnerId: target.id, runnerName: target.name, threadId: made.id };
-      await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'allowed', result });
+      await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'allowed', result, claim });
       // The thread is started and marked whatever happens now: a card the
       // other runner was slow to close isn't an error to show Mike.
       await this.deps.respondThere(threadId, approvalId, 'allow').catch(() => {});

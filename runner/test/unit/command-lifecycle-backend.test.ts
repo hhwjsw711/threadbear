@@ -194,24 +194,41 @@ test('lapsing reads within its byte budget, so taken messages of hundreds of KB 
 
 // ------------------------------------------------------------ runner requests
 
+async function confirmStart(s: Awaited<ReturnType<typeof setup>>, requestId: string, docId: string, claim: string, approved = true) {
+  const confirmation = await call(s.ctx, relay.queueCommand, {
+    key: OWNER, runnerId: MINI, threadId: 'B', kind: 'call',
+    args: { method: 'requests.confirmStart', params: { approvalId: requestId, docId, claim } },
+  });
+  assert.equal(await call(s.ctx, sync.takeCommand, { key: MINI_KEY, commandId: confirmation, attempt: ATTEMPT }), true);
+  await call(s.ctx, sync.finishCommand, { key: MINI_KEY, commandId: confirmation, ok: true, result: JSON.stringify(approved) });
+  return confirmation;
+}
+
 test("a runner request's claim: the same claim asked again is told yes, any other is refused, and a handed-back claim is spent", async () => {
   const s = await setup();
   await call(s.ctx, relay.fileRequest, { key: MINI_KEY, requestId: 'req-00001', threadId: 'B', target: 'main', request: { text: 'start one' } });
   const row = () => s.rows('runnerRequests').find((r) => r.requestId === 'req-00001')!;
   const decide = (state: string, extra: Record<string, unknown> = {}) => call(s.ctx, relay.decideRequest, { key: OWNER, requestId: 'req-00001', docId: String(row()._id), state, ...extra });
-  await decide('claimed', { claim: ATTEMPT });
+  assert.equal(await outcome(decide('claimed', { claim: ATTEMPT })), 'badArgs', 'an older owner cannot claim on the synced card alone');
+  const confirm = (claim: string, approved = true) => confirmStart(s, 'req-00001', String(row()._id), claim, approved);
+  const refused = await confirm(ATTEMPT, false);
+  assert.equal(await outcome(decide('claimed', { claim: ATTEMPT, confirmation: refused })), 'badArgs');
+  const confirmation = await confirm(ATTEMPT);
+  assert.equal(await outcome(decide('claimed', { claim: 'other-claim-id', confirmation })), 'badArgs');
+  assert.equal(await later(60_000, () => outcome(decide('claimed', { claim: ATTEMPT, confirmation }))), 'badArgs');
+  await decide('claimed', { claim: ATTEMPT, confirmation });
   assert.deepEqual([row().state, row().claim], ['claimed', ATTEMPT]);
   // Its answer was lost; asking again with the same claim is fine, and changes nothing.
-  await decide('claimed', { claim: ATTEMPT });
+  await decide('claimed', { claim: ATTEMPT, confirmation });
   // Another claim, or none (an older runner), is refused as before.
-  assert.equal(await outcome(decide('claimed', { claim: 'another-claim-id' })), 'badArgs');
+  assert.equal(await outcome(decide('claimed', { claim: 'another-claim-id', confirmation: await confirm('another-claim-id') })), 'badArgs');
   assert.equal(await outcome(decide('claimed')), 'badArgs');
   assert.equal(await outcome(decide('claimed', { claim: 'x' })), 'badArgs');
   // Handed back: the claim goes with it, so it can't be reused to skip the next claim.
   await decide('pending');
   assert.deepEqual([row().state, row().claim], ['pending', undefined]);
-  await decide('claimed', { claim: 'second-claim-id' });
-  assert.equal(await outcome(decide('claimed', { claim: ATTEMPT })), 'badArgs');
+  await decide('claimed', { claim: 'second-claim-id', confirmation: await confirm('second-claim-id') });
+  assert.equal(await outcome(decide('claimed', { claim: ATTEMPT, confirmation })), 'badArgs');
   // The asking runner reads it back with its claim (requestOut lets it through).
   assert.equal((await call(s.ctx, relay.runnerRequest, { key: OWNER, requestId: 'req-00001' })).claim, 'second-claim-id');
 });
@@ -228,7 +245,10 @@ test("a runner request's machine: allowed with where it started, denied or close
 
   // Allowed: claimed first, and it has to say where it started.
   assert.equal(await outcome(decide('req-allow1', 'allowed', { result: where })), 'badArgs', 'not before a claim');
-  await decide('req-allow1', 'claimed', { claim: ATTEMPT });
+  const confirm = (id: string) => confirmStart(s, id, String(row(id)._id), ATTEMPT);
+  const confirmation = await confirm('req-allow1');
+  assert.equal(await outcome(decide('req-close1', 'claimed', { claim: ATTEMPT, confirmation })), 'badArgs', 'a proof for another request cannot claim this one');
+  await decide('req-allow1', 'claimed', { claim: ATTEMPT, confirmation });
   assert.equal(await outcome(decide('req-allow1', 'allowed')), 'badArgs');
   // The asking runner can't close one that may be starting: nothing changes.
   await close('req-allow1');
@@ -240,13 +260,39 @@ test("a runner request's machine: allowed with where it started, denied or close
 
   await decide('req-deny01', 'denied');
   assert.equal(row('req-deny01').state, 'denied');
+  const closeConfirmation = await confirm('req-close1');
   await close('req-close1');
   await close('req-close1'); // again is fine
   assert.equal(row('req-close1').state, 'closed');
-  assert.equal(await outcome(decide('req-close1', 'claimed', { claim: ATTEMPT })), 'badArgs');
+  assert.equal(await outcome(decide('req-close1', 'claimed', { claim: ATTEMPT, confirmation: closeConfirmation })), 'badArgs');
   for (const r of s.rows('runnerRequests')) assert.equal(r.requestState.kind, r.state, JSON.stringify(r));
   // None of the machine's own fields reach the runners.
   assert.ok(!('requestState' in (await call(s.ctx, relay.runnerRequest, { key: OWNER, requestId: 'req-allow1' }))));
+});
+
+
+test('closing an accepted card lets its in-flight confirmation claim the request before cleanup', async () => {
+  const s = await setup();
+  for (const requestId of ['req-accept1', 'req-unused1']) {
+    await call(s.ctx, relay.fileRequest, { key: MINI_KEY, requestId, threadId: 'B', target: 'main', request: { text: 'start one' } });
+    const row = () => s.rows('runnerRequests').find((r) => r.requestId === requestId)!;
+    const docId = String(row()._id);
+    const confirmation = await confirmStart(s, requestId, docId, ATTEMPT);
+    await call(s.ctx, relay.closeRequest, { key: MINI_KEY, requestId, afterConfirmation: true });
+    assert.equal(row().state, 'pending');
+    if (requestId === 'req-accept1') {
+      await call(s.ctx, relay.decideRequest, { key: OWNER, requestId, docId, state: 'claimed', claim: ATTEMPT, confirmation });
+    }
+    const job = (s.scheduled as { fn: string; args: Record<string, unknown> }[]).find((j) => j.fn.endsWith('closeAfterConfirmation') && j.args.docId === docId);
+    assert.ok(job);
+    await later(60_000, () => call(s.ctx, relay.closeAfterConfirmation, job.args));
+    assert.equal(row().state, requestId === 'req-accept1' ? 'claimed' : 'closed');
+    if (requestId === 'req-accept1') {
+      await call(s.ctx, relay.decideRequest, { key: OWNER, requestId, docId, state: 'pending', claim: ATTEMPT });
+      assert.equal(row().state, 'closed', 'a hand-back after cleanup never reopens a closed card');
+      assert.equal(row().requestState.kind, 'closed');
+    }
+  }
 });
 
 test('the backfill gives runner requests from before requestState theirs', async () => {
@@ -443,7 +489,12 @@ test('during the stepping stone, a request is answered and closed as before, kee
     await insert('req-pend01', { state: 'pending', requestState: { kind: 'pending' } });
     const decide = (requestId: string, state: string, extra: Record<string, unknown> = {}) => call(b.ctx, relayAt.decideRequest, { key: OWNER, requestId, docId: String(row(requestId)._id), state, ...extra });
     const where = { runnerId: 'laptop000001', runnerName: 'Laptop', threadId: 'new-thread' };
-    await decide('req-claimed', 'claimed', { claim: ATTEMPT });
+    const confirmation = await b.ctx.db.insert('commands', {
+      runnerId: MINI, threadId: 'B', kind: 'call', state: 'done', commandState: { kind: 'done', finishedAt: now },
+      createdAt: now, result: 'true',
+      args: { method: 'requests.confirmStart', params: { approvalId: 'req-claimed', docId: String(row('req-claimed')._id), claim: ATTEMPT } },
+    });
+    await decide('req-claimed', 'claimed', { claim: ATTEMPT, confirmation });
     await decide('req-claimed', 'allowed', { result: where });
     assert.deepEqual([row('req-claimed').state, row('req-claimed').result, row('req-claimed').requestState], ['allowed', where, undefined]);
     await call(b.ctx, relayAt.closeRequest, { key: OWNER, requestId: 'req-pend01' });

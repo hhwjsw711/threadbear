@@ -405,7 +405,7 @@ runner that's this one is the usual create.
   nothing can change it after), then shows an `approval.requested` in the
   asking thread named `threadbear.start_thread`, with the request as its
   `input`, and waits up to an hour, like `ask_secret`. A message from Mike
-  in that thread declines it. Its thread row's card has no `options` and
+  in that thread declines an unanswered card. Its thread row's card has no `options` and
   says to answer it on the Mac: the phone can't start it.
 - **The main Mac's app** draws that card from the request as filed
   (`requests.get` on its own runner), never from the card's words: who's
@@ -438,7 +438,17 @@ runner that's this one is the usual create.
   when it was filed), so a request filed again under the same id with
   other words isn't started on the old card. The runner checks the
   fingerprint and that the asking thread's row still has that card open,
-  claims the request (`relay:decideRequest` to `claimed`, owner only,
+  asks the runner that holds the card to accept Start it while the card
+  is still open (`requests.confirmStart` through the relay). The runner
+  holding the card decides whether Start it or closing the card came first,
+  including during a handover. A synced copy can still show a closed card,
+  but it can't accept Start it. A card whose start was accepted can wait for
+  its result until the ordinary request timeout. If it closes before the
+  result arrives, the asking thread hears what is known about the start.
+  The backend gives its confirmation time to reach the claim before it
+  closes an unused request.
+  The main Mac then claims the request (`relay:decideRequest` to `claimed`,
+  owner only, from API 108 with the completed confirmation command,
   naming the row it read by its `docId`, so a retry or second click can't
   start a second, nor a click delayed past a refile claim the new row;
   from backend API 85 with a `claim` id of its own, so when the claim went
@@ -453,8 +463,9 @@ runner that's this one is the usual create.
   that line), marks it `allowed` with where it started, then answers the
   card with `allow` through the relay. A start turned down here before
   anything was made (a folder that isn't one) hands the claim back
-  (`pending`), as does a relay refusal before anything was queued for the
-  other runner (offline, sync off); any other failure keeps it, as the thread may still have
+  (`pending`) and puts the card back to waiting for an answer, as does a
+  relay refusal before anything was queued for the other runner (offline,
+  sync off). Any other failure keeps the claim, as the thread may still have
   been made (another runner answering late, a handover passing it on), and
   the card says so. A machine the runner list says is offline is said
   before anything is claimed.
@@ -462,7 +473,7 @@ runner that's this one is the usual create.
   card reads `relay:runnerRequest`: allowed with a result, the tool says
   where the thread started; denied, the user said no; still pending (an
   old phone's Allow, or anyone's), the answer is refused and the card
-  stays open. `deny` from anywhere declines it, and a message with it is
+  stays open. `deny` from anywhere declines an unanswered card. A message with it is
   given to the agent as why it wasn't started. A card that closes without
   starting (declined, expired, Mike wrote instead) closes its request
   (`relay:closeRequest`, its own), so it stops counting against the five

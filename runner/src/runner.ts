@@ -288,7 +288,7 @@ export type PendingApproval =
   | { approvalId: string; kind: 'secret'; main: boolean; resolve: (a: SecretAnswer) => void }
   // create_thread asking for a thread on another runner (cross-runner.ts).
   // check reads the backend's answer, which is the only one it believes.
-  | { approvalId: string; kind: 'request'; main: boolean; check: () => Promise<RequestAnswer>; resolve: (a: RequestAnswer) => void };
+  | { approvalId: string; kind: 'request'; main: boolean; start: { phase: 'waiting' } | { phase: 'authorized'; claims: ReadonlySet<string> }; expiresAt: number; check: () => Promise<RequestAnswer>; resolve: (a: RequestAnswer) => void };
 
 export type Turn = {
   turnId: string;

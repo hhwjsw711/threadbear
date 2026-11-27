@@ -89,7 +89,7 @@ import { SettingsService, modelMethods, settingsMethods } from './settings.ts';
 import { SelfProfiler, profileMethods, watchStalls } from './self-profile.ts';
 import { TrustOffThread } from './trust-off-thread.ts';
 import { InstructionsStore, instructionsMethods } from './instructions.ts';
-import { ConvexSync, convexPoster, convexUploader, defaultRunnerName, ensureRunnerId, keyRejected, readSyncKey, SHARE_LOGINS_API_VERSION } from './sync.ts';
+import { ConvexSync, convexPoster, convexUploader, defaultRunnerName, ensureRunnerId, keyRejected, readSyncKey, LIVE_REQUEST_API_VERSION, SHARE_LOGINS_API_VERSION } from './sync.ts';
 import { BOX_NO_SCHEDULES, BoxFolderBroken, bootBox, readBoxSecrets, enterBoxEnv, markSetUp, prepareBoxFolder, readBoxBoot, repoFolderName, setBaseline, setSaveHold, type ActionPost, type BoxSecrets } from './box-mode.ts';
 import { BoxProcesses } from './box-procs.ts';
 import { asSave, closeSpawns, installSpawnGate, openSpawns } from './spawn-gate.ts';
@@ -1631,6 +1631,13 @@ async function main(): Promise<void> {
       const row = (await src.post('query', 'relay:remoteThread', { key: src.key, threadId })) as { pendingApproval?: { approvalId?: string } } | null;
       return row?.pendingApproval?.approvalId;
     },
+    confirmStart: (row, claim) => {
+      if ((sync.relaySource()?.apiVersion ?? 0) < LIVE_REQUEST_API_VERSION) {
+        throw new RpcError(ErrorCode.other, 'Start it needs the updated Threadbear backend. Try again after it updates.');
+      }
+      return relay.confirmRequestStart(row.runnerId, row.threadId, row.requestId, row.docId, claim);
+    },
+    releaseStart: (row, claim) => relay.releaseRequestStart(row.runnerId, row.threadId, row.requestId, row.docId, claim),
     respondThere: async (threadId, approvalId, decision, message) => {
       await relay.call(threadId, 'approvals.respond', { threadId, approvalId, decision, ...(message ? { message } : {}) });
     },
@@ -2170,6 +2177,7 @@ async function main(): Promise<void> {
             setTimeout(() => runner.recheckHandovers(), 1000);
             return { pid: process.pid, version: RUNNER_VERSION, release: RELEASE.release, threads: runner.keeping() ?? [] };
           },
+          'drain.confirmRequestStart': (p) => runner.confirmRequestStart(String(p.threadId ?? ''), String(p.approvalId ?? ''), String(p.claim ?? ''), p.release === true),
           'drain.openCards': async (p) => {
             if (typeof p.threadId !== 'string') throw new RpcError(ErrorCode.badParams, 'threadId must be a string');
             return { events: await runner.openCards(p.threadId) };
