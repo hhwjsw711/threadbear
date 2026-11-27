@@ -213,6 +213,41 @@ impl Threadbear {
     /// the one already open on it brought forward with this copy. `at`: the
     /// option and shot to open on, for a picture clicked on the review's
     /// card.
+    /// A review that isn't among the thread's loaded rows, fetched from the
+    /// runner by id and opened; one the runner hasn't got says so.
+    pub(crate) fn open_review_by_id(
+        &mut self,
+        thread_id: &str,
+        review_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (client, thread_id, review_id) =
+            (self.client.clone(), thread_id.to_owned(), review_id.to_owned());
+        cx.spawn_in(window, async move |this, cx| {
+            let found = call(
+                client,
+                "reviews.get",
+                json!({ "threadId": thread_id, "reviewId": review_id }),
+            )
+            .await;
+            this.update_in(cx, |t, window, cx| {
+                match found.as_ref().ok().and_then(|v| DesignReview::decode(&v["review"])) {
+                    Some(review) => t.open_review_window(&thread_id, review, None, window, cx),
+                    None => {
+                        let why = match &found {
+                            Err(e) => e.message.clone(),
+                            Ok(_) => "the runner hasn't got it".into(),
+                        };
+                        t.show_error(format!("Couldn't open that review ({review_id}): {why}."), cx)
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub(crate) fn open_review_window(
         &mut self,
         thread_id: &str,
@@ -383,11 +418,15 @@ impl crate::thread::ThreadPane {
         };
         match rules::find_review(&id, self.feed.model().rows()).cloned() {
             Some(review) => self.open_review(review, window, cx),
+            // Its card has been paged out of a long thread: the runner still
+            // has it (reviews.get), so open it from there. On 27 Nov a link
+            // in a reply only said its card was further up, and Mike had to
+            // ask what that meant.
             None => {
                 if let Some(app) = self.composer.read(cx).app.upgrade() {
-                    let said = format!("That review isn't in this thread's loaded messages ({id}). Its card further up opens it, or Review design options over the thread.");
-                    window.defer(cx, move |_, cx| {
-                        app.update(cx, |t, cx| t.show_error(said, cx))
+                    let thread_id = self.summary.id.clone();
+                    window.defer(cx, move |window, cx| {
+                        app.update(cx, |t, cx| t.open_review_by_id(&thread_id, &id, window, cx))
                     });
                 }
             }
