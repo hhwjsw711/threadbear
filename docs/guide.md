@@ -1850,7 +1850,9 @@ OpenCode start as backups; you can change that per pool. Backups stay out of
 the pot, and OpenCode always gets its own pay-as-you-go line. A thread running
 on a backup leaves the main pot empty and says what it is using on hover.
 The tooltip shows one line per provider, ready counts, and the next known
-reset. Signed-out logins do not count; unknown usage contributes no honey.
+reset. Signed-out logins and ended plans do not count; unknown usage contributes
+no honey. The tooltip distinguishes a short block from an empty week and
+uses reset times from the provider, without burn-rate predictions.
 
 Threadbear learns these numbers from the threads it runs, so a login's bars
 fill in once it has run something.

@@ -312,8 +312,8 @@ test('in its pool, the thread moves off the Grok login that ran out and carries 
     { id: 'convex', title: 'Convex', accountIds: ['grok-main', 'claude-main'] },
     { id: 'own', title: 'Own', accountIds: ['claude-3'] },
   ]);
-  const { thread } = h.runner.create({ text: 'Write me a note', poolId: 'convex' });
-  assert.equal(thread.accountId, 'grok-main', "the pool's first login");
+  const { thread } = h.runner.create({ text: 'Write me a note', poolId: 'convex', provider: 'grok' });
+  assert.equal(thread.accountId, 'grok-main', 'the explicitly selected Grok login');
   assert.equal(thread.poolId, 'convex');
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
@@ -341,7 +341,7 @@ test('with nothing else in its pool with room, it waits for room rather than goi
     { id: 'convex', title: 'Convex', accountIds: ['grok-main'] },
     { id: 'own', title: 'Own', accountIds: ['claude-main', 'claude-3'] },
   ]);
-  const { thread } = h.runner.create({ text: 'Write me a note', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'Write me a note', poolId: 'convex', provider: 'grok' });
   assert.equal(thread.accountId, 'grok-main');
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
@@ -361,7 +361,7 @@ test('with nothing else in its pool with room, it waits for room rather than goi
 test('a reading that says the login has room again ends the block a 402 put on it', async () => {
   const played = await outOfBalanceOutputs();
   const h = grokHarness([{ id: 'convex', title: 'Convex', accountIds: ['grok-main', 'claude-main'] }]);
-  const { thread } = h.runner.create({ text: 'x', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   for (const o of played) s.out(o);
@@ -381,7 +381,7 @@ test("a window that's only shown (Gemini's Claude and GPT group) at its limit do
   // Codex's and Gemini's merge reviews, 24 Nov 2026.
   const played = await outOfBalanceOutputs();
   const h = grokHarness([{ id: 'convex', title: 'Convex', accountIds: ['grok-main', 'claude-main'] }]);
-  h.runner.create({ text: 'x', poolId: 'convex' });
+  h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   for (const o of played) s.out(o);
@@ -398,7 +398,7 @@ test('a thread waiting on its own Grok login carries on there once limit-recheck
     { id: 'convex', title: 'Convex', accountIds: ['grok-main'] },
     { id: 'own', title: 'Own', accountIds: ['claude-main'] },
   ]);
-  const { thread } = h.runner.create({ text: 'Write me a note', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'Write me a note', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   for (const o of played) s.out(o);
@@ -416,7 +416,7 @@ test('a thread waiting on its own Grok login carries on there once limit-recheck
 
 test("a reading from a turn still running on the old login is that login's, after the thread was moved", async () => {
   const h = grokHarness([{ id: 'convex', title: 'Convex', accountIds: ['grok-main', 'claude-main'] }]);
-  const { thread } = h.runner.create({ text: 'x', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   // Mike moves it to claude-main mid-turn; the Grok CLI finishes its turn.
@@ -433,7 +433,7 @@ test('a 402 while Grok still reads room: reading that same room again is no reas
     { id: 'convex', title: 'Convex', accountIds: ['grok-main'] },
     { id: 'own', title: 'Own', accountIds: ['claude-main'] },
   ]);
-  const { thread } = h.runner.create({ text: 'x', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   for (const o of roomy) s.out(o);
@@ -459,7 +459,7 @@ test('a prepaid top-up on a used-up plan (read as 1%) counts as back', async () 
     { id: 'convex', title: 'Convex', accountIds: ['grok-main'] },
     { id: 'own', title: 'Own', accountIds: ['claude-main'] },
   ]);
-  const { thread } = h.runner.create({ text: 'x', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   for (const o of played) s.out(o);
@@ -474,7 +474,7 @@ test('a prepaid top-up on a used-up plan (read as 1%) counts as back', async () 
 test('a 402 from a turn still running on the old login after Mike moved the thread marks that login, and leaves the thread where he put it', async () => {
   const played = await outOfBalanceOutputs();
   const h = grokHarness([{ id: 'convex', title: 'Convex', accountIds: ['grok-main', 'claude-main', 'claude-3'] }]);
-  const { thread } = h.runner.create({ text: 'x', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   h.runner.update({ threadId: thread.id, accountId: 'claude-3' });
@@ -491,7 +491,7 @@ test("with no reading after the 402 (Grok gone), a recheck's reading is the room
     { id: 'convex', title: 'Convex', accountIds: ['grok-main'] },
     { id: 'own', title: 'Own', accountIds: ['claude-main'] },
   ]);
-  const { thread } = h.runner.create({ text: 'x', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   for (const o of played) s.out(o);
@@ -515,7 +515,7 @@ test('a balance topped up before any recheck counts as back, whatever the login 
   ]);
   // Read at 60% earlier; the 402 comes and no reading follows it.
   h.fake.base = h.fake.base.map((a) => (a.id === 'grok-main' ? { ...a, usage: { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 60 }], readAt: new Date(h.clock.now()).toISOString(), source: 'live' } } : a));
-  const { thread } = h.runner.create({ text: 'x', poolId: 'convex' });
+  const { thread } = h.runner.create({ text: 'x', poolId: 'convex', provider: 'grok' });
   const s = h.grok.last;
   s.init(s.opts.sessionId, 'grok-4.7');
   for (const o of played) s.out(o);

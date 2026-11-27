@@ -547,35 +547,14 @@ from one as `byAgent`.
 
 ## Pools
 
-### Backup logins (API 111)
-
-A pool may carry `backup?: Record<string, boolean>`, keyed by its own login
-ids. An absent entry means backup for Grok and OpenCode, main for other
-providers. `false` explicitly makes even Grok a main login. Only pool members
-may be keys. Older configs need no migration; older runners ignore the field.
-Shared saves preserve existing choices when an older client omits them.
-Shared pool members carry optional `backup?: boolean` instead, translated to
-local ids on each runner. Usage-pool heartbeats carry the optional map from
-API 111. A runner refuses an explicit backup edit against an older backend,
-with an update message, rather than silently losing the choice.
-
-Failover keeps the same provider first (main, then backup), then tries other
-main providers in pool order, then backup providers in pool order. The existing
-reset-based login selection within each provider and tier stays unchanged.
-New threads without a provider choice prefer providers with main logins;
-explicit choices can still select a backup. The desktop draft follows the
-same tiers, including its per-provider login selection.
-
-The desktop honey pot averages the open thread provider's main logins in its
-pool. A pinned thread uses only its login. An explicitly selected backup or
-pay-as-you-go login leaves the pot empty and is named in the tooltip. Without
-an open thread, average all main logins in the active/default pool. Signed-out
-and plan-ended logins are excluded; unknown usage contributes zero and is
-reported as unknown. OpenCode never contributes to a percentage. The tooltip
-shows the active pool's providers, with separate backup lines, ready counts,
-and factual reset times; it distinguishes a short block from an empty week.
-It contains no burn-rate predictions.
-
+From API 111, `backup?: Record<string, boolean>` maps pool member login ids to backup choices.
+Missing entries mean backup for Grok/OpenCode, main for others; `false` makes either a main login.
+Older configs need no migration. Shared members use optional `backup?: boolean`, translated to local ids;
+older clients omitting it preserve choices. Usage-pool heartbeats send the map from API 111;
+explicit edits against older backends are refused with an update message. Older runners ignore the field.
+Failover tries the same provider (main, then backup), other main providers, then backup providers in pool order;
+reset-based selection within each tier stays unchanged. Unhinted new threads prefer main providers; explicit choices may use backups.
+See the [Usage display](../guide.md#accounts) for the desktop fill and tooltip.
 
 A pool is a named, ordered list of logins, of any provider. Mike picks a
 pool and a model; the runner picks which login runs each turn, and moves a
