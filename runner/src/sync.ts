@@ -28,7 +28,7 @@ import crypto from 'node:crypto';
 import { ConvexClient } from 'convex/browser';
 import { phonePicture } from './project-icons.ts';
 import { RunnerStats, type MachineStats } from './runner-stats.ts';
-import { draftFromPhone, phoneReview, reviewStills } from './phone-reviews.ts';
+import { draftFromPhone, mergePhoneMarks, phoneReview, reviewStills } from './phone-reviews.ts';
 import { experimentOn } from './experiments.ts';
 import { imagesInEvent, PAGE_TYPE, pastedImagesInEvent, readReplyImage, readShareImage, readShareMedia, replyImagesInEvent, type ReplyImage, type ShareImage } from './share-images.ts';
 import { extForMediaType, sniffImage } from './media.ts';
@@ -5318,7 +5318,16 @@ export class ConvexSync {
         // Marks' cut-outs (API 106) come as the command's photos, as a
         // send's do, and are kept by reviews.respond before they go.
         const reviewId = a.reviewId;
-        await this.withPhoneImages(a.images, (images) => respond(needThread(), reviewId, Number(a.revision), draftFromPhone(a.draft, images)));
+        // Its marks join the ones saved on the Mac (mergePhoneMarks).
+        await this.withPhoneImages(a.images, async (images) => {
+          let draft = draftFromPhone(a.draft, images);
+          if (draft.marks?.length) {
+            if (!host.getReview) throw new Error("Update the thread's runner to mark reviews on the phone.");
+            const { review } = (await host.getReview(needThread(), reviewId)) as { review: DesignReview };
+            draft = mergePhoneMarks(review, draft);
+          }
+          return respond(needThread(), reviewId, Number(a.revision), draft);
+        });
         return undefined;
       }
       case 'slashCommands': {

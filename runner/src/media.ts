@@ -156,22 +156,84 @@ export function readVideoInfo(file: string): ImageInfo | null {
   }
 }
 
-// A sound file's type, from its first bytes (MP3, AAC, WAV), or an MPEG-4
-// one's: an M4A brand, or any MP4 named .m4a, as some makers use isom.
+// A sound file's type, from its first bytes, or an MPEG-4 one's: an M4A
+// brand, or any MP4 named .m4a, as some makers use isom. WAV is RIFF....WAVE.
+// MP3 and AAC (ADTS) have no magic number, only frame headers, which random
+// bytes can look like, so it takes two whole frames back to back, each with
+// a valid header, the second where the first's length says; after an ID3v2
+// tag (a real one: version 2 to 4, a synchsafe size) for an MP3 or AAC file
+// that has one. Gemini's review, 27 Nov: any file starting "ID3", or two
+// bytes of 0xFF sync, passed as a sound.
 export function sniffAudio(buf: Buffer, name = ''): ImageInfo | null {
   if (buf.length < 12) return null;
   if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WAVE') return { mediaType: 'audio/wav' };
-  if (buf.toString('ascii', 0, 3) === 'ID3') return { mediaType: 'audio/mpeg' };
   if (buf.toString('ascii', 4, 8) === 'ftyp') {
     if (/^(M4A |M4B |M4P |F4A |F4B )$/.test(buf.toString('ascii', 8, 12))) return { mediaType: 'audio/mp4' };
     return /\.m4[ab]$/i.test(name) && sniffVideo(buf) ? { mediaType: 'audio/mp4' } : null;
   }
-  // A frame's sync word: 11 bits set, then layer 0 is AAC's ADTS, the rest MP3's.
-  if (buf[0] !== 0xff || (buf[1] & 0xe0) !== 0xe0) return null;
-  if (((buf[1] >> 1) & 3) === 0) return (buf[1] & 0xf6) === 0xf0 && ((buf[2] >> 2) & 0xf) < 13 ? { mediaType: 'audio/aac' } : null;
-  return ((buf[1] >> 3) & 3) !== 1 && buf[2] >> 4 !== 15 && ((buf[2] >> 2) & 3) !== 3 ? { mediaType: 'audio/mpeg' } : null;
+  const tag = id3End(buf);
+  if (tag === null) return null;
+  return audioFramesAt(buf, tag ?? 0);
 }
 
+// Where an ID3v2 tag ends: undefined with no tag, null for one that's
+// malformed (or claims "ID3" and isn't one).
+export function id3End(buf: Buffer): number | undefined | null {
+  if (buf.length < 10 || buf.toString('ascii', 0, 3) !== 'ID3') return undefined;
+  const version = buf[3]!;
+  if (version < 2 || version > 4 || buf[4] === 0xff) return null;
+  for (let i = 6; i < 10; i++) if (buf[i]! >= 0x80) return null;
+  const size = (buf[6]! << 21) | (buf[7]! << 14) | (buf[8]! << 7) | buf[9]!;
+  // A v2.4 footer adds ten more.
+  return 10 + size + (version === 4 && buf[5]! & 0x10 ? 10 : 0);
+}
+
+const MP3_KBPS: Record<string, number[]> = {
+  '1-1': [32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+  '1-2': [32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+  '1-3': [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+  '2-1': [32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+  '2-2': [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+};
+const MP3_RATES = [44100, 48000, 32000];
+
+// An MPEG audio frame header's kind and length in bytes, or null.
+function frameAt(buf: Buffer, at: number): { mediaType: string; length: number } | null {
+  if (at + 7 > buf.length || buf[at] !== 0xff || (buf[at + 1]! & 0xe0) !== 0xe0) return null;
+  const b1 = buf[at + 1]!, b2 = buf[at + 2]!;
+  const layerBits = (b1 >> 1) & 3;
+  if (layerBits === 0) {
+    // ADTS: 12 sync bits, layer 0, a sampling index below 13, a length past its header.
+    if ((b1 & 0xf0) !== 0xf0 || ((b2 >> 2) & 0xf) >= 13) return null;
+    const length = ((buf[at + 3]! & 3) << 11) | (buf[at + 4]! << 3) | (buf[at + 5]! >> 5);
+    const header = b1 & 1 ? 7 : 9;
+    return length > header ? { mediaType: 'audio/aac', length } : null;
+  }
+  const versionBits = (b1 >> 3) & 3; // 0: 2.5, 1: reserved, 2: 2, 3: 1
+  const rateIndex = (b2 >> 2) & 3;
+  const kbpsIndex = b2 >> 4;
+  // Free bitrate (0) has no length to check against.
+  if (versionBits === 1 || rateIndex === 3 || kbpsIndex === 0 || kbpsIndex === 15) return null;
+  const layer = 4 - layerBits; // 1, 2 or 3
+  const mpeg1 = versionBits === 3;
+  const kbps = MP3_KBPS[mpeg1 ? `1-${layer}` : layer === 1 ? '2-1' : '2-2']![kbpsIndex - 1]!;
+  const rate = MP3_RATES[rateIndex]! / (mpeg1 ? 1 : versionBits === 2 ? 2 : 4);
+  const pad = (b2 >> 1) & 1;
+  const length = layer === 1
+    ? (Math.floor((12 * kbps * 1000) / rate) + pad) * 4
+    : Math.floor(((layer === 3 && !mpeg1 ? 72 : 144) * kbps * 1000) / rate) + pad;
+  return { mediaType: 'audio/mpeg', length };
+}
+
+function audioFramesAt(buf: Buffer, at: number): ImageInfo | null {
+  const first = frameAt(buf, at);
+  if (!first) return null;
+  const second = frameAt(buf, at + first.length);
+  return second && second.mediaType === first.mediaType ? { mediaType: first.mediaType } : null;
+}
+
+// Reads the start of a file and, past an ID3 tag too big for it (cover art),
+// the frames after the tag.
 export function readAudioInfo(file: string): ImageInfo | null {
   let fd: number | null = null;
   try {
@@ -179,7 +241,14 @@ export function readAudioInfo(file: string): ImageInfo | null {
     fd = fs.openSync(file, 'r');
     const buf = Buffer.alloc(64 * 1024);
     const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    return sniffAudio(buf.subarray(0, n), file);
+    const head = buf.subarray(0, n);
+    const tag = id3End(head);
+    if (typeof tag === 'number' && tag + 16 * 1024 > n) {
+      const after = Buffer.alloc(16 * 1024);
+      const m = fs.readSync(fd, after, 0, after.length, tag);
+      return audioFramesAt(after.subarray(0, m), 0);
+    }
+    return sniffAudio(head, file);
   } catch {
     return null;
   } finally {

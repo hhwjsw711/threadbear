@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentMark, DesignReview, ImageRef, ReviewDraft, ReviewUserMark } from './protocol.ts';
 import { convertImage } from './images.ts';
+import { maxDraftMarks } from './reviews.ts';
 import { readShareImage, readShareMedia, shrinkWouldDo } from './share-images.ts';
 
 export function reviewImageSource(reviewId: string, imagePath: string): string {
@@ -53,12 +54,18 @@ function phoneMarks(marks: AgentMark[]) {
 // picture even after shrinking), so it says so rather than waiting.
 // media: the sources of shots' videos and sounds that go up (reviewStills),
 // each named on its shot as `media`; any other plays only on the Mac.
+//
+// canMark: this runner takes the phone's own marks (mergePhoneMarks), which
+// an older one would drop, so the phone offers marking only with it.
+// draft.nextMark: the highest number among the marks saved on the Mac (0
+// with none); the phone numbers its own from the one after.
 export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string> = new Set(), media: ReadonlySet<string> = new Set()) {
   return {
     id: review.id, title: review.title, status: review.status, revision: review.revision,
+    canMark: true as const,
     ...(review.note ? { note: review.note } : {}),
     ...(review.recommended ? { recommended: review.recommended } : {}),
-    draft: phoneDraft(review.response ?? review.draft),
+    draft: { ...phoneDraft(review.response ?? review.draft), nextMark: Math.max(0, ...(review.draft.marks ?? []).map((m) => m.n)) },
     options: review.options.map((option) => ({
       id: option.id, title: option.title,
       ...(option.note ? { note: option.note } : {}),
@@ -90,7 +97,8 @@ export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string>
 // downloaded into inbox/ (`images`, in the same order). reviews.respond
 // checks the rest (reviewDraft) and keeps the cut-outs (keepReplyImages).
 // Only a non-empty list goes in: an answer with none keeps the marks saved
-// on the Mac (withSavedImages), as an answer from an older phone does.
+// on the Mac (withSavedImages), as an answer from an older phone does, and
+// one with some adds them to those (mergePhoneMarks).
 export function draftFromPhone(raw: unknown, images: readonly ImageRef[] = []): ReviewDraft {
   const bad = () => new Error('Invalid review answer.');
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad();
@@ -133,6 +141,21 @@ export function draftFromPhone(raw: unknown, images: readonly ImageRef[] = []): 
     if (marks.length) out.marks = marks;
   }
   return out;
+}
+
+// The phone's marks added to the ones saved on the Mac, which it doesn't
+// see (their cut-outs are files here) and which stay. A phone mark numbered
+// as a saved one is refused rather than either being lost: the phone
+// numbers from nextMark + 1, so a clash means the draft changed on the Mac
+// meanwhile. Errors go to the phone as the command's note, so no paths.
+export function mergePhoneMarks(review: DesignReview, draft: ReviewDraft): ReviewDraft {
+  if (!draft.marks?.length) return draft;
+  const saved = review.draft.marks ?? [];
+  const clash = draft.marks.find((m) => saved.some((s) => s.n === m.n));
+  if (clash) throw new Error(`Mark ${clash.n} is already on this review from the Mac. Reload the review and mark again.`);
+  const marks = [...saved, ...draft.marks];
+  if (marks.length > maxDraftMarks) throw new Error(`A review answer can have at most ${maxDraftMarks} marks, counting the ${saved.length} made on the Mac.`);
+  return { ...draft, marks };
 }
 
 // Longest side of a still shrunk for the phone: plenty for its screen.

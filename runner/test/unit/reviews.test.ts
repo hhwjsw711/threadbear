@@ -416,6 +416,20 @@ test('a shot can be a video or an HTML page: copied with a still, and the page b
   assert.throws(()=>h.runner.createReview(thread.id,{title:'Bad',options:[{id:'X',title:'Text',path:notes}]}),/video \(MP4, MOV\), sound \(MP3, M4A, AAC, WAV\) or HTML page/);
 });
 
+// Two MPEG-1 layer III frames at 128 kbps, 44.1 kHz: 417 bytes each.
+function mp3Frames(): Buffer {
+  const frame = Buffer.alloc(417);
+  frame.set([0xff, 0xfb, 0x90, 0x64]);
+  return Buffer.concat([frame, frame]);
+}
+
+// Two ADTS (AAC) frames of 20 bytes, no CRC.
+function adtsFrames(): Buffer {
+  const frame = Buffer.alloc(20);
+  frame.set([0xff, 0xf1, 0x50, 0x80, 20 >> 3, (20 & 7) << 5 | 0x1f, 0xfc]);
+  return Buffer.concat([frame, frame]);
+}
+
 // Mike, 24 Nov: comparing music beds and sounds as options.
 function fakeSounds(): Record<string, Buffer> {
   const wav = Buffer.alloc(44);
@@ -426,11 +440,11 @@ function fakeSounds(): Record<string, Buffer> {
   m4a.writeUInt32BE(16, 0);
   m4a.write('ftypM4A ', 4, 'ascii');
   return {
-    'bed.mp3': Buffer.concat([Buffer.from('ID3\x04\0\0\0\0\0\0', 'latin1'), Buffer.alloc(16)]),
-    'frames.mp3': Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x64]), Buffer.alloc(16)]),
+    'bed.mp3': Buffer.concat([Buffer.from('ID3\x04\0\0\0\0\0\0', 'latin1'), mp3Frames()]),
+    'frames.mp3': mp3Frames(),
     'bed.m4a': m4a,
     'isom.m4a': fakeMp4(),
-    'raw.aac': Buffer.concat([Buffer.from([0xff, 0xf1, 0x50, 0x80]), Buffer.alloc(16)]),
+    'raw.aac': adtsFrames(),
     'ding.wav': wav,
   };
 }

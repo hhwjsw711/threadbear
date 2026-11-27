@@ -813,7 +813,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
                 .init(src: "review:sample:d", title: "Done sound", kind: "audio", media: "review:sample:d-media"),
             ]),
             .init(id: "D", title: "Current layout", reference: true, shots: [.init(src: "review:sample:b", title: "Today", kind: "page")]),
-        ])
+        ], canMark: true)
     }
 
     public func designReviews(threadId: String, reviewId: String?) async throws -> String {

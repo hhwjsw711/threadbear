@@ -817,6 +817,7 @@ function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary
         applied.push(`share ${logins.length}`);
         return { logins: [], removed: [] };
       },
+      getReview: (id, reviewId) => h.runner.getReview(id, reviewId),
       respondReview: (id, reviewId, revision, draft) => {
         applied.push(`respondReview ${id} ${reviewId}`);
         return h.runner.respondReview(id, reviewId, revision, draft);
@@ -2634,7 +2635,7 @@ test('commands: a photo from the phone reaches the transcript and the inbox copy
 
 // API 106: a mark drawn on the phone comes with its cut-out as one of the
 // command's photos, named by index, and is kept with the review as the
-// Mac's are, with nothing left in the inbox.
+// Mac's are, beside the marks saved on the Mac, with nothing left in the inbox.
 test("commands: a review answer's marks from the phone keep their cut-outs", async () => {
   const { h, sync, push, calls } = setupFull();
   sync.start();
@@ -2642,20 +2643,29 @@ test("commands: a review answer's marks from the phone keep their cut-outs", asy
   const t = h.runner.create({ text: 'hello', cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
   const source = path.join(h.cfg.home, 'mock.png');
   fs.writeFileSync(source, makePng(40, 30));
-  const { review } = h.runner.createReview(t.id, { title: 'Pick', options: [{ id: 'A', title: 'One', path: source }, { id: 'B', title: 'Two', path: source }] });
-  push([{ commandId: 'rv1', kind: 'respondReview', threadId: t.id, args: { reviewId: review.id, revision: review.revision, images: [{ storageId: 's1', url: 'https://x/photo' }], draft: {
-    pickedIds: ['A'], notes: [], reply: 'This bit [Mark 1], and [Mark 2]',
-    marks: [{ n: 1, kind: 'circle', optionId: 'A', shot: 0, box: [0.1, 0.1, 0.5, 0.5], image: 0 }, { n: 2, kind: 'pin', optionId: 'B', shot: 0, box: [0.3, 0.3, 0.3, 0.3] }],
+  const created = h.runner.createReview(t.id, { title: 'Pick', options: [{ id: 'A', title: 'One', path: source }, { id: 'B', title: 'Two', path: source }] }).review;
+  // A mark saved on the Mac first: the phone's join it rather than replace it.
+  const review = h.runner.saveReview(t.id, created.id, created.revision, { notes: {}, marks: [{ n: 1, kind: 'highlight', optionId: 'B', shot: 0, box: [0, 0, 0.2, 0.2] }] }).review;
+  const answer = (commandId: string, marks: unknown[]) => push([{ commandId, kind: 'respondReview', threadId: t.id, args: { reviewId: review.id, revision: review.revision, images: [{ storageId: 's1', url: 'https://x/photo' }], draft: {
+    pickedIds: ['A'], notes: [], reply: 'This [Mark 1], this bit [Mark 2], and [Mark 3]', marks,
   } }, createdAt: 1 }]);
+  // One numbered as the Mac's is refused, and nothing is answered.
+  answer('rv0', [{ n: 1, kind: 'circle', optionId: 'A', shot: 0, box: [0.1, 0.1, 0.5, 0.5], image: 0 }]);
+  await tick(10);
+  const refused = calls.filter((c) => c.fn === 'sync:finishCommand').map((c) => c.args);
+  assert.equal(refused[0]!.ok, false);
+  assert.match(String(refused[0]!.note), /Mark 1 is already on this review/);
+  assert.equal(h.runner.getReview(t.id, review.id).review.status, 'pending');
+  answer('rv1', [{ n: 2, kind: 'circle', optionId: 'A', shot: 0, box: [0.1, 0.1, 0.5, 0.5], image: 0 }, { n: 3, kind: 'pin', optionId: 'B', shot: 0, box: [0.3, 0.3, 0.3, 0.3] }]);
   await tick(10);
   const finished = calls.filter((c) => c.fn === 'sync:finishCommand').map((c) => c.args);
-  assert.equal(finished[0]!.ok, true, String(finished[0]!.note));
+  assert.equal(finished[1]!.ok, true, String(finished[1]!.note));
   const answered = h.runner.getReview(t.id, review.id).review;
   const marks = answered.response!.marks!;
-  assert.deepEqual(marks.map((m) => [m.n, m.kind, m.optionId]), [[1, 'circle', 'A'], [2, 'pin', 'B']]);
-  assert.equal(marks[1]!.image, undefined);
-  assert.ok(marks[0]!.image && fs.existsSync(marks[0]!.image.path), 'the cut-out is kept with the review');
-  assert.ok(marks[0]!.image.path.includes(path.join('reviews', review.id, 'reply')));
+  assert.deepEqual(marks.map((m) => [m.n, m.kind, m.optionId]), [[1, 'highlight', 'B'], [2, 'circle', 'A'], [3, 'pin', 'B']]);
+  assert.equal(marks[2]!.image, undefined);
+  assert.ok(marks[1]!.image && fs.existsSync(marks[1]!.image.path), 'the cut-out is kept with the review');
+  assert.ok(marks[1]!.image.path.includes(path.join('reviews', review.id, 'reply')));
   const inbox = path.join(h.cfg.home, 'inbox');
   assert.deepEqual(fs.existsSync(inbox) ? fs.readdirSync(inbox) : [], [], 'nothing left in the inbox');
   await sync.stop();

@@ -120,4 +120,40 @@ struct DesignReviewsTests {
         let draft = try JSONDecoder().decode(DesignReviewDraft.self, from: Data(#"{"notes":{},"marks":[{"n":1,"kind":"circle","optionId":"A","shot":0,"box":[0,0,1,1]}]}"#.utf8))
         #expect(draft.marks == nil)
     }
+
+    @Test func marksOnAReferenceAreRefused() throws {
+        let review = try JSONDecoder().decode(PhoneDesignReview.self, from: Data(#"{"id":"r","title":"T","status":"pending","revision":0,"draft":{"notes":{}},"options":[{"id":"A","title":"A","shots":[{"src":"review:r:a","kind":"image"}]},{"id":"R","title":"Today","reference":true,"shots":[{"src":"review:r:b","kind":"image"}]}]}"#.utf8))
+        var draft = DesignReviewDraft()
+        draft.marks = [.init(n: 1, optionId: "R", shot: 0, box: [0.1, 0.1, 0.4, 0.4])]
+        #expect(!draft.canSend(to: review))
+        draft.marks = [.init(n: 1, optionId: "A", shot: 0, box: [0.1, 0.1, 0.4, 0.4])]
+        #expect(draft.canSend(to: review))
+    }
+
+    @Test func phoneMarksNumberOnFromTheMacsAndShareTheCap() throws {
+        var review = try JSONDecoder().decode(PhoneDesignReview.self, from: Data(#"{"id":"r","title":"T","status":"pending","revision":0,"canMark":true,"draft":{"notes":{},"nextMark":18},"options":[{"id":"A","title":"A","shots":[{"src":"review:r:a","kind":"image"}]}]}"#.utf8))
+        #expect(review.canMark == true)
+        var draft = review.draft
+        #expect(draft.nextMark == 18)
+        #expect(draft.nextMarkNumber == 19)
+        draft.marks = [.init(n: 19, optionId: "A", shot: 0, box: [0, 0, 0.5, 0.5])]
+        #expect(draft.nextMarkNumber == 20)
+        #expect(draft.canSend(to: review))
+        draft.marks?.append(.init(n: 20, optionId: "A", shot: 0, box: [0.5, 0.5, 1, 1]))
+        #expect(draft.nextMarkNumber == nil)
+        #expect(draft.canSend(to: review))
+        // A number the Mac's marks already have.
+        draft.marks = [.init(n: 3, optionId: "A", shot: 0, box: [0, 0, 0.5, 0.5])]
+        #expect(!draft.canSend(to: review))
+        draft.nextMark = 20
+        #expect(draft.markNumbers == nil && draft.nextMarkNumber == nil)
+        review.draft = DesignReviewDraft()
+        #expect(review.draft.nextMarkNumber == 1)
+    }
+
+    @Test func canMarkIsMissingFromOlderRunners() throws {
+        let review = try review()
+        #expect(review.canMark == nil)
+        #expect(review.draft.nextMark == nil)
+    }
 }

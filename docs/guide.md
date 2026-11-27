@@ -317,8 +317,8 @@ options are there to compare and can't be picked. The thread's Mac has to
 be on to load the review and take the answer, and it sends the stills,
 videos and sounds only once you open the review, so they can take a moment
 to turn up. Pictures pasted into an answer on the Mac stay with it, though
-the phone doesn't show them, and so do marks made on the Mac unless you
-send marks of your own. Reviews need your backend on API 86 or newer;
+the phone doesn't show them, and so do marks made on the Mac: yours from
+the phone are added to them, up to 20 in all. Reviews need your backend on API 86 or newer;
 marks, videos and sounds need API 106 or newer. If the review changes on
 the Mac while you're answering, your answer stays in the sheet while it
 reloads, ready for you to check and send again.

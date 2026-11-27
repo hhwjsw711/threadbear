@@ -10,6 +10,9 @@ public struct PhoneDesignReview: Codable, Sendable, Hashable, Identifiable {
     public var revision: Double
     public var draft: DesignReviewDraft
     public var options: [Option]
+    /// Whether this thread's runner takes the phone's marks (API 106 runners
+    /// say true). A newer backend in front of an older runner would drop them.
+    public var canMark: Bool?
 
     public struct Option: Codable, Sendable, Hashable, Identifiable {
         public var id: String
@@ -116,18 +119,29 @@ public struct DesignReviewDraft: Codable, Sendable, Hashable {
     public var notes: [String: String]
     public var reply: String?
     public var none: Bool?
-    /// The phone's own marks. Never read from the runner's draft: a Mac's
-    /// marks point at its own cut-outs.
+    /// The phone's own marks, added to the Mac's saved ones. Never read from
+    /// the runner's draft: a Mac's marks point at its own cut-outs.
     public var marks: [ReviewUserMark]? = nil
+    /// The highest number among the Mac's saved marks, from the runner: the
+    /// phone's go on from there, and all of them count towards the cap.
+    public var nextMark: Int?
 
-    private enum CodingKeys: String, CodingKey { case pickedId, pickedIds, notes, reply, none }
+    private enum CodingKeys: String, CodingKey { case pickedId, pickedIds, notes, reply, none, nextMark }
 
     public init() { notes = [:] }
 
-    /// The lowest number 1...20 no mark has, or nil when all are taken.
+    /// Numbers the Mac's marks already have.
+    private var macMarks: Int { min(ReviewUserMark.maxCount, max(0, nextMark ?? 0)) }
+
+    /// The numbers the phone may use: after the Mac's, up to the cap.
+    public var markNumbers: ClosedRange<Int>? {
+        macMarks < ReviewUserMark.maxCount ? (macMarks + 1)...ReviewUserMark.maxCount : nil
+    }
+
+    /// The lowest number the phone can still give a mark, or nil when all are taken.
     public var nextMarkNumber: Int? {
         let used = Set((marks ?? []).map(\.n))
-        return (1...ReviewUserMark.maxCount).first { !used.contains($0) }
+        return markNumbers?.first { !used.contains($0) }
     }
     public var picks: Set<String> { Set(pickedIds ?? pickedId.map { [$0] } ?? []) }
 
@@ -158,10 +172,12 @@ public struct DesignReviewDraft: Codable, Sendable, Hashable {
 
     private func marksFit(_ review: PhoneDesignReview) -> Bool {
         let marks = marks ?? []
-        guard marks.count <= ReviewUserMark.maxCount, Set(marks.map(\.n)).count == marks.count else { return false }
+        guard !marks.isEmpty else { return true }
+        guard let numbers = markNumbers, marks.count <= numbers.count, Set(marks.map(\.n)).count == marks.count else { return false }
         return marks.allSatisfy { mark in
-            guard (1...ReviewUserMark.maxCount).contains(mark.n),
-                  let option = review.options.first(where: { $0.id == mark.optionId }),
+            // A reference is there to compare against, not to answer on.
+            guard numbers.contains(mark.n),
+                  let option = review.options.first(where: { $0.id == mark.optionId }), option.reference != true,
                   option.shots.indices.contains(mark.shot), mark.box.count == 4,
                   mark.box.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { return false }
             return true

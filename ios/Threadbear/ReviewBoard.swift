@@ -88,6 +88,7 @@ struct ReviewBoard: View {
         .background(BoardInk.board.ignoresSafeArea())
         .onChange(of: fitInputs) { _, _ in if !userMoved { fitAll(animated: false) } }
         .onChange(of: marking) { _, on in if !on { drawing = nil } }
+        .onChange(of: busy) { _, now in if now { drawing = nil; drawCancelled = true } }
         .onDisappear { playback.stop() }
         .task(id: shotFrames.count + pictures.count * 1000) { pose() }
     }
@@ -251,7 +252,7 @@ struct ReviewBoard: View {
                 .overlay(alignment: .topLeading) { userMarks(key, option: option, size: size) }
                 .contentShape(Rectangle())
                 .onTapGesture { if !marking { tapped(key, media: mediaURL) } }
-                .gesture(drawGesture(key, size: size, media: mediaURL), including: marking && pending ? .all : .subviews)
+                .gesture(drawGesture(key, size: size, media: mediaURL), including: marking && pending && !busy && option.reference != true ? .all : .subviews)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("board")) } action: { shotFrames[key] = $0 }
                 .accessibilityElement()
                 .accessibilityLabel(pictureLabel(option, shot))
@@ -325,14 +326,15 @@ struct ReviewBoard: View {
     private func drawGesture(_ key: ShotKey, size: CGSize, media: URL?) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard !drawCancelled, pinchAnchor == nil else { drawing = nil; drawCancelled = true; return }
+                // Sending started mid-drag, or a second finger came: this circle's off.
+                guard !drawCancelled, !busy, pinchAnchor == nil else { drawing = nil; drawCancelled = true; return }
                 let a = CGPoint(x: value.startLocation.x / size.width, y: value.startLocation.y / size.height)
                 let b = CGPoint(x: value.location.x / size.width, y: value.location.y / size.height)
                 drawing = Drawing(key: key, start: a, end: b)
             }
             .onEnded { _ in
                 defer { drawing = nil; drawCancelled = false }
-                guard !drawCancelled, let done = drawing else { return }
+                guard !drawCancelled, !busy, let done = drawing else { return }
                 let box = done.box
                 // A tap, not a circle.
                 if abs(box[2] - box[0]) < 0.03 && abs(box[3] - box[1]) < 0.03 { tapped(key, media: media); return }
@@ -406,8 +408,8 @@ struct ReviewBoard: View {
         case .began:
             userMoved = true
             focused = nil
-            drawing = nil
-            drawCancelled = true
+            // Only a circle being drawn is given up: two fingers move the board.
+            if drawing != nil { drawing = nil; drawCancelled = true }
             pinchTouches = touches
             pinchStartScale = scale / pinch
             pinchAnchor = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
@@ -424,6 +426,7 @@ struct ReviewBoard: View {
             offset = CGPoint(x: location.x - anchor.x * s, y: location.y - anchor.y * s)
         default:
             pinchAnchor = nil
+            drawCancelled = false
         }
     }
 
@@ -447,6 +450,7 @@ struct ReviewBoard: View {
     // MARK: - Marks
 
     private func addMark(_ key: ShotKey, box: [Double]) {
+        guard !busy, review.options[key.option].reference != true else { return }
         guard let n = draft.nextMarkNumber else { markLimitHit = true; return }
         var marks = draft.marks ?? []
         let mark = ReviewUserMark(n: n, optionId: review.options[key.option].id, shot: key.shot, box: box)
@@ -477,6 +481,7 @@ struct ReviewBoard: View {
     }
 
     private func remove(_ mark: ReviewUserMark) {
+        guard !busy else { return }
         draft.marks?.removeAll { $0.n == mark.n }
         if draft.marks?.isEmpty == true { draft.marks = nil }
         if let reply = draft.reply {
@@ -522,8 +527,9 @@ struct ReviewBoard: View {
             }
             HStack(spacing: 8) {
                 toggle("Notes", systemImage: "scribble", on: $showNotes, hint: "Shows or hides the agent's marks")
-                if canMark && pending {
+                if canMark && pending && (marking || draft.nextMarkNumber != nil) {
                     toggle("Mark", systemImage: "pencil.tip", on: $marking, hint: "Drag on a picture to circle part of it")
+                        .disabled(busy)
                 }
                 Spacer()
                 Button { step(-1) } label: { barIcon("chevron.left") }
@@ -622,6 +628,7 @@ struct ReviewBoard: View {
                 HStack(spacing: 6) {
                     if draft.none == true {
                         chip("None of these", color: .white.opacity(0.85)) { draft.pickNone(false) }
+                            .disabled(busy)
                             .accessibilityHint("Removes None of these")
                     }
                     ForEach(picked) { option in

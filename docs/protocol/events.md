@@ -303,9 +303,13 @@ Convex passes the cut-outs as the command's `images` (`[{ storageId, url
 }]`) and each mark names its own by `image`, an index into them; the
 runner downloads them as it does a send's photos and keeps them with the
 review, so the answer reads as a Mac's does (`[Mark N]` in the reply, a
-line and a cut-out per mark). An answer with no marks keeps the marks
-saved on the Mac, as one from an older phone does; one with marks
-replaces them.
+line and a cut-out per mark). The phone's marks join the ones saved on the
+Mac, which stay: the review carries `canMark: true` from a runner that
+does this (an older one would drop them, so the phone offers marking only
+with it), and `draft.nextMark`, the highest number among the Mac's saved
+marks (0 with none). The phone numbers its marks from `nextMark + 1`; a
+mark numbered as a saved one, or more than 20 in all, fails the command
+with a note saying so.
 
 The phone's Reviews sheet opens from the pending-review button or a
 `review:<id>` link. It shows reference and recommended options, each shot's

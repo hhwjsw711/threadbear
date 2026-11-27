@@ -36,7 +36,7 @@ struct DesignReviewsView: View {
     }
 
     private func board(_ review: PhoneDesignReview) -> some View {
-        ReviewBoard(review: review, draft: $draft, pictures: loadable, canMark: model.hasReviewMarks,
+        ReviewBoard(review: review, draft: $draft, pictures: loadable, canMark: model.hasReviewMarks && review.canMark == true,
                         sending: sending, loading: loading, problem: problem, demo: model.isFake,
                         close: { dismiss() },
                         allReviews: {
@@ -163,14 +163,23 @@ struct DesignReviewsView: View {
         defer { sending = false }
         do {
             var outgoing = draft
-            // A backend before API 106 refuses marks (the Mark button is hidden there too).
-            if !model.hasReviewMarks { outgoing.marks = nil }
-            if let marks = outgoing.marks, !marks.isEmpty {
-                outgoing.marks = try await uploadCutOuts(marks, review: review, backend: backend)
-                // Kept, so sending again doesn't upload them again.
-                draft.marks = outgoing.marks
+            // A backend before API 106, or a runner that would drop them, gets
+            // none (the Mark button is hidden there too).
+            if !model.hasReviewMarks || review.canMark != true { outgoing.marks = nil }
+            // Fresh cut-outs every attempt, never kept in the draft: Convex
+            // deletes a command's pictures when it fails or lapses, so a kept
+            // id would fail every retry. Let go of this attempt's if it fails.
+            var uploaded: [String] = []
+            let command: String
+            do {
+                if let marks = outgoing.marks, !marks.isEmpty {
+                    outgoing.marks = try await uploadCutOuts(marks, review: review, backend: backend, uploaded: &uploaded)
+                }
+                command = try await backend.respondReview(threadId: threadId, review: review, draft: outgoing)
+            } catch {
+                for id in uploaded { try? await backend.discardPhoto(id) }
+                throw error
             }
-            let command = try await backend.respondReview(threadId: threadId, review: review, draft: outgoing)
             let state = await model.commands.outcome(.review(threadId), commandId: command)
             if let note = state.timedOutNote {
                 // Still on its way: it lands when the Mac is back, so nothing's reloaded over it.
@@ -193,16 +202,21 @@ struct DesignReviewsView: View {
     /// Each mark's part of its still, cut out and uploaded, for the runner to
     /// show beside the mark's line. A still the phone can't read leaves the
     /// mark without one: its box still goes.
-    private func uploadCutOuts(_ marks: [ReviewUserMark], review: PhoneDesignReview, backend: any Backend) async throws -> [ReviewUserMark] {
+    private func uploadCutOuts(_ marks: [ReviewUserMark], review: PhoneDesignReview, backend: any Backend, uploaded: inout [String]) async throws -> [ReviewUserMark] {
         var marks = marks
         let stills = loadable
-        for i in marks.indices where marks[i].storageId == nil {
+        for i in marks.indices {
+            marks[i].storageId = nil
             guard let option = review.options.first(where: { $0.id == marks[i].optionId }),
                   option.shots.indices.contains(marks[i].shot),
                   let still = stills[option.shots[marks[i].shot].src], let url = URL(string: still.url),
-                  let picture = try? await PictureLoader.shared.picture(url, maxPixels: ReplyPicture.maxPixels),
-                  let jpeg = ReviewCutOut.jpeg(picture.image, box: marks[i].box) else { continue }
-            marks[i].storageId = try await backend.uploadPhoto(jpeg)
+                  let picture = try? await PictureLoader.shared.picture(url, maxPixels: ReplyPicture.maxPixels) else { continue }
+            let image = picture.image, box = marks[i].box
+            // Cropping and encoding off the main thread.
+            guard let jpeg = await Task.detached(priority: .userInitiated, operation: { ReviewCutOut.jpeg(image, box: box) }).value else { continue }
+            let id = try await backend.uploadPhoto(jpeg)
+            uploaded.append(id)
+            marks[i].storageId = id
         }
         return marks
     }

@@ -257,6 +257,8 @@ actor ReviewMedia {
     private(set) var failed: Set<ShotKey> = []
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var failObserver: NSObjectProtocol?
+    @ObservationIgnored private var statusObserver: NSKeyValueObservation?
 
     func toggle(_ key: ShotKey, url: URL) async {
         if current == key, let player {
@@ -299,16 +301,35 @@ actor ReviewMedia {
                 self?.progress = 1
             }
         }
+        // A file AVPlayer can't play: back to the still, saying so, rather
+        // than a frame that never moves.
+        failObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: player.currentItem, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.playFailed(key) }
+        }
+        statusObserver = player.currentItem?.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            Task { @MainActor in self?.playFailed(key) }
+        }
         player.play()
         playing = true
+    }
+
+    private func playFailed(_ key: ShotKey) {
+        guard current == key else { return }
+        stop()
+        failed.insert(key)
     }
 
     func stop() {
         player?.pause()
         if let timeObserver { player?.removeTimeObserver(timeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
+        statusObserver?.invalidate()
         timeObserver = nil
         endObserver = nil
+        failObserver = nil
+        statusObserver = nil
         player = nil
         current = nil
         loading = nil
@@ -406,7 +427,7 @@ struct PlayCircle: View {
 
 // MARK: - Cut-outs
 
-enum ReviewCutOut {
+nonisolated enum ReviewCutOut {
     /// The marked part of a still, padded by 0.04 of it each side, as a JPEG
     /// no more than 480 px wide, for the runner to show beside the mark line.
     static func jpeg(_ image: UIImage, box: [Double]) -> Data? {
