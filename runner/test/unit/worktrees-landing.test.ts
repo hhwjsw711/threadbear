@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { makeHarness, tmpDir } from '../helpers/fakes.ts';
 import { findWorktreePatch } from '../../src/patches.ts';
-import { cleanUpWorktree, land, landTargetFromGit, makeWorktree, overwrittenFiles } from '../../src/worktrees.ts';
+import { cleanUpWorktree, land, landTargetFromGit, lockHolderCommand, makeWorktree, overwrittenFiles, windowsLockPipe } from '../../src/worktrees.ts';
 import { RpcServer } from '../../src/rpc.ts';
 import { readToken } from '../../src/config.ts';
 import { nullLogger } from '../../src/log.ts';
@@ -644,4 +644,66 @@ test('tb land --full asks the check for a fresh run, and a plain one never does'
     else process.env.THREADBEAR_CHECK_FRESH = before;
   }
   assert.deepEqual(fs.readFileSync(path.join(root, 'checks'), 'utf8').trim().split('\n'), ['fresh=', 'fresh=1']);
+});
+
+test('Windows landing lock uses a named pipe holder with the same acquire, contention and wait rules', async () => {
+  assert.equal(windowsLockPipe('C:\\Repo\\.git\\threadbear-land.lock'), windowsLockPipe('c:\\repo\\.git\\threadbear-land.lock'));
+  assert.match(windowsLockPipe('C:\\Repo\\.git\\threadbear-land.lock'), /^\\\\\.\\pipe\\threadbear-lock-[0-9a-f]{32}$/);
+
+  const nonblock = lockHolderCommand('C:\\Repo\\.git\\lock', false, 'win32');
+  const blocking = lockHolderCommand('C:\\Repo\\.git\\lock', true, 'win32');
+  assert.equal(nonblock.bin, process.execPath);
+  assert.equal(nonblock.args[0], '-e');
+  assert.equal(nonblock.args[2], windowsLockPipe('C:\\Repo\\.git\\lock'));
+  assert.equal(nonblock.args[3], '0');
+  assert.equal(blocking.args[3], '1');
+
+  assert.equal(lockHolderCommand('/tmp/lock', false, 'darwin').bin, '/usr/bin/lockf');
+  assert.equal(lockHolderCommand('/tmp/lock', false, 'linux').bin, 'flock');
+
+  // Exercise the holder script itself: acquire, nonblocking 75 on contention, and wait-then-acquire on release.
+  // macOS caps Unix socket paths at 104 bytes, shorter than a nested test tmpDir.
+  const sockDir = process.platform === 'win32' ? undefined : fs.mkdtempSync('/tmp/tb-lock-');
+  const endpoint = sockDir ? path.join(sockDir, 'l.sock') : windowsLockPipe(path.join(tmpDir(), 'test.lock'));
+  const script = nonblock.args[1]!;
+  const start = (wait: boolean) => spawn(process.execPath, ['-e', script, endpoint, wait ? '1' : '0'], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  const waitLocked = (child: ReturnType<typeof start>) => {
+    let err = '';
+    child.stderr.on('data', (d) => { err += d; });
+    return new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code) => reject(new Error(`holder exited (${code}): ${err}`)));
+      child.stdout.once('data', (d) => {
+        if (d.toString() === 'locked') resolve();
+        else reject(new Error(`unexpected output: ${d.toString()}`));
+      });
+    });
+  };
+  const first = start(false);
+  let waiter: ReturnType<typeof start> | undefined;
+  try {
+    await waitLocked(first);
+
+    const rival = start(false);
+    const rivalCode = await new Promise<number | null>((resolve) => rival.once('close', resolve));
+    assert.equal(rivalCode, 75);
+
+    const w = start(true);
+    waiter = w;
+    let waiterLocked = false;
+    const waited = waitLocked(w).then(() => { waiterLocked = true; });
+    const firstClosed = new Promise<void>((resolve) => first.once('close', () => resolve()));
+    first.stdin.end();
+    await firstClosed;
+    await waited;
+    assert.equal(waiterLocked, true);
+    const waiterClosed = new Promise<void>((resolve) => w.once('close', () => resolve()));
+    w.stdin.end();
+    await waiterClosed;
+  } finally {
+    first.kill();
+    waiter?.kill();
+    if (sockDir) fs.rmSync(sockDir, { recursive: true, force: true });
+  }
 });

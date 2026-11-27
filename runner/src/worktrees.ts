@@ -7,10 +7,12 @@
 //
 // Everything here runs real git. Nothing ever pushes.
 import { execFile, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { realPath } from './platform.ts';
+import { plainShell } from './system-tools.ts';
 import type { WorktreePatch } from './patches.ts';
 import { inBackground } from './background.ts';
 import { mainCheckoutOf as linkedMainCheckout } from './patch-trust.ts';
@@ -982,13 +984,51 @@ async function landedByAnother(t: LandTarget, e: QueueEntry, out: (line: string)
 // An OS lock on `file`, held by a small child until released or this
 // process exits; undefined if `wait` is false and someone else has it, or if
 // `stop` fired while it waited.
-async function holdLock(file: string, wait: boolean, stop?: AbortSignal): Promise<(() => Promise<void>) | undefined> {
-  const holder = "process.stdin.resume(); process.stdin.on('end', () => process.exit(0)); process.stdout.write('locked');";
-  const mac = process.platform === 'darwin';
+const UNIX_LOCK_HOLDER = "process.stdin.resume(); process.stdin.on('end', () => process.exit(0)); process.stdout.write('locked');";
+
+// Windows has neither flock nor lockf. Only one process can listen on a named
+// pipe (libuv sets FILE_FLAG_FIRST_PIPE_INSTANCE), and Windows frees the name
+// when that process ends, so listening holds the lock as flock would, with the
+// same 'locked' signal and exit 75 on contention.
+const WINDOWS_LOCK_HOLDER = `const [name, wait] = process.argv.slice(1);
+let server;
+process.stdin.resume();
+process.stdin.on('end', () => {
+  if (server && server.listening) server.close(() => process.exit(0));
+  else process.exit(0);
+});
+const take = () => {
+  server = require('node:net').createServer();
+  server.once('error', (e) => {
+    if (e.code !== 'EADDRINUSE') { process.stderr.write(e.message); process.exit(1); }
+    if (wait !== '1') process.exit(75);
+    setTimeout(take, 250);
+  });
+  server.listen(name, () => {
+    process.stdout.write('locked');
+  });
+};
+take();`;
+
+export function windowsLockPipe(file: string): string {
+  const key = crypto.createHash('sha256').update(path.win32.resolve(file).toLowerCase()).digest('hex').slice(0, 32);
+  return `\\\\.\\pipe\\threadbear-lock-${key}`;
+}
+
+export function lockHolderCommand(file: string, wait: boolean, platform: NodeJS.Platform = process.platform): { bin: string; args: string[] } {
+  if (platform === 'win32') {
+    return { bin: process.execPath, args: ['-e', WINDOWS_LOCK_HOLDER, windowsLockPipe(file), wait ? '1' : '0'] };
+  }
+  const mac = platform === 'darwin';
   // 75 is EX_TEMPFAIL for lockf, and explicitly chosen for flock. A
   // nonblocking try distinguishes contention from a slow Node startup.
   const args = mac ? ['-k', ...(wait ? [] : ['-t', '0'])] : ['-x', '-E', '75', ...(wait ? [] : ['-n'])];
-  const child = spawn(mac ? '/usr/bin/lockf' : 'flock', [...args, file, process.execPath, '-e', holder], {
+  return { bin: mac ? '/usr/bin/lockf' : 'flock', args: [...args, file, process.execPath, '-e', UNIX_LOCK_HOLDER] };
+}
+
+async function holdLock(file: string, wait: boolean, stop?: AbortSignal): Promise<(() => Promise<void>) | undefined> {
+  const cmd = lockHolderCommand(file, wait);
+  const child = spawn(cmd.bin, cmd.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
@@ -2570,7 +2610,7 @@ export function overwrittenFiles(text: string): string[] {
 // the runner's self-update has it (runner/scripts/deploy-steps.mjs).
 export const CHECK_HOSTS_UNAVAILABLE = 69;
 
-function runCheck(command: string, cwd: string, shell = ['/bin/sh', '-c'], extraEnv: NodeJS.ProcessEnv = {}, limitMs?: number): Promise<{ ok: boolean; code?: number; text: string; durationMs: number; stopped?: boolean }> {
+function runCheck(command: string, cwd: string, shell = plainShell(), extraEnv: NodeJS.ProcessEnv = {}, limitMs?: number): Promise<{ ok: boolean; code?: number; text: string; durationMs: number; stopped?: boolean }> {
   const started = Date.now();
   // At background priority: a land's check is the full quick suite.
   const [bin, args] = inBackground(shell[0], [...shell.slice(1), command]);
