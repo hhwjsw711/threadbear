@@ -724,6 +724,7 @@ updatedAt, closedAt? }`. Older coordinators without `loops` default to `[]`.
   as one decision on the Tasks board. A legacy `openLoop` or `updateLoop`
   still reads and writes its loop. Replying on the composer card with
   `answers` updates the matching decision. An unrelated message leaves it open.
+  An unchanged card keeps its attention state on background wakes without another readability reminder.
 - The desktop's Open loops pane doesn't draw `waiting_on_user` loops. It
   mirrors the coordinator thread's live `asks` instead, one read-only row each
   that takes you to the Needs you card, where they're answered. The loops stay

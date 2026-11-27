@@ -1965,7 +1965,7 @@ export function buildThreadbearTools(
           markNoted('deadEnd', events);
           throw new Error(deadEndNudge(asks));
         }
-        if (opts.plainCardNote !== false && needs === 'you' && wantsPlainCard(asks) && !alreadyNoted('plainCard', events, plainCardNudged(events))) {
+        if (opts.plainCardNote !== false && needs === 'you' && wantsPlainCard(asks) && !opts.coordinators?.()?.carriedAsks(selfId, asks) && !alreadyNoted('plainCard', events, plainCardNudged(events))) {
           markNoted('plainCard', events);
           throw new Error(plainCardNudge());
         }
@@ -2113,7 +2113,7 @@ export function buildThreadbearTools(
           markNoted('deadEnd', events);
           throw new Error(deadEndNudge(asks ?? []));
         }
-        if (opts.plainCardNote !== false && needs === 'you' && wantsPlainCard(asks ?? []) && !alreadyNoted('plainCard', events, plainCardNudged(events))) {
+        if (opts.plainCardNote !== false && needs === 'you' && wantsPlainCard(asks ?? []) && !opts.coordinators?.()?.carriedAsks(selfId, asks ?? []) && !alreadyNoted('plainCard', events, plainCardNudged(events))) {
           markNoted('plainCard', events);
           throw new Error(plainCardNudge());
         }

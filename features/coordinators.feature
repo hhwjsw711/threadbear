@@ -129,6 +129,16 @@ Feature: Project coordinators
     Then the coordinator's "Conversation" tab is open
 
   @coordinators.home @coordinators @swift-pending
+  Scenario: A background wake keeps the pick on the coordinator's open decision
+    When I open the project "Threadbear"
+    And the coordinator asks me a decision
+    Then the card in the composer says "Needs you"
+    When I pick answer 1 of ask 1 on the card
+    Then ask 1 on the card is answered "Collapse by default"
+    When the coordinator receives its helper's report
+    Then ask 1 on the card is answered "Collapse by default"
+
+  @coordinators.home @coordinators @swift-pending
   Scenario: Highlights is a read-only brief and Tasks acts on the same work
     When I open the project "Threadbear"
     And the coordinator publishes a task board

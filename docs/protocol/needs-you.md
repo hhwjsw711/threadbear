@@ -848,6 +848,11 @@ sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks.
   the summary's `asks` (each with `ticked?: true`) and `asksSeq`. Any
   later turn closes it (a completed one that says `you` opens the next),
   and older cards keep the ticks their last `asks.ticked` gave them.
+  [Coordinator cards](projects.md#project-coordinators) stay open across
+  unchanged background repeats. `turn.completed` carries
+  `carriedAsks: { seq, ticked? }` with the original sequence and current
+  ticks alongside the regular `asks`. The Mac keeps the original card and drafts.
+  Answers and postponements still use the latest completion sequence.
   Ticking never sends anything: a reply is Mike's to write, and one reply
   often answers several asks.
 - **Answering.** The app shows the open card's asks under the agent's

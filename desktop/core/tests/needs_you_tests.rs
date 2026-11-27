@@ -50,6 +50,78 @@ fn ticks(values: &[i64]) -> BTreeSet<i64> {
     values.iter().copied().collect()
 }
 
+#[test]
+fn testCoordinatorKeepsItsOpenCardOnABackgroundWake() {
+    let asks = json!([{"action": "Which room?", "taskId": "room", "options": ["Blue", "Red"]}]);
+    let carried = event_turn(
+        6,
+        "turn.completed",
+        json!({"turnId": "wake", "outcome": "completed", "needs": "you", "asks": asks,
+            "carriedAsks": {"seq": 3, "ticked": [0]}}),
+        Some("wake"),
+    );
+    let mut model = from_events(vec![needs_you(3, "first", asks)]);
+    model.set_ask_picks(3, picks(&[(0, 1)]));
+    model.apply(vec![
+        event_turn(
+            4,
+            "user.message",
+            json!({"text": "A check is due", "origin": "schedule"}),
+            Some("wake"),
+        ),
+        carried.clone(),
+    ]);
+    assert!(card(&model, "ak:6").is_none());
+    let open = card(&model, "ak:3").unwrap();
+    assert!(open.is_open);
+    assert_eq!(open.seq, 6);
+    assert_eq!(open.source_seq, 3);
+    assert_eq!(open.picks, picks(&[(0, 1)]));
+    assert_eq!(open.ticked, ticks(&[0]));
+    model.apply(vec![event(
+        7,
+        "asks.ticked",
+        json!({"asksSeq": 6, "ticked": []}),
+    )]);
+    assert!(card(&model, "ak:3").unwrap().ticked.is_empty());
+    model.apply(vec![needs_you(
+        8,
+        "changed",
+        json!([{"action": "Which floor?"}]),
+    )]);
+    assert!(card(&model, "ak:3").is_none());
+    assert!(card(&model, "ak:8").unwrap().is_open);
+    let page = from_events(vec![carried]);
+    let Some(RowContent::Asks(open)) = page.open_card().map(|row| &row.content) else {
+        panic!("a carried card on a later page")
+    };
+    assert_eq!(open.source_seq, 3);
+    assert_eq!(open.seq, 6);
+    assert_eq!(open.ticked, ticks(&[0]));
+}
+
+#[test]
+fn testCarryDoesNotReopenAResolvedCard() {
+    let asks = json!([{"action": "Which room?", "taskId": "room", "options": ["Blue", "Red"]}]);
+    let model = from_events(vec![
+        needs_you(3, "first", asks.clone()),
+        event(
+            4,
+            "asks.ticked",
+            json!({"asksSeq": 3, "ticked": [0], "resolved": [0]}),
+        ),
+        event_turn(
+            6,
+            "turn.completed",
+            json!({"turnId": "later", "outcome": "completed", "needs": "you", "asks": asks,
+            "carriedAsks": {"seq": 3}}),
+            Some("later"),
+        ),
+    ]);
+    assert!(card(&model, "ak:3").is_none());
+    assert_eq!(card(&model, "ak:6").unwrap().source_seq, 6);
+}
+
 /// A turn that needs Mike gets its card under its footer, open until the
 /// next turn closes it, and keeps the picks the app gives it, through a
 /// rebuild too.

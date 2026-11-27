@@ -209,6 +209,11 @@ When('the coordinator asks me a decision', async function (this: ThreadbearWorld
   await this.app.do({ cmd: 'mock', method: 'coordinatorAsk', params: {} });
 });
 
+When("the coordinator receives its helper's report", async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'mock', method: 'coordinatorAsk', params: { carry: true } });
+  await this.until('the report being read', (d) => d.transcript.rows.some((r) => r.text?.includes('A helper checked the project brief.')));
+});
+
 Then('Open loops shows the decision without answer buttons', async function (this: ThreadbearWorld) {
   await this.until('the decision mirrored in Open loops', (d) => coordinator(d)?.openLoopsCount === 3);
   const labels = JSON.parse(await this.app.do({ cmd: 'labels' })) as { label: string }[];

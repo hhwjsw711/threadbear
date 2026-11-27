@@ -106,6 +106,8 @@ export function normaliseRecord(rec: Record<string, unknown>): boolean {
     else delete obj[k];
   }
   if (isObject(rec.needs)) {
+    const { carriedFrom, seq } = rec.needs;
+    if (carriedFrom !== undefined && (typeof carriedFrom !== 'number' || !Number.isSafeInteger(carriedFrom) || carriedFrom < 1 || typeof seq !== 'number' || carriedFrom >= seq)) delete rec.needs.carriedFrom;
     const next = Array.isArray(rec.needs.next) ? rec.needs.next : undefined;
     if (!next || next.length < 2 || rec.needs.nextPick !== 'one') {
       delete rec.needs.nextPick;
@@ -354,7 +356,7 @@ export type ThreadRecord = {
   // its turn.completed and which of its asks he has ticked.
   // (A record from 11 to 13 Nov 2026 may also hold `open`, the agent's own
   // lines for the done card: nothing reads it now.)
-  needs?: { seq: number; needs: NeedsWho; asks?: Ask[]; ticked?: number[]; resolved?: number[]; afterJobs?: string[]; next?: string[]; nextPick?: 'one'; nextSuggested?: number };
+  needs?: { seq: number; needs: NeedsWho; asks?: Ask[]; carriedFrom?: number; ticked?: number[]; resolved?: number[]; afterJobs?: string[]; next?: string[]; nextPick?: 'one'; nextSuggested?: number };
   // Set when the folder or account changes, or the record had to be
   // rebuilt; the next turn starts a new native session with a note.
   // lost: the session to resume couldn't be found (never saved; only set

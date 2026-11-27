@@ -120,6 +120,7 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | Why it asks | `ask.why` | Yes | Yes | Yes |
 | Links to go and do it | `ask.links` | Yes | Yes | Yes |
 | A ticked ask | `ask.ticked` | Yes | Yes | No: Not drawn yet. |
+| The decision task for an open coordinator ask | `ask.taskId` | No: These clients show the current mirrored card. The Mac uses this field to keep the card in place on a background wake. | No: These clients show the current mirrored card. The Mac uses this field to keep the card in place on a background wake. | No: These clients show the current mirrored card. The Mac uses this field to keep the card in place on a background wake. |
 | Where to do it | `ask.where` | No: The runner leaves where out of what the backend sends, as the ask's paragraph already says it. | No: The runner leaves where out of what the backend sends, as the ask's paragraph already says it. | No: The runner leaves where out of what the backend sends, as the ask's paragraph already says it. |
 
 ## A turn's end: the footer, the needs-you and done cards (TurnCompletion, reducer/event.rs)
@@ -139,6 +140,7 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | Fix for a known failure (usage limit, context, sign-in, network) | `turn.errorKind` | No: Not drawn yet. | Yes | No: Not drawn yet. |
 | A failed turn's error | `turn.error` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
 | Tokens used | `turn.usage` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
+| Keep an unchanged coordinator card open across a background wake | `turn.carriedAsks` | No: These clients show the current mirrored card. The Mac uses this field to keep the card in place on a background wake. | No: These clients show the current mirrored card. The Mac uses this field to keep the card in place on a background wake. | No: These clients show the current mirrored card. The Mac uses this field to keep the card in place on a background wake. |
 
 ## Inbox sections (inbox.rs)
 

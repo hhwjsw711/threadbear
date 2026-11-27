@@ -300,6 +300,7 @@ impl LooseEnd {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Ask {
     pub action: String,
+    pub task_id: Option<String>,
     pub where_: Option<String>,
     pub reply: Option<String>,
     pub why: Option<String>,
@@ -336,6 +337,7 @@ impl Ask {
             .map(|i| i as usize);
         Some(Ask {
             action,
+            task_id: string(c, "taskId"),
             where_: string(c, "where"),
             reply: string(c, "reply"),
             why: string(c, "why"),
@@ -1634,6 +1636,8 @@ pub struct TurnCompletion {
     /// or None when it said neither.
     pub needs: Option<String>,
     pub asks: Vec<Ask>,
+    /// A coordinator repeated the same decision while doing background work.
+    pub carried_asks: Option<(i64, Vec<i64>)>,
     /// With needs "nothing": follow-ups the agent suggested.
     pub next: Vec<String>,
     /// "one" when follow-ups are mutually exclusive directions; None means multi-pick.
@@ -1681,6 +1685,21 @@ impl TurnCompletion {
             error_kind: string(c, "errorKind").and_then(|k| TurnErrorKind::from_raw(&k)),
             needs: string(c, "needs"),
             asks: lossy(c, "asks", Ask::decode),
+            carried_asks: c
+                .get("carriedAsks")
+                .and_then(Value::as_object)
+                .and_then(|carried| {
+                    let seq = carried
+                        .get("seq")
+                        .and_then(int_value)
+                        .filter(|seq| *seq > 0)?;
+                    let ticks = carried
+                        .get("ticked")
+                        .and_then(Value::as_array)
+                        .map(|ticks| ticks.iter().filter_map(int_value).collect())
+                        .unwrap_or_default();
+                    Some((seq, ticks))
+                }),
             next,
             next_pick,
             next_suggested,

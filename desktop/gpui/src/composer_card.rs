@@ -25,6 +25,7 @@ use threadbear_core::reducer::{Ask, AskNote, AsksCard, RowContent};
 /// and collapsedCards).
 #[derive(Default)]
 pub(crate) struct CardState {
+    pub(crate) source_seq: Option<i64>,
     /// The card these are for.
     pub(crate) seq: Option<i64>,
     pub(crate) picks: BTreeMap<i64, i64>,
@@ -165,12 +166,13 @@ impl Composer {
     /// The words in its Something else boxes from before a restart come
     /// back (drafts.rs).
     fn sync_card(&mut self, card: &AsksCard, cx: &mut Context<Self>) {
-        if self.card.seq != Some(card.seq) {
+        if self.card.source_seq != Some(card.source_seq) {
             self.card = CardState {
                 seq: Some(card.seq),
+                source_seq: Some(card.source_seq),
                 ..Default::default()
             };
-            if self.restore_card_notes(card.seq) {
+            if self.restore_card_notes(card.source_seq) {
                 // Told to the transcript once this draw is done.
                 let this = cx.weak_entity();
                 cx.defer(move |cx| {
@@ -178,6 +180,7 @@ impl Composer {
                 });
             }
         }
+        self.card.seq = Some(card.seq);
         self.card
             .picks
             .retain(|index, _| !card.resolved.contains(index));
@@ -228,7 +231,7 @@ impl Composer {
     /// A handover's incoming app taking over: the card's and questions'
     /// boxes get their saved words, as the message box does.
     pub(crate) fn restore_box_drafts(&mut self, cx: &mut Context<Self>) {
-        if let Some(seq) = self.card.seq {
+        if let Some(seq) = self.card.source_seq {
             if self.restore_card_notes(seq) {
                 self.push_card_state(cx);
                 cx.notify();
@@ -251,7 +254,7 @@ impl Composer {
         }
         let card = match self.open_card(cx).filter(|c| !c.is_done()) {
             None => Some(Vec::new()),
-            Some(card) if self.card.seq == Some(card.seq) => {
+            Some(card) if self.card.source_seq == Some(card.source_seq) => {
                 let mut boxes: Vec<(String, crate::drafts::Draft)> = self
                     .card
                     .notes
@@ -259,7 +262,7 @@ impl Composer {
                     .filter(|(ask, _)| self.card.picks.get(ask) == Some(&OWN_ANSWER))
                     .map(|(ask, note)| {
                         (
-                            crate::drafts::card_key(thread, card.seq, *ask),
+                            crate::drafts::card_key(thread, card.source_seq, *ask),
                             crate::drafts::Draft {
                                 text: note.text.clone(),
                                 images: note.images.clone(),
@@ -267,7 +270,7 @@ impl Composer {
                         )
                     })
                     .collect();
-                let key = crate::drafts::card_picks_key(thread, card.seq);
+                let key = crate::drafts::card_picks_key(thread, card.source_seq);
                 boxes.extend(
                     crate::drafts::picks_draft(&self.card.picks, self.card.picks.is_empty())
                         .map(|d| (key, d)),
@@ -291,7 +294,14 @@ impl Composer {
     /// the row as the Swift app's does (setAskPicks and friends), and puts the
     /// picks back after the pane has been remade.
     pub(crate) fn push_card_state(&self, cx: &mut App) {
-        let (Some(pane), Some(seq)) = (self.pane.upgrade(), self.card.seq) else {
+        let Some(pane) = self.pane.upgrade() else {
+            return;
+        };
+        let Some(seq) = self
+            .open_card(cx)
+            .filter(|card| Some(card.source_seq) == self.card.source_seq)
+            .map(|card| card.seq)
+        else {
             return;
         };
         // The boxes' words are kept across a quit (drafts.rs), after this

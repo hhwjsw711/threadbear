@@ -141,7 +141,11 @@ test('a coordinator and its questions, reads and replies are the same on every r
       p.endTurn({ needs: 'you', asks: [{ question: 'Start the first task?', options: [{ label: 'Start it' }, { label: 'Wait' }] }] });
       p.sendFromPhone('Start it.');
       p.say('The helper finished. Should I land the change?');
-      p.endTurn({ needs: 'you', asks: [{ question: 'Land the change?', taskId: 'landing-decision', options: [{ label: 'Land it' }, { label: 'Not now' }], suggested: 0 }] });
+      const decision = { needs: 'you', asks: [{ question: 'Land the change?', taskId: 'landing-decision', options: [{ label: 'Land it' }, { label: 'Not now' }], suggested: 0 }] };
+      p.endTurn(decision);
+      p.queuedReminder('A project check is due.', 'project-check');
+      p.say('The check found nothing new.');
+      p.endTurn(decision, undefined, true);
       if (read) p.read();
     });
     assert.deepEqual(refused, []);

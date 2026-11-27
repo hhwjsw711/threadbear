@@ -162,6 +162,7 @@ import { placeBucket, placeOf } from './place.ts';
 import { allowed as waitMoveAllowed, waitStateOf, type WaitState } from './wait-state.ts';
 import { archivedNote, hibernatedNote, scheduledNote, unarchivedNote, unscheduledNote, wokenNote } from './place-notes.ts';
 import type { Coordinators, CoordinatorView } from './coordinators.ts';
+import { COORDINATOR_TASK_WAKE } from './coordinator-asks.ts';
 
 export type Notification =
   | { method: 'thread.updated'; params: { thread: ThreadSummary } }
@@ -323,6 +324,7 @@ export type Turn = {
   // A message in it was Mike's own: he's at the thread, so a check it does
   // or leaves owed needs no mark to tell him (completeTurn).
   byMike?: true;
+  fromCoordinatorTasks?: true;
   // Already reminded this non-Mike wake turn about pending carry-on items.
   nextReminded?: true;
   // It did the check a wake gave the thread (runner/hibernation.ts,
@@ -2490,6 +2492,7 @@ export class Runner {
     turn.messages.push(msg.turnId);
     if (!isCarryOn(msg)) turn.newWork = true;
     if (fromMike(msg.text, msg)) turn.byMike = true;
+    if (msg.wakeReason === COORDINATOR_TASK_WAKE) turn.fromCoordinatorTasks = true;
     // He wrote again, so the turn owes him another reply; a card it was sent
     // back for (needs.ts, REPLY_ASKS) gives way to this message's own (from
     // Codex's review); an archive it asked for before reading this is off.
@@ -2603,6 +2606,7 @@ export class Runner {
     rt.turn.inputs = new Map([[msg.turnId, messageSeq]]);
     if (!isCarryOn(msg)) rt.turn.newWork = true;
     if (fromMike(msg.text, msg)) rt.turn.byMike = true;
+    if (msg.wakeReason === COORDINATOR_TASK_WAKE) rt.turn.fromCoordinatorTasks = true;
     if (msg.ceiling !== undefined) rt.turn.ceilings = new Map([[msg.turnId, msg.ceiling]]);
     if (msg.helperRunId) rt.turn.helperRunId = msg.helperRunId;
     this.markOlderInputs(st, msg);
@@ -3498,6 +3502,7 @@ export class Runner {
           seq: ev.seq,
           needs: body.needs ?? said.needs,
           ...(body.asks ? { asks: body.asks } : {}),
+          ...(body.carriedAsks ? { carriedFrom: body.carriedAsks.seq, ticked: body.carriedAsks.ticked } : {}),
           ...(said.next?.length ? { next: said.next } : {}),
           ...(said.nextPick ? { nextPick: said.nextPick } : {}),
           ...(said.nextSuggested !== undefined ? { nextSuggested: said.nextSuggested } : {}),
@@ -5131,6 +5136,8 @@ export class Runner {
     const log = this.store.log(st.rec.id);
     if (body.type === 'turn.completed' && body.outcome === 'completed' && this.coordinators) {
       const pending = body.needs === 'you' ? body.asks ?? [] : [];
+      const carried = this.coordinators.carriedAsks(st.rec.id, pending);
+      if (carried) body.carriedAsks = { seq: carried.carriedFrom ?? carried.seq, ...(carried.ticked?.length ? { ticked: carried.ticked } : {}) };
       const asks = this.coordinators.bindAsks(st.rec.id, pending, log.lastSeq + 1);
       if (pending.length) {
         if (asks.length) body.asks = asks;
@@ -5301,7 +5308,12 @@ export class Runner {
     const asks = card?.asks;
     const active = card && asks && this.coordinators?.activeAsks(rec.id, asks, card.seq);
     const cleared = Boolean(asks?.length && active?.length === 0);
-    const pendingReviews = rec.reviews?.filter((review) => review.status === 'pending' && this.coordinators?.reviewAskVisible(rec.id, review.id) !== false).length;
+    const pendingReviews = rec.reviews?.filter((review) => review.status === 'pending' && this.coordinators?.reviewAskVisible(rec.id, review.id) !== false);
+    // A coordinator can do background work while the same decision is open.
+    // Keep that attention signal steady instead of retracting and pushing it again.
+    const backgroundDecision = Boolean(active?.length && this.activeCoordinator(rec.id) && rt.turn && !rt.turn.byMike && !rt.turn.fromCoordinatorTasks && !rt.turn.local && !afterJobs);
+    const priorReview = backgroundDecision && pendingReviews?.some((review) => active?.some((ask) => ask.links?.some(({ url }) => url === `review:${review.id}`)));
+    const attentionSeq = card?.carriedFrom ?? rec.lastTurnCompletedSeq;
     const s: ThreadSummary = {
       id: rec.id,
       title: rec.title,
@@ -5315,7 +5327,7 @@ export class Runner {
       // (docs/protocol/needs-you.md, "Needs you"). A pending design review only
       // counts once the turn ends: show_options doesn't block, and Mike
       // didn't want a "Needs you" (or a phone push) mid-turn.
-      needsYou: (!unfinished && Boolean(pendingReviews)) || rec.status === 'waiting' || Boolean(rec.forceUnread) || this.quietWakeShows(rec) || (!unfinished && rec.lastTurnCompletedSeq > rec.lastSeenSeq && !cleared && !this.saidNothing(rec)),
+      needsYou: (!unfinished && Boolean(pendingReviews?.length)) || Boolean(priorReview) || rec.status === 'waiting' || Boolean(rec.forceUnread) || this.quietWakeShows(rec) || ((!unfinished || backgroundDecision) && attentionSeq > rec.lastSeenSeq && !cleared && !this.saidNothing(rec)),
       createdAt: rec.createdAt,
       updatedAt: rec.updatedAt,
       lastActivityAt: rec.lastActivityAt,
@@ -5338,7 +5350,7 @@ export class Runner {
         s.asksSeq = card.seq;
       }
     }
-    if (pendingReviews) s.pendingReviews = pendingReviews;
+    if (pendingReviews?.length) s.pendingReviews = pendingReviews.length;
     if (rec.model) s.model = rec.model;
     if (rec.effort) s.effort = rec.effort;
     if (rec.modelInUse) s.modelInUse = rec.modelInUse;

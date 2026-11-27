@@ -39,6 +39,7 @@ export const FAMILIES: Record<string, string> = {
 };
 
 const NOT_YET = { no: 'Not drawn yet.' };
+const CURRENT_ASK_CARD = { no: 'These clients show the current mirrored card. The Mac uses this field to keep the card in place on a background wake.' };
 
 export const DRAWN: Record<string, DrawRow> = {
   'row.user': { what: "The user's message", ios: 'yes', android: 'yes', web: 'yes', sign: { android: 'UserBubble' } },
@@ -78,6 +79,7 @@ export const DRAWN: Record<string, DrawRow> = {
   'message.givesWay': { what: 'A summary that gives way to a longer reply', ios: NOT_YET, android: 'yes', web: NOT_YET, sign: { android: 'replyIndexes' } },
   'message.final': { what: "One reply's reply", ios: NOT_YET, android: NOT_YET, web: NOT_YET },
   'ask.action': { what: 'The ask itself', ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'paragraph', android: 'paragraph' } },
+  'ask.taskId': { what: 'The decision task for an open coordinator ask', ios: CURRENT_ASK_CARD, android: CURRENT_ASK_CARD, web: CURRENT_ASK_CARD },
   'ask.options': { what: 'Answers to pick from', ios: 'yes', android: 'yes', web: 'yes', sign: { android: 'choices' } },
   'ask.optionNotes': { what: 'What each answer does', ios: 'yes', android: 'yes', web: 'yes' },
   'ask.suggested': { what: 'The suggested answer', ios: 'yes', android: 'yes', web: 'yes', sign: { android: 'suggestedIndex' } },
@@ -94,6 +96,7 @@ export const DRAWN: Record<string, DrawRow> = {
   'turn.errorKind': { what: 'Fix for a known failure (usage limit, context, sign-in, network)', ios: NOT_YET, android: 'yes', web: NOT_YET, sign: { android: 'waitingForNetwork' } },
   'turn.needs': { what: 'Needs you or done', ios: 'yes', android: 'yes', web: 'yes', sign: { android: 'waitingOnMike' } },
   'turn.asks': { what: 'Needs-you card', ios: 'yes', android: 'yes', web: 'yes', sign: { android: 'asksSeq' } },
+  'turn.carriedAsks': { what: 'Keep an unchanged coordinator card open across a background wake', ios: CURRENT_ASK_CARD, android: CURRENT_ASK_CARD, web: CURRENT_ASK_CARD },
   'turn.next': { what: "Done card's follow-ups", ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'nextPicks', android: 'sendFollowUps', web: 'followUpMessage' } },
   'turn.nextPick': { what: "Done card's pick-one follow-up mode", ios: 'yes', android: 'yes', web: 'yes' },
   'turn.nextSuggested': { what: "Done card's recommended follow-up", ios: 'yes', android: 'yes', web: 'yes' },

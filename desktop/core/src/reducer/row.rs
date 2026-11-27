@@ -762,6 +762,8 @@ impl AskNote {
 pub struct AsksCard {
     /// The seq of the turn.completed the asks came with.
     pub seq: i64,
+    /// The first turn that asked for this decision, also the draft's key.
+    pub source_seq: i64,
     pub asks: Vec<Ask>,
     pub ticked: BTreeSet<i64>,
     pub resolved: BTreeSet<i64>,
@@ -788,6 +790,7 @@ impl AsksCard {
     pub fn new(seq: i64, asks: Vec<Ask>) -> AsksCard {
         AsksCard {
             seq,
+            source_seq: seq,
             asks,
             ticked: BTreeSet::new(),
             resolved: BTreeSet::new(),

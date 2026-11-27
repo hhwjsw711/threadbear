@@ -63,7 +63,7 @@ export type Play = {
   /** The agent writes text. */
   say(text: string): void;
   /** The agent calls end_turn with these args, and the turn ends. */
-  endTurn(input: Record<string, unknown>, answerAll?: true): void;
+  endTurn(input: Record<string, unknown>, answerAll?: true, carriesPreviousAsk?: true): void;
   /** Alex sends a message, with pictures (paths of real files) if any. */
   send(text: string, images?: ImageRef[]): void;
   /** Alex sends from his phone, so every surface can mark where it came from. */
@@ -231,12 +231,21 @@ export async function playInto(post: Post, runner: { key: string; runnerId: stri
         h.runner.approvePlan({ threadId: thread.id, itemId: lastPlan });
         h.adapter.last.init();
       },
-      endTurn: (input, answerAll) => {
+      endTurn: (input, answerAll, carriesPreviousAsk) => {
         const id = `e${++n}`;
         s.out({ kind: 'event', event: { type: 'tool.call', itemId: id, name: END_TURN, kind: 'mcp', title: 'threadbear: end_turn', input } });
         s.out({ kind: 'event', event: { type: 'tool.result', itemId: id, ok: true, text: 'ok', truncated: false, images: [] } });
         const answered = [...(h.runner.mustGet(thread.id).rt.turn?.messages ?? [])];
-        s.result('completed', undefined, undefined, answerAll ? { answered } : {});
+        // Coordinator lifecycle is covered in coordinators.test.ts. Let the
+        // route test replay what the real coordinator adds to this event.
+        const emit = h.runner.emit.bind(h.runner);
+        const seq = carriesPreviousAsk ? h.runner.get(thread.id).asksSeq : undefined;
+        if (seq) h.runner.emit = (st, body, turnId) => {
+          if (st.rec.id === thread.id && body.type === 'turn.completed') body.carriedAsks = { seq };
+          return emit(st, body, turnId);
+        };
+        try { s.result('completed', undefined, undefined, answerAll ? { answered } : {}); }
+        finally { if (seq) h.runner.emit = emit; }
       },
       fail: (error) => s.result('failed', undefined, error),
       earlyStop: () => {

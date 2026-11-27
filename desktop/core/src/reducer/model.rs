@@ -564,6 +564,49 @@ impl TranscriptModel {
         });
     }
 
+    fn carry_open_asks(&mut self, seq: i64, completion: &TurnCompletion) -> bool {
+        let Some((source, ticks)) = completion
+            .carried_asks
+            .as_ref()
+            .filter(|(source, _)| *source < seq)
+        else {
+            return false;
+        };
+        let id = format!("ak:{source}");
+        let Some(RowContent::Asks(card)) = self.item(&id).map(|row| &row.content) else {
+            return false;
+        };
+        if card.asks.is_empty()
+            || card.asks != completion.asks
+            || !card.resolved.is_empty()
+            || self.open_asks_row.as_deref() != Some(id.as_str())
+        {
+            return false;
+        }
+        let previous = card.seq;
+        if let Some(picks) = self.ask_picks.remove(&previous) {
+            self.ask_picks.entry(seq).or_insert(picks);
+        }
+        if let Some(notes) = self.ask_notes.remove(&previous) {
+            self.ask_notes.entry(seq).or_insert(notes);
+        }
+        let picks = self.ask_picks.get(&seq).cloned().unwrap_or_default();
+        let notes = self.ask_notes.get(&seq).cloned().unwrap_or_default();
+        self.update(&id, |content| {
+            if let RowContent::Asks(card) = content {
+                card.seq = seq;
+                card.ticked = ticks.iter().copied().collect();
+                card.picks = picks;
+                card.notes = notes;
+                card.is_open = true;
+            }
+        });
+        self.asks_row_for_seq.remove(&previous);
+        self.asks_row_for_seq.insert(seq, id.clone());
+        self.open_asks_row = Some(id);
+        true
+    }
+
     /// Mike picked (or unpicked) answers on the card from `seq`.
     pub fn set_ask_picks(&mut self, seq: i64, picks: BTreeMap<i64, i64>) -> TranscriptChange {
         if self.ask_picks.get(&seq).cloned().unwrap_or_default() == picks {
@@ -976,7 +1019,13 @@ impl TranscriptModel {
                 review,
             } => {
                 // Mike's reply answers the open card, so it goes, picked or not.
-                if origin.as_deref() != Some("runner") {
+                let project_wake = (origin.as_deref() == Some("schedule")
+                    || (origin.is_none() && (text.starts_with("[Sent by the agent in the thread ")
+                        || text.starts_with("[Sent by the agent before moving to "))))
+                    && self.open_asks_row.as_deref().and_then(|id| self.item(id)).is_some_and(|row| {
+                        matches!(&row.content, RowContent::Asks(card) if card.asks.iter().any(|ask| ask.task_id.is_some()))
+                    });
+                if origin.as_deref() != Some("runner") && !project_wake {
                     self.close_open_asks();
                 }
                 let mut message = UserMessage {
@@ -1700,8 +1749,14 @@ impl TranscriptModel {
                         row_turn.clone(),
                         RowContent::Footer(completion.clone()),
                     ));
-                    // Any finished turn closes the last card; one that needs
-                    // Mike opens the next, under its footer.
+                    if completion.outcome == TurnOutcome::Completed
+                        && completion.needs.as_deref() == Some("you")
+                        && self.carry_open_asks(seq, completion)
+                    {
+                        return;
+                    }
+                    // Any other finished turn closes the last card. A new
+                    // ask opens under this turn's footer.
                     self.close_open_asks();
                     // The card sits under the turn's footer, its answers
                     // picked there and sent from the composer (Mike, 28 Oct).
@@ -1709,7 +1764,6 @@ impl TranscriptModel {
                         && completion.needs.as_deref() == Some("you")
                         && !completion.asks.is_empty()
                     {
-                        let card_id = format!("ak:{seq}");
                         let mut card = AsksCard::new(seq, completion.asks.clone());
                         card.ticked = completion
                             .asks
@@ -1718,6 +1772,16 @@ impl TranscriptModel {
                             .filter(|(_, ask)| ask.ticked)
                             .map(|(i, _)| i as i64)
                             .collect();
+                        if let Some((source, ticks)) =
+                            completion.carried_asks.as_ref().filter(|(source, _)| {
+                                *source < seq && self.item(&format!("ak:{source}")).is_none()
+                            })
+                        {
+                            // A transcript page can start at the carrying turn.
+                            card.source_seq = *source;
+                            card.ticked = ticks.iter().copied().collect();
+                        }
+                        let card_id = format!("ak:{}", card.source_seq);
                         card.picks = self.ask_picks.get(&seq).cloned().unwrap_or_default();
                         card.notes = self.ask_notes.get(&seq).cloned().unwrap_or_default();
                         self.append(Row::new(&card_id, seq, row_turn, RowContent::Asks(card)));

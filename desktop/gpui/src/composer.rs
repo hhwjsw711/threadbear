@@ -227,7 +227,7 @@ impl RestoreDraft {
 
 #[derive(Clone)]
 pub struct SavedPicks {
-    pub(crate) seq: i64,
+    pub(crate) source_seq: i64,
     pub(crate) picks: std::collections::BTreeMap<i64, i64>,
     pub(crate) notes: std::collections::BTreeMap<i64, threadbear_core::reducer::AskNote>,
     pub(crate) next_picks: std::collections::BTreeSet<i64>,
@@ -697,10 +697,9 @@ impl Composer {
     /// pictures, or the card's answers.
     pub(crate) fn has_draft(&self, cx: &App) -> bool {
         // Only the card still open: an answered one's state stays behind.
-        let open = self.card.seq.is_some()
-            && self
-                .open_card(cx)
-                .is_some_and(|c| !c.is_done() && Some(c.seq) == self.card.seq);
+        let open = self
+            .open_card(cx)
+            .is_some_and(|c| !c.is_done() && Some(c.source_seq) == self.card.source_seq);
         self.holds_anything(cx)
             || (open
                 && (!self.card.picks.is_empty()
@@ -917,8 +916,8 @@ impl Composer {
     }
 
     fn saved_picks(&self) -> Option<SavedPicks> {
-        self.card.seq.map(|seq| SavedPicks {
-            seq,
+        self.card.source_seq.map(|source_seq| SavedPicks {
+            source_seq,
             picks: self.card.picks.clone(),
             notes: self.card.notes.clone(),
             next_picks: self.card.next_picks.clone(),
@@ -1261,7 +1260,7 @@ impl Composer {
             ..
         } = restore;
         if let Some(saved) = card {
-            if self.card.seq == Some(saved.seq) {
+            if self.card.source_seq == Some(saved.source_seq) {
                 self.card.picks = saved.picks;
                 self.card.notes = saved.notes;
                 self.card.next_picks = saved.next_picks;

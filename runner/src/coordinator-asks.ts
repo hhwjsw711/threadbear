@@ -5,6 +5,8 @@ import { boardRecords, getTaskDetails, isTaskDone, workTaskView, type Coordinato
 
 export type BoardRecord = ReturnType<typeof boardRecords>[number];
 
+export const COORDINATOR_TASK_WAKE = 'Coordinator update from Tasks';
+
 export const taskTitleKey = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
 export const replyChoiceKey = (value: string): string => taskTitleKey(value).replace(/[.!?]$/, '');

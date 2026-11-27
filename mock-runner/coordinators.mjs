@@ -79,14 +79,14 @@ export function coordinatorDemo({ threads, projects, broadcast, projectChanged, 
     initial.notes = '## Decisions\n\n- Use the same pools and model picker as ordinary threads.\n- Routine work stays in helpers, outside the inbox.\n- Keep questions with the coordinator.\n- Project goals, state and notes are shared with the project page.\n\n## Runner & Storage\n\n- Coordinator state persists in `coordinators.json`.\n- `loops` survives reloads and merges cleanly with legacy records.';
     make(initial);
   }
-  function publishAsk(coordinator, asks) {
+  function publishAsk(coordinator, asks, carriedAsks) {
     const entry = threads.get(coordinator.threadId);
     const ts = now();
     const turnId = `coordinator_ask_${entry.events.length}`;
     for (const e of [
       { type: 'turn.started' },
-      { type: 'assistant.text', itemId: `${turnId}_reply`, text: 'One decision for you before the helpers carry on.' },
-      { type: 'turn.completed', outcome: 'completed', needs: 'you', asks, durationMs: 900 },
+      { type: 'assistant.text', itemId: `${turnId}_reply`, text: carriedAsks ? 'A helper checked the project brief.' : 'One decision for you before the helpers carry on.' },
+      { type: 'turn.completed', outcome: 'completed', needs: 'you', asks, durationMs: 900, ...(carriedAsks ? { carriedAsks } : {}) },
     ]) {
       const event = { ...e, seq: entry.events.length + 1, ts, threadId: coordinator.threadId, turnId };
       entry.events.push(event);
@@ -265,7 +265,10 @@ export function coordinatorDemo({ threads, projects, broadcast, projectChanged, 
     } else if (method === 'mock.coordinatorAsk') {
       // The legacy fixture keeps its Needs you card and Open loops.
       const decision = coordinator.loops.find((l) => l.kind === 'waiting_on_user');
-      publishAsk(coordinator, [{ action: decision.title, why: decision.summary, options: decision.options }]);
+      const entry = threads.get(coordinator.threadId);
+      const last = p.carry && entry.events.findLast((e) => e.seq === entry.summary.asksSeq);
+      const carried = last ? { seq: last.carriedAsks?.seq ?? last.seq } : undefined;
+      publishAsk(coordinator, [{ action: decision.title, why: decision.summary, options: decision.options }], carried);
     } else if (method === 'mock.coordinatorVerify') {
       coordinator.tasks[0].state = 'done';
       target.state = 'The project home is ready. The coordinator checked the helper result and the conversation and living document use the same project state.';

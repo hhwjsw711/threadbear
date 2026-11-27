@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { Runner, Notification, ThreadState } from './runner.ts';
 import type { Projects } from './projects.ts';
 import type { Clock, TimerHandle } from './clock.ts';
@@ -21,7 +22,7 @@ import { loginOk, roomWait } from './pools.ts';
 import { providerName } from './providers.ts';
 import { resetTime } from './usage.ts';
 import { putsOff } from './needs.ts';
-import { askMatches, askTask, decisionCard, decisionChoices, decisionReviewAnswer, decisionReviewDraft, isUserDecision, replyChoiceKey, taskTitleKey, type BoardRecord } from './coordinator-asks.ts';
+import { askMatches, askTask, COORDINATOR_TASK_WAKE, decisionCard, decisionChoices, decisionReviewAnswer, decisionReviewDraft, isUserDecision, replyChoiceKey, taskTitleKey, type BoardRecord } from './coordinator-asks.ts';
 import { workTaskEdit, type WorkTaskEdit } from './coordinator-task-edits.ts';
 import { CARRY_ON_HELPER_RESTART, STOPPED_CARRY_ON_MAX_AGE_MS } from './runner/carry-on.ts';
 import { COORDINATOR_TB_REFUSAL, COORDINATOR_THREADBEAR_TOOLS, COORDINATOR_WORKER, COORDINATOR_WORKER_PROMPT, HELPER_REPORT, HELPER_THREADBEAR_TOOLS, threadbearToolName } from './coordinator-policy.ts';
@@ -287,7 +288,13 @@ export class Coordinators {
       }
     }
     if (loggedAsks?.some((ask) => ask.taskId) && thread.rec.needs?.seq !== latest) {
-      thread.rec.needs = { seq: latest, needs: 'you', asks: loggedAsks };
+      const carried = ended?.type === 'turn.completed' ? ended.carriedAsks : undefined;
+      const log = this.deps.host.store.log(row.threadId);
+      const ticks = log.read(latest + 1, log.lastSeq).findLast((e) => e.type === 'asks.ticked' && e.asksSeq === latest);
+      thread.rec.needs = {
+        seq: latest, needs: 'you', asks: loggedAsks, ...(carried ? { carriedFrom: carried.seq } : {}),
+        ...(ticks?.type === 'asks.ticked' ? { ticked: ticks.ticked, resolved: ticks.resolved } : carried?.ticked ? { ticked: carried.ticked } : {}),
+      };
       dirty = true;
     }
     const card = thread.rec.needs;
@@ -719,7 +726,7 @@ export class Coordinators {
   addTask(projectId: string, title: string, doneWhen: string, fromUser = false): CoordinatorView {
     const added = this.addWorkTask(projectId, { title, doneWhen, work: defaultTaskDetails() });
     if (!fromUser) return added.coordinator;
-    this.wake(this.must(projectId), `The user added a project to-do: ${JSON.stringify({ title, doneWhen })}. Plan it within the charter.`);
+    this.wake(this.must(projectId), `The user added a project to-do: ${JSON.stringify({ title, doneWhen })}. Plan it within the charter.`, undefined, undefined, true);
     return this.get(projectId);
   }
 
@@ -1942,6 +1949,33 @@ export class Coordinators {
     return problems;
   }
 
+  carriedAsks(threadId: string, asks: Ask[]): NonNullable<ThreadRecord['needs']> | undefined {
+    const row = this.forThread(threadId);
+    const thread = this.deps.host.threads.get(threadId);
+    const turn = thread?.rt.turn;
+    const card = thread?.rec.needs;
+    if (!row || !this.on() || row.state !== 'active' || !turn || turn.byMike || turn.fromCoordinatorTasks || turn.local ||
+        card?.needs !== 'you' || card.seq !== thread?.rec.lastTurnCompletedSeq || card.afterJobs?.length || card.resolved?.length ||
+        !asks.length || card.asks?.length !== asks.length) return undefined;
+    const kept = card.asks;
+    return asks.every((ask, i) => {
+      const record = askTask(row, ask);
+      if (!record || record.asked?.seq !== card.seq || !isUserDecision(record) || isTaskDone(record) ||
+          record.work?.state === 'postponed') return false;
+      const review = this.reviewForAsk(row, ask, record);
+      const choices = decisionChoices(ask, row, record, review);
+      return isDeepStrictEqual(this.boundDecision(ask, record.id, choices, review), kept[i]);
+    }) ? card : undefined;
+  }
+
+  private boundDecision(ask: Ask, id: string, choices: ReturnType<typeof decisionChoices>, review: ReturnType<Coordinators['reviewForAsk']>): Ask {
+    const hasReview = review?.status === 'pending';
+    const cardAsk = hasReview && !ask.links?.some(({ url }) => url.startsWith('review:'))
+      ? { ...ask, links: [...(ask.links ?? []).slice(0, 2), { url: `review:${review.id}`, title: 'Open comparison' }] }
+      : ask;
+    return decisionCard(cardAsk, id, choices.options, choices.recommendation, hasReview);
+  }
+
   bindAsks(threadId: string, asks: Ask[], seq: number): Ask[] {
     const row = this.forThread(threadId);
     if (!row || !this.on() || row.state !== 'active') return asks;
@@ -1986,11 +2020,7 @@ export class Coordinators {
       else delete record.designReviewId;
       record.updatedAt = now;
       used.add(record.id);
-      const hasReview = review?.status === 'pending';
-      const cardAsk = hasReview && !ask.links?.some(({ url }) => url.startsWith('review:'))
-        ? { ...ask, links: [...(ask.links ?? []).slice(0, 2), { url: `review:${review.id}`, title: 'Open comparison' }] }
-        : ask;
-      bound.push(decisionCard(cardAsk, record.id, options, recommendation, hasReview));
+      bound.push(this.boundDecision(ask, record.id, { options, recommendation }, review));
     }
     let dirty = bound.length > 0;
     for (const record of boardRecords(row)) {
@@ -2343,7 +2373,7 @@ export class Coordinators {
         }
         if (row.delivery) {
           const delivery = row.delivery;
-          this.wake(row, delivery.text, delivery.id);
+          this.wake(row, delivery.text, delivery.id, undefined, delivery.eventKeys.some((key) => key.startsWith('task-user:')));
           const delivered = new Set(delivery.eventKeys);
           row.events = row.events.filter((e) => !delivered.has(e.key));
           row.seen = [...row.seen, ...delivery.eventKeys].slice(-256);
@@ -2357,11 +2387,11 @@ export class Coordinators {
       this.changed(row);
     }, delay));
   }
-  private wake(row: Coordinator, message: string, delivery?: string, ceiling?: PermissionMode): string | undefined {
+  private wake(row: Coordinator, message: string, delivery?: string, ceiling?: PermissionMode, fromTasks = false): string | undefined {
     if (row.state !== 'active' || !this.deps.enabled() || this.stopped) return undefined;
     const channel = `coordinator:${row.projectId}`;
     if (!delivery || !this.deps.host.findScheduledSend(row.threadId, channel, delivery, 0, 'runner')) {
-      this.deps.host.send(row.threadId, message, [], { origin: 'runner', wakeReason: 'Coordinator update', queue: true, ...(ceiling ? { ceiling } : {}), ...(delivery ? { messageId: scheduledMessageId(row.threadId, channel, delivery) } : {}) });
+      this.deps.host.send(row.threadId, message, [], { origin: 'runner', wakeReason: fromTasks ? COORDINATOR_TASK_WAKE : 'Coordinator update', queue: true, ...(ceiling ? { ceiling } : {}), ...(delivery ? { messageId: scheduledMessageId(row.threadId, channel, delivery) } : {}) });
     }
     // Commit the queued input before acknowledging its durable event batch.
     // On a crash between these writes, the same delivery identity is found.

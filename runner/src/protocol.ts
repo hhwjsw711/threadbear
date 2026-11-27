@@ -962,6 +962,8 @@ export type EventBody =
       errorKind?: TurnErrorKind;
       needs?: NeedsWho;
       asks?: Ask[];
+      // The earlier card this coordinator wake carried forward, with its ticks.
+      carriedAsks?: { seq: number; ticked?: number[] };
       // With needs "nothing": end_turn's suggested follow-ups.
       next?: string[];
       // "one" when the follow-ups are mutually exclusive directions to choose between; absent means "any" (multi-pick).
