@@ -20,6 +20,7 @@ import { CommandNote, useCommand } from './command-state';
 import { STOP_HOLD_MS, unqueued } from './command';
 import { holdStop, releaseStop, stopHeldFor } from './stop-hold';
 import { withFailed, withoutSent } from './composer-draft';
+import { isPaged, nextUnanswered } from './ask-pager';
 import { previewOf, ShareControl, SharePage } from './share';
 import { busy, Lists, ResizeHandle, type Row, useSidebarWidth } from './sidebar';
 import { Pop } from './menu';
@@ -441,6 +442,9 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
   const stopLocked = stopCmd.busy || (carried > 0 && stopCmd.state.kind === 'idle');
   // Picks on the card of asks: ask index to choice index, for one card.
   const [picks, setPicks] = useState<Draft['picks']>({ by: {} });
+  const [pager, setPager] = useState<{ threadId?: string; card?: number; page: number }>({ page: 0 });
+  const pageTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(pageTimerRef.current), [t.threadId, t.asksSeq]);
   const [ticked, setTicked] = useState<Draft['ticked']>({ set: new Set() });
   // The composer keeps what's typed and picked until the backend has the
   // message, and gets it back if it fails later: its words above whatever
@@ -463,6 +467,27 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
   const holding = unqueued(sending.state);
   const asks = !busy(t) && !t.pendingApproval ? (t.asks ?? []) : [];
   const by = picks.card === t.asksSeq ? picks.by : {};
+  const paged = isPaged(asks);
+  const sameCard = pager.threadId === t.threadId && pager.card === t.asksSeq;
+  const page = Math.min(sameCard ? pager.page : 0, Math.max(0, asks.length - 1));
+  const pickAsk = (index: number, choice: number) => {
+    clearTimeout(pageTimerRef.current);
+    const nextBy = { ...by, [index]: by[index] === choice ? -1 : choice };
+    setPicks({ card: t.asksSeq, by: nextBy });
+    if (!paged || nextBy[index]! < 0) return;
+    const to = nextUnanswered(index, asks.length, nextBy, false);
+    if (to === null) return;
+    const threadKey = t.threadId;
+    const card = t.asksSeq;
+    pageTimerRef.current = setTimeout(
+      () => setPager((cur) => ((cur.threadId === threadKey && cur.card === card ? cur.page : 0) === page ? { threadId: threadKey, card, page: to } : cur)),
+      300,
+    );
+  };
+  const goPage = (p: number) => {
+    clearTimeout(pageTimerRef.current);
+    setPager({ threadId: t.threadId, card: t.asksSeq, page: p });
+  };
   // Waiting on its own work isn't done, as on the Mac (19 Nov: a thread
   // waiting for CI before it could land said Done and was archived).
   const finished = !busy(t) && !t.needsYou && !t.pendingApproval && !asks.length && !t.archivedAt && !t.working && !stillWorking(t);
@@ -486,8 +511,21 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
     <section className="card">
       <h2>
         ✋ {asks.length === 1 ? 'Decision needed' : 'Decisions needed'}
+        {paged ? (
+          <span className="pager">
+            <button type="button" className="btn plain" disabled={page === 0} onClick={() => goPage(page - 1)} aria-label="Previous ask" title="Previous ask">
+              ‹
+            </button>
+            <span className="of">
+              {page + 1} of {asks.length}
+            </span>
+            <button type="button" className="btn plain" disabled={page === asks.length - 1} onClick={() => goPage(page + 1)} aria-label="Next ask" title="Next ask">
+              ›
+            </button>
+          </span>
+        ) : null}
       </h2>
-      {asks.map((a, i) => (
+      {asks.map((a, i) => (paged && i !== page ? null : (
         <Fragment key={i}>
           <div className="ask-q">
             <MessageText text={`${asks.length > 1 ? `${i + 1}. ` : ''}${a.action.replace(/\s*\n\s*/g, ' ').trim()}`} />
@@ -530,7 +568,7 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
           {choices(a).length ? (
             <div className="choices">
               {choices(a).map((c, n) => (
-                <button key={n} className={`choice ${by[i] === n ? 'on' : ''}`} disabled={holding} onClick={() => setPicks({ card: t.asksSeq, by: { ...by, [i]: by[i] === n ? -1 : n } })}>
+                <button key={n} className={`choice ${by[i] === n ? 'on' : ''}`} disabled={holding} onClick={() => pickAsk(i, n)}>
                   <span className="radio" />
                   <span>
                     {c}
@@ -544,7 +582,7 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
             </div>
           ) : null}
         </Fragment>
-      ))}
+      )))}
     </section>
   ) : next.length || ends.length ? (
     <section className="card">

@@ -457,6 +457,9 @@ button.fold:hover > svg:last-child, button.fold:focus-visible > svg:last-child {
 .card { padding: 14px 16px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; max-height: 52vh; overflow-y: auto; }
 .card h2 { display: flex; align-items: center; gap: 7px; font-size: 14px; margin: 0; }
 .card h2 .of { margin-left: auto; font-weight: 400; color: var(--faint); font-size: 12.5px; }
+.card h2 .pager { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
+.card h2 .pager .of { margin-left: 0; }
+.card h2 .pager .btn { padding: 2px 9px; }
 .ask-q { font-weight: 600; }
 .ask-q .md p { margin-bottom: 4px; }
 .ask-why { font-weight: 400; color: var(--muted); font-size: 13.5px; margin-top: 2px; }
