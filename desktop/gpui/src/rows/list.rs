@@ -100,6 +100,8 @@ impl TranscriptList {
     /// lines, so the words don't move under the pointer. Whether it was
     /// following, for `resume_after_selection`.
     pub fn pause_for_selection(&mut self) -> bool {
+        // And the rest of a wheel's glide stops (ScrollBounce::smooth_wheel).
+        self.list.note_jump();
         let following = self.list.is_following_tail();
         if following {
             // Normal, not GPUI's pause: a pause takes up following again the
@@ -199,11 +201,13 @@ pub fn transcript_list(
                 .min_h_0()
                 .min_w_0()
                 .child(
-                    base::ScrollBounce::new("transcript-bounce", &list_state, rows).on_scroll(
-                        move |_, cx| {
+                    base::ScrollBounce::new("transcript-bounce", &list_state, rows)
+                        // A wheel's notch eases over a few frames rather
+                        // than jumping (Mike's Razer, 27 Nov).
+                        .smooth_wheel(true)
+                        .on_scroll(move |_, cx| {
                             let _ = weak.update(cx, |_, cx| cx.notify());
-                        },
-                    ),
+                        }),
                 ),
         )
         .child(crate::web_panels::transcript_mark(None))

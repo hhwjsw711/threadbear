@@ -146,6 +146,7 @@ pub struct ScrollBounce {
     child: AnyElement,
     enabled: bool,
     scroll_wheel: bool,
+    smooth_wheel: bool,
     motion: ScrollBounceMotion,
     on_scroll: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
 }
@@ -162,6 +163,7 @@ impl ScrollBounce {
             child: child.into_any_element(),
             enabled: Self::enabled_by_default(),
             scroll_wheel: true,
+            smooth_wheel: false,
             motion: ScrollBounceMotion::default(),
             on_scroll: None,
         }
@@ -195,6 +197,26 @@ impl ScrollBounce {
         self
     }
 
+    /// Ease each mouse wheel scroll over a few frames instead of moving the
+    /// whole of it at once, as `NSScrollView` does. Needs
+    /// [`Self::scroll_wheel`]. Trackpad gestures are left as they come.
+    ///
+    /// Some wheels report in pixels with no gesture phase: Mike's Razer turns
+    /// one notch into a burst about 30 times a second, its first 20 to 90 px,
+    /// so the transcript jumped that far in one frame, then sat for three
+    /// frames before the next jump (Threadbear, 27 Nov 2026). A line wheel's
+    /// notch is a jump of a line or more too. A stream already smoothed by a driver
+    /// (Mikey Mouse, a pixel or a few each frame) passes through nearly as it
+    /// came: every frame moves at least a pixel of what's left.
+    ///
+    /// The glide stops when the view's moved some other way, which only a
+    /// handle that counts its jumps can tell (`ScrollbarHandle::jumps`:
+    /// gpui's `ListState` does, a plain `ScrollHandle` doesn't yet).
+    pub fn smooth_wheel(mut self, enabled: bool) -> Self {
+        self.smooth_wheel = enabled;
+        self
+    }
+
     /// Set how far a drag stretches past an edge and how the edge returns.
     pub fn motion(mut self, motion: ScrollBounceMotion) -> Self {
         self.motion = motion;
@@ -218,6 +240,7 @@ struct State {
     ongoing_scroll: OngoingScroll,
     short_drag_distance: Option<f32>,
     last_wheel_at: Option<Instant>,
+    glide: WheelGlide,
     /// Sign of the stream being suppressed, when it is known to be momentum
     /// that cannot reverse. `None` suppresses both directions.
     suppressed_direction: Option<f32>,
@@ -232,6 +255,95 @@ impl State {
         self.physics.release();
         self.suppressed_direction =
             (from_rest && self.physics.suppress_momentum).then(|| self.physics.offset().signum());
+    }
+}
+
+
+/// What's left of the mouse wheel's scrolling, for [`ScrollBounce::smooth_wheel`].
+/// Each frame moves a share of it, so the motion starts at once and eases out.
+#[derive(Default)]
+struct WheelGlide {
+    /// Pixels still to scroll, positive toward the top as wheel deltas are.
+    remaining: f32,
+    stepped_at: Option<Instant>,
+    /// No frame has moved this glide yet.
+    first: bool,
+    /// The handle's `jumps` when the glide started: any other move since
+    /// (a jump to the end on sending a message, a thumb drag) ends it.
+    jumps: u64,
+}
+
+impl WheelGlide {
+    /// Seconds for what's left to shrink to about 37%: a 20 px notch takes
+    /// about a tenth of a second, most of it in the first few frames. Long
+    /// enough to join up a wheel that reports 30 times a second (Mike's
+    /// Razer) into steady motion on a 120 Hz screen.
+    const TIME_CONSTANT: f32 = 0.06;
+    /// A frame at 120 Hz: the first frame after a pause moves at least this
+    /// much time's share, however soon after the event it's drawn.
+    const FIRST_FRAME: Duration = Duration::from_micros(8_333);
+    /// The longest gap one step catches up on, so a stalled frame doesn't
+    /// spend the whole glide at once.
+    const MAX_FRAME: Duration = Duration::from_millis(50);
+
+    fn add(&mut self, delta: f32, now: Instant, jumps: u64) {
+        if delta == 0. || !delta.is_finite() {
+            return;
+        }
+        // Turning the wheel back stops the glide at once, and so does the
+        // view having been moved some other way.
+        if self.remaining != 0.
+            && (self.remaining.signum() != delta.signum() || self.jumps != jumps)
+        {
+            self.remaining = 0.;
+        }
+        if self.remaining == 0. {
+            self.stepped_at = Some(now);
+            self.first = true;
+            self.jumps = jumps;
+        }
+        self.remaining += delta;
+    }
+
+    fn stop(&mut self) {
+        *self = Self::default();
+    }
+
+    fn is_moving(&self) -> bool {
+        self.remaining != 0.
+    }
+
+    /// The pixels to scroll this frame.
+    fn step(&mut self, now: Instant) -> f32 {
+        if self.remaining == 0. {
+            return 0.;
+        }
+        let mut dt = self.stepped_at.map_or(Self::FIRST_FRAME, |at| {
+            now.saturating_duration_since(at)
+                .clamp(Duration::ZERO, Self::MAX_FRAME)
+        });
+        if std::mem::take(&mut self.first) {
+            // The first frame moves at once, however soon it's drawn after
+            // the event, and no more than a frame's share for a late one.
+            dt = dt.max(Self::FIRST_FRAME);
+        } else if dt.is_zero() {
+            // A second draw at the same moment (a key pressed between
+            // frames, or a test's synchronous redraw) moves nothing.
+            return 0.;
+        }
+        self.stepped_at = Some(now);
+        let fraction = 1. - (-dt.as_secs_f32() / Self::TIME_CONSTANT).exp();
+        let mut step = self.remaining * fraction;
+        // At least a pixel a frame, so a driver's own smooth stream of small
+        // packets isn't held back, and the tail doesn't creep.
+        if step.abs() < 1. {
+            step = self.remaining.signum() * self.remaining.abs().min(1.);
+        }
+        if (self.remaining - step).abs() < 0.5 {
+            step = self.remaining;
+        }
+        self.remaining -= step;
+        step
     }
 }
 
@@ -329,12 +441,45 @@ impl Element for ScrollBounce {
         let offset = {
             let mut state = state.borrow_mut();
             if !self.enabled || cx.reduce_motion() {
+                // No bounce, but a wheel's glide still plays out
+                // (smooth_wheel is apart from the bounce: Windows and Linux
+                // have the one without the other).
+                let glide = std::mem::take(&mut state.glide);
                 *state = State::default();
+                state.glide = glide;
             }
             if self.scroll_wheel {
                 state.overscroll.set_motion(self.motion);
                 if max_scroll_extent(self.handle.as_ref()) <= px(0.) {
                     state.overscroll.reset();
+                    state.glide.stop();
+                }
+                if !self.smooth_wheel || cx.reduce_motion() {
+                    state.glide.stop();
+                }
+                if state.glide.jumps != self.handle.jumps() {
+                    state.glide.stop();
+                }
+                if state.glide.is_moving() {
+                    let step = state.glide.step(cx.background_executor().now());
+                    let max = max_scroll_extent(self.handle.as_ref());
+                    let before = self.handle.offset();
+                    let requested = before.y + px(step);
+                    let mut offset = before;
+                    offset.y = requested.clamp(-max, px(0.));
+                    if offset.y != requested {
+                        // Into an edge: a wheel stops dead there.
+                        state.glide.stop();
+                    }
+                    if offset.y != before.y {
+                        self.handle.set_offset(offset);
+                        if let Some(handler) = self.on_scroll.clone() {
+                            window.defer(cx, move |window, cx| handler(window, cx));
+                        }
+                    }
+                    if state.glide.is_moving() {
+                        window.request_animation_frame();
+                    }
                 }
                 if state.overscroll.step(cx.background_executor().now()) {
                     window.request_animation_frame();
@@ -365,6 +510,7 @@ impl Element for ScrollBounce {
             let mut state = state.borrow_mut();
             let displaced = state.overscroll.offset() != 0.;
             state.overscroll.reset();
+            state.glide.stop();
             if displaced {
                 window.request_animation_frame();
             }
@@ -385,11 +531,20 @@ impl Element for ScrollBounce {
         if self.scroll_wheel {
             let hitbox = prepaint.hitbox.id;
             let handle = self.handle.clone();
-            window.on_mouse_event(move |_: &ScrollEvent, phase, window, cx| {
-                if phase == DispatchPhase::Capture
-                    && hitbox.should_handle_scroll(window)
-                    && max_scroll_extent(handle.as_ref()) > px(0.)
-                {
+            let state = prepaint.state.clone();
+            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture || !hitbox.should_handle_scroll(window) {
+                    return;
+                }
+                // A trackpad takes over from the wheel's glide here, before
+                // an area inside (a table scrolling sideways) can keep the
+                // packet from the handler below.
+                let wheel = matches!(event.delta, ScrollDelta::Lines(_))
+                    || event.source == ScrollSource::Wheel;
+                if !wheel {
+                    state.borrow_mut().glide.stop();
+                }
+                if max_scroll_extent(handle.as_ref()) > px(0.) {
                     claim_scroll(hitbox, cx);
                 }
             });
@@ -557,6 +712,7 @@ impl Element for ScrollBounce {
         // After the children, so that the areas inside act first.
         if self.scroll_wheel {
             let bounces = self.enabled && !cx.reduce_motion();
+            let smooth = self.smooth_wheel && !cx.reduce_motion();
             let state = prepaint.state.clone();
             let hitbox = prepaint.hitbox.id;
             let handle = self.handle.clone();
@@ -577,7 +733,14 @@ impl Element for ScrollBounce {
                 let max = max_scroll_extent(handle.as_ref());
                 if max <= px(0.) {
                     state.overscroll.reset();
+                    state.glide.stop();
                     return;
+                }
+                let wheel = matches!(event.delta, ScrollDelta::Lines(_))
+                    || event.source == ScrollSource::Wheel;
+                if !wheel {
+                    // A trackpad takes over from the wheel, sideways too.
+                    state.glide.stop();
                 }
                 if delta.x.abs() > delta.y.abs() {
                     return;
@@ -588,9 +751,24 @@ impl Element for ScrollBounce {
                 // wheel stopped, and the text eased back in pixel steps for
                 // half a second at every end it reached, which read as the
                 // edge sticking (Mike's mouse, 25 Nov).
-                let wheel = matches!(event.delta, ScrollDelta::Lines(_))
-                    || event.source == ScrollSource::Wheel;
-                let changed = if !bounces || wheel {
+                let changed = if smooth && wheel {
+                    // Eased over the next frames, in prepaint.
+                    let displaced = state.overscroll.offset() != 0.;
+                    state.overscroll.reset();
+                    let into_edge = (delta.y > px(0.) && before.y >= px(0.))
+                        || (delta.y < px(0.) && before.y <= -max);
+                    if into_edge {
+                        state.glide.stop();
+                    } else {
+                        state.glide.add(
+                        delta.y.as_f32(),
+                        cx.background_executor().now(),
+                        handle.jumps(),
+                    );
+                    }
+                    displaced || state.glide.is_moving()
+                } else if !bounces || wheel {
+                    state.glide.stop();
                     let displaced = state.overscroll.offset() != 0.;
                     state.overscroll.reset();
                     let mut offset = before;
@@ -598,6 +776,7 @@ impl Element for ScrollBounce {
                     handle.set_offset(offset);
                     displaced
                 } else {
+                    state.glide.stop();
                     state.overscroll.packet(
                         delta.y.as_f32(),
                         event.touch_phase,

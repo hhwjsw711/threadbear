@@ -47,3 +47,13 @@ Feature: The transcript's scrolling
     And a reply starts streaming in
     Then the view isn't at the bottom
     And what I was reading is still on screen
+
+  # A real wheel's events come through the window server, which a script can't
+  # stand in for. desktop/gpui/src/rows/list_wheel_tests.rs replays a notch as
+  # Mike's Razer sent it (27 Nov) through the transcript's list instead.
+  @transcript.list @manual
+  Scenario: One turn of a mouse wheel glides the transcript rather than jumping
+    When I open the thread "A very long thread"
+    And I turn the mouse wheel up one notch
+    Then the rows move up a little each frame, eased over about a tenth of a second
+    And they come to rest where the wheel said, not past it

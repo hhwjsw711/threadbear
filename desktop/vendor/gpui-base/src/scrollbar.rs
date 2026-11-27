@@ -79,6 +79,16 @@ pub trait ScrollbarHandle: 'static {
     fn start_drag(&self) {}
     /// Called when end dragging the scrollbar thumb.
     fn end_drag(&self) {}
+    /// Changes whenever something other than `set_offset` moves the view (a
+    /// jump to a row or the end, a thumb drag), so a scroll eased over several
+    /// frames through `set_offset` knows to stop. Handles that can't tell
+    /// return a constant.
+    fn jumps(&self) -> u64 {
+        0
+    }
+    /// The next `set_offset` goes straight to a place (a click on the track)
+    /// and should count in `jumps`.
+    fn note_jump(&self) {}
 }
 
 impl ScrollbarHandle for ScrollHandle {
@@ -141,6 +151,14 @@ impl ScrollbarHandle for ListState {
 
     fn end_drag(&self) {
         self.scrollbar_drag_ended();
+    }
+
+    fn jumps(&self) -> u64 {
+        ListState::jumps(self)
+    }
+
+    fn note_jump(&self) {
+        ListState::note_jump(self);
     }
 }
 
@@ -1759,6 +1777,7 @@ impl Element for Scrollbar {
                                         // Set the thumb bar center to the click position
                                         let center =
                                             point(geometry.length / 2., geometry.length / 2.);
+                                        scroll_handle.note_jump();
                                         scroll_handle.set_offset(geometry.drag_offset(
                                             axis,
                                             event.position,

@@ -58,6 +58,11 @@ large_enum_variant = "allow" # Boxing to even out variants costs an allocation f
 # `released_unseen` in text_selection.rs).
 # And a press on a link in text sends a sheen across its words, which Mike
 # picked from four mockups (19 Nov; `text/link_glint.rs`).
+# And ScrollBounce::smooth_wheel, easing each mouse wheel scroll over a few
+# frames: Mike's Razer sends a notch as pixel scrolls 30 times a second, the
+# first 20 to 90 px, and each landed whole in one frame (27 Nov). With
+# ScrollbarHandle::jumps and note_jump, so a jump to the end, a track click,
+# a thumb drag or a selection stops what's left of it.
 [patch.crates-io]
 gpui-component = { path = "vendor/gpui-component" }
 gpui-base = { path = "vendor/gpui-base" }
@@ -93,6 +98,9 @@ gpui-base = { path = "vendor/gpui-base" }
 # out, so the main panel forgot the thread pane it shows: after a pause the
 # pane's notify reached no window, and the transcript stood still under a
 # trackpad, then jumped (rows/list_wheel_tests.rs, from Cristian Sotomayor).
+# And ListState::jumps and note_jump, counting every move other than
+# set_offset_from_scrollbar, so gpui-base's wheel glide stops when the view
+# is moved some other way (27 Nov).
 gpui-pre = { path = "vendor/gpui-pre" }
 # gpui-pre-macos 0.3.11 as published, except that with a native view inside
 # the window holding the keyboard (a web panel's page), a key without ⌘ or

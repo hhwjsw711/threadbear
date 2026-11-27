@@ -60,6 +60,8 @@ impl std::fmt::Debug for ListState {
 }
 
 struct StateInner {
+    /// Bumped by every move other than `set_offset_from_scrollbar` (`jumps`).
+    jumps: u64,
     last_layout_bounds: Option<Bounds<Pixels>>,
     last_padding: Option<Edges<Pixels>>,
     items: SumTree<ListItem>,
@@ -329,6 +331,7 @@ impl ListState {
             scroll_handler: None,
             reset: false,
             scrollbar_drag_start_height: None,
+            jumps: 0,
             measuring_behavior: ListMeasuringBehavior::default(),
             item_measurement_ready: None,
             follow_state: FollowState::default(),
@@ -362,6 +365,7 @@ impl ListState {
     pub fn reset(&self, element_count: usize) {
         let old_count = {
             let state = &mut *self.0.borrow_mut();
+            state.jumps += 1;
             state.reset = true;
             state.measuring_behavior.reset();
             state.set_scroll_anchor(None);
@@ -566,6 +570,7 @@ impl ListState {
 
         let current_offset = self.logical_scroll_top();
         let state = &mut *self.0.borrow_mut();
+        state.jumps += 1;
 
         if distance < px(0.) {
             state.follow_state.stop_following();
@@ -598,6 +603,7 @@ impl ListState {
     /// growing (e.g. during streaming).
     pub fn scroll_to_end(&self) {
         let state = &mut *self.0.borrow_mut();
+        state.jumps += 1;
         let item_count = state.items.summary().count;
         state.set_scroll_anchor(Some(ListOffset {
             item_ix: item_count,
@@ -620,6 +626,7 @@ impl ListState {
                 state.follow_state = FollowState::Normal;
             }
             FollowMode::Tail => {
+                state.jumps += 1;
                 state.follow_state = FollowState::Tail { is_following: true };
                 if matches!(mode, FollowMode::Tail) {
                     let item_count = state.items.summary().count;
@@ -670,6 +677,7 @@ impl ListState {
     /// Scroll the list to the given offset
     pub fn scroll_to(&self, mut scroll_top: ListOffset) {
         let state = &mut *self.0.borrow_mut();
+        state.jumps += 1;
         let item_count = state.items.summary().count;
         if scroll_top.item_ix >= item_count {
             scroll_top.item_ix = item_count;
@@ -686,6 +694,7 @@ impl ListState {
     /// Scroll the list to the given item, such that the item is fully visible.
     pub fn scroll_to_reveal_item(&self, ix: usize) {
         let state = &mut *self.0.borrow_mut();
+        state.jumps += 1;
 
         let mut scroll_top = state.logical_scroll_top();
         let height = state
@@ -751,7 +760,25 @@ impl ListState {
     /// as items in the overdraw get measured, and help offset scroll position changes accordingly.
     pub fn scrollbar_drag_started(&self) {
         let mut state = self.0.borrow_mut();
+        state.jumps += 1;
         state.scrollbar_drag_start_height = Some(state.items.summary().height);
+    }
+
+    /// Changes whenever the view is moved other than by
+    /// `set_offset_from_scrollbar`: a reset, `scroll_by`, `scroll_to`,
+    /// `scroll_to_end`, `scroll_to_reveal_item`, following the tail again, an
+    /// autoscroll, `note_jump`, or a thumb drag (as it starts and each move). A
+    /// scroll eased over several frames through that offset (gpui-base's
+    /// ScrollBounce, for a wheel) stops when it changes, so it can't undo a
+    /// jump to the end that came in mid-way (Threadbear, 27 Nov 2026).
+    pub fn jumps(&self) -> u64 {
+        self.0.borrow().jumps
+    }
+
+    /// Counts the next `set_offset_from_scrollbar` as a jump in `jumps`: a
+    /// click on the scrollbar's track, which goes straight to a place.
+    pub fn note_jump(&self) {
+        self.0.borrow_mut().jumps += 1;
     }
 
     /// Called when the user stops dragging the scrollbar.
@@ -1435,6 +1462,11 @@ impl StateInner {
         };
         let dragged_to_end =
             scroll_max > px(0.) && new_scroll_top >= (scroll_max - grace).max(px(0.));
+        // Every move of a thumb drag counts in `jumps`, so a wheel glide
+        // that started mid-drag doesn't fight the pointer.
+        if self.scrollbar_drag_start_height.is_some() {
+            self.jumps += 1;
+        }
         if dragged_to_end && matches!(self.follow_state, FollowState::Tail { .. }) {
             self.follow_state = FollowState::Tail { is_following: true };
             let item_count = self.items.summary().count;
@@ -1617,6 +1649,7 @@ impl Element for List {
             ) {
                 Ok(layout) => break layout,
                 Err(autoscroll_request) => {
+                    state.jumps += 1;
                     state.set_scroll_anchor(Some(autoscroll_request));
                     autoscroll = false;
                 }
