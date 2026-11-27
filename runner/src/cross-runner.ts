@@ -310,9 +310,9 @@ export class CrossRunner {
     if (allow && !target) throw bad(`No runner called ${runnerId ?? row.target}. Pick one.`);
     const place = this.place(row);
     if (allow && shown !== fingerprint(row, place)) throw bad('That request has changed since the card showed it. Open the thread again to read it.');
-    // Only while its card is still open: one that expired or was answered
-    // from the phone has an agent that's no longer waiting.
-    if ((await this.deps.openCard(threadId)) !== approvalId) {
+    // The synced card is a quick check for a new answer. Recovering a lost
+    // Start it uses the live confirmation below even if the mirror is stale.
+    if (!(allow && reclaim) && (await this.deps.openCard(threadId)) !== approvalId) {
       if (reclaim) {
         await handBack(ours);
         this.lostClaims.delete(approvalId);
@@ -322,7 +322,7 @@ export class CrossRunner {
     if (!allow) {
       // Our lost claim goes back first: only a pending request can be declined.
       if (reclaim) {
-        await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'pending', claim: ours });
+        await handBack(ours);
         this.lostClaims.delete(approvalId);
       }
       await backend.decideRequest({ requestId: approvalId, docId: row.docId, state: 'denied' });
@@ -335,6 +335,10 @@ export class CrossRunner {
       if (!target.self && target.online === false) throw other(`${target.name} is offline. Try again once it's back.`);
       const { text, title, model, effort, permissionMode, why } = row;
       if (target.self && place && 'missing' in place) {
+        if (reclaim) {
+          await handBack(ours);
+          this.lostClaims.delete(approvalId);
+        }
         // Nothing Mike can pick here would make it right, and the agent
         // waits an hour for a card that can't start: it's told why
         // instead, so it can ask again with a folder that's here. Told

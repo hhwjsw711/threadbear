@@ -460,6 +460,7 @@ test('answering on the main Mac: a claim whose answer was lost starts on the nex
   assert.ok(!f.log.some((l) => l.startsWith('here')), 'nothing started under the lost claim');
   const claim = f.rows.get('req-lost')!.claim;
   assert.ok(claim);
+  f.setOpen(undefined); // This mirror is stale. The live runner can still confirm the card.
   const out = await f.cross.answer('c', 'req-lost', true, undefined, fingerprint({ ...row, state: 'claimed', claim }));
   assert.equal(out.thread?.id, 'new-here');
   assert.equal(f.log.filter((l) => l.startsWith('here')).length, 1);
@@ -470,12 +471,18 @@ test('answering on the main Mac: a claim whose answer was lost starts on the nex
 });
 
 test("answering on the main Mac: a lost claim can still be declined, and another runner's claim can't be taken", async () => {
-  const f = fake({ owner: true, loseClaimAnswer: 1 });
+  const released: string[] = [];
+  const f = fake({
+    owner: true, loseClaimAnswer: 1, loseHandBackAnswer: true,
+    releaseStart: async (_row, claim) => { released.push(claim); },
+  });
   const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-no', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', createdAt: 1, state: 'pending' };
   f.rows.set('req-no', row);
   f.setOpen('req-no');
   await assert.rejects(f.cross.answer('c', 'req-no', true, undefined, fingerprint(row)), /fetch failed/);
+  const claim = f.rows.get('req-no')?.claim;
   await f.cross.answer('c', 'req-no', false);
+  assert.deepEqual(released, [claim]);
   assert.equal(f.rows.get('req-no')!.state, 'denied');
   // A claim this runner never made (another process, before a restart) is still "being started".
   const g = fake({ owner: true });
