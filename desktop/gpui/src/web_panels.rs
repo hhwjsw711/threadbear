@@ -384,6 +384,7 @@ fn sweep(
                 height,
             );
             kept.page.set_hidden(false);
+            window.add_tooltip_exclusion(b);
         } else {
             kept.page.set_hidden(true);
         }

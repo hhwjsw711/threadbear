@@ -703,6 +703,9 @@ impl ReviewWindow {
                         height,
                     );
                     page.set_hidden(covered);
+                    if !covered {
+                        window.add_tooltip_exclusion(bounds);
+                    }
                 },
                 |_, _, _, _| {},
             )

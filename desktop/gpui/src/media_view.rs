@@ -712,6 +712,7 @@ fn sweep(id: WindowId, frame: u64, cover: &Cover, window: &mut Window, cx: &mut 
             {
                 media.place(b);
                 media.set_hidden(false);
+                window.add_tooltip_exclusion(b);
             } else {
                 media.set_hidden(true);
             }

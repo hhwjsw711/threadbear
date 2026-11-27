@@ -1048,6 +1048,7 @@ pub(crate) struct Frame {
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+    pub(crate) tooltip_exclusions: Vec<Bounds<Pixels>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
@@ -1104,6 +1105,7 @@ impl Frame {
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
+            tooltip_exclusions: Vec::new(),
             cursor_styles: Vec::new(),
 
             #[cfg(any(test, feature = "test-support"))]
@@ -1128,6 +1130,7 @@ impl Frame {
         self.scene.clear();
         self.input_handlers.clear();
         self.tooltip_requests.clear();
+        self.tooltip_exclusions.clear();
         self.cursor_styles.clear();
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
@@ -4051,36 +4054,15 @@ impl Window {
             let mouse_position = tooltip_request.tooltip.mouse_position;
             let tooltip_size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
 
-            let mut tooltip_bounds =
-                Bounds::new(mouse_position + point(px(1.), px(1.)), tooltip_size);
-            let window_bounds = Bounds {
-                origin: Point::default(),
-                size: self.viewport_size(),
-            };
-
-            if tooltip_bounds.right() > window_bounds.right() {
-                let new_x = mouse_position.x - tooltip_bounds.size.width - px(1.);
-                if new_x >= Pixels::ZERO {
-                    tooltip_bounds.origin.x = new_x;
-                } else {
-                    tooltip_bounds.origin.x = cmp::max(
-                        Pixels::ZERO,
-                        tooltip_bounds.origin.x - tooltip_bounds.right() - window_bounds.right(),
-                    );
-                }
-            }
-
-            if tooltip_bounds.bottom() > window_bounds.bottom() {
-                let new_y = mouse_position.y - tooltip_bounds.size.height - px(1.);
-                if new_y >= Pixels::ZERO {
-                    tooltip_bounds.origin.y = new_y;
-                } else {
-                    tooltip_bounds.origin.y = cmp::max(
-                        Pixels::ZERO,
-                        tooltip_bounds.origin.y - tooltip_bounds.bottom() - window_bounds.bottom(),
-                    );
-                }
-            }
+            let tooltip_bounds = place_tooltip(
+                mouse_position,
+                tooltip_size,
+                Bounds {
+                    origin: Point::default(),
+                    size: self.viewport_size(),
+                },
+                &self.next_frame.tooltip_exclusions,
+            );
 
             // It's possible for an element to have an active tooltip while not being painted (e.g.
             // via the `visible_on_hover` method). Since mouse listeners are not active in this
@@ -4391,6 +4373,15 @@ impl Window {
             .tooltip_requests
             .push(Some(TooltipRequest { id, tooltip }));
         id
+    }
+
+    /// Records the bounds of a visible native child view for this frame so
+    /// tooltips place themselves around it instead of drawing behind it.
+    pub fn add_tooltip_exclusion(&mut self, bounds: Bounds<Pixels>) {
+        self.invalidator.debug_assert_prepaint();
+        if !bounds.is_empty() {
+            self.next_frame.tooltip_exclusions.push(bounds);
+        }
     }
 
     /// Invoke the given function with the given content mask after intersecting it
@@ -8160,6 +8151,117 @@ fn with_element_arena_erased(callback: &mut dyn FnMut(&mut Arena)) -> Result<(),
     }
 }
 
+fn place_tooltip(
+    mouse_position: Point<Pixels>,
+    tooltip_size: Size<Pixels>,
+    window_bounds: Bounds<Pixels>,
+    exclusions: &[Bounds<Pixels>],
+) -> Bounds<Pixels> {
+    let clamp = |origin: Point<Pixels>| {
+        let max_x = cmp::max(
+            window_bounds.left(),
+            window_bounds.right() - tooltip_size.width,
+        );
+        let max_y = cmp::max(
+            window_bounds.top(),
+            window_bounds.bottom() - tooltip_size.height,
+        );
+        Bounds::new(
+            point(
+                cmp::min(cmp::max(origin.x, window_bounds.left()), max_x),
+                cmp::min(cmp::max(origin.y, window_bounds.top()), max_y),
+            ),
+            tooltip_size,
+        )
+    };
+    let overlap_area = |bounds: Bounds<Pixels>| -> f32 {
+        exclusions
+            .iter()
+            .map(|ex| {
+                let inter = bounds.intersect(ex);
+                if inter.is_empty() {
+                    0.0
+                } else {
+                    f32::from(inter.size.width) * f32::from(inter.size.height)
+                }
+            })
+            .sum()
+    };
+
+    let right_x = mouse_position.x + px(1.);
+    let left_x = mouse_position.x - tooltip_size.width - px(1.);
+    let default_x = if right_x + tooltip_size.width <= window_bounds.right() {
+        right_x
+    } else if left_x >= window_bounds.left() {
+        left_x
+    } else {
+        cmp::max(
+            window_bounds.left(),
+            window_bounds.right() - tooltip_size.width,
+        )
+    };
+
+    let below_y = mouse_position.y + px(1.);
+    let above_y = mouse_position.y - tooltip_size.height - px(1.);
+    let default_y = if below_y + tooltip_size.height <= window_bounds.bottom() {
+        below_y
+    } else if above_y >= window_bounds.top() {
+        above_y
+    } else {
+        cmp::max(
+            window_bounds.top(),
+            window_bounds.bottom() - tooltip_size.height,
+        )
+    };
+
+    let default_bounds = Bounds::new(point(default_x, default_y), tooltip_size);
+    if exclusions.is_empty() || overlap_area(default_bounds) == 0.0 {
+        return default_bounds;
+    }
+
+    let mut candidates = SmallVec::<[Bounds<Pixels>; 16]>::new();
+    // Prefer flipping straight above the pointer (for toolbars above native web
+    // or media views), then horizontally beside it, then clearing exclusion edges.
+    candidates.push(clamp(point(default_x, above_y)));
+    candidates.push(clamp(point(left_x, default_y)));
+    candidates.push(clamp(point(right_x, default_y)));
+    candidates.push(clamp(point(left_x, above_y)));
+    candidates.push(clamp(point(right_x, above_y)));
+
+    let mut xs = SmallVec::<[Pixels; 16]>::new();
+    xs.push(default_x);
+    xs.push(left_x);
+    xs.push(right_x);
+    let mut ys = SmallVec::<[Pixels; 16]>::new();
+    ys.push(above_y);
+    ys.push(default_y);
+    for ex in exclusions {
+        xs.push(ex.left() - tooltip_size.width);
+        xs.push(ex.right());
+        ys.push(ex.top() - tooltip_size.height);
+        ys.push(ex.bottom());
+    }
+    for &y in &ys {
+        for &x in &xs {
+            candidates.push(clamp(point(x, y)));
+        }
+    }
+
+    let mut best = default_bounds;
+    let mut best_overlap = overlap_area(default_bounds);
+    for candidate in candidates {
+        let area = overlap_area(candidate);
+        if area == 0.0 {
+            return candidate;
+        }
+        if area < best_overlap {
+            best = candidate;
+            best_overlap = area;
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -10591,5 +10693,43 @@ mod inspector_tests {
             }
         })
         .expect("closed inspector has no bookkeeping and no style overrides");
+    }
+
+    #[test]
+    fn tooltip_avoids_native_overlay_exclusions() {
+        let window = Bounds::new(point(px(0.), px(0.)), size(px(1400.), px(900.)));
+        let tip_size = size(px(190.), px(48.));
+
+        // No exclusions: stays below-right of the pointer.
+        let plain = super::place_tooltip(point(px(955.), px(92.)), tip_size, window, &[]);
+        assert_eq!(plain.origin, point(px(956.), px(93.)));
+
+        // Native web view directly below the toolbar (e.g. Open on web button):
+        // tooltip flips cleanly above the pointer with zero overlap.
+        let web_view = Bounds::new(point(px(880.), px(110.)), size(px(520.), px(790.)));
+        let above = super::place_tooltip(point(px(955.), px(92.)), tip_size, window, &[web_view]);
+        assert!(above.intersect(&web_view).is_empty(), "got {above:?}");
+        assert!(above.bottom() < px(92.), "expected above pointer, got {above:?}");
+
+        // Button near the right edge of the transcript beside a web side pane:
+        // tooltip flips left so it does not draw behind the side pane.
+        let left = super::place_tooltip(point(px(865.), px(300.)), tip_size, window, &[web_view]);
+        assert!(left.intersect(&web_view).is_empty(), "got {left:?}");
+        assert!(left.right() <= web_view.left(), "got {left:?}");
+
+        // Combined exclusion edges: two overlapping views leave a clear pocket
+        // at (500, 360) that requires combining one view's right edge with the
+        // other's bottom edge.
+        let win_small = Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(700.)));
+        let upper = Bounds::new(point(px(0.), px(40.)), size(px(1000.), px(320.)));
+        let lower_left = Bounds::new(point(px(0.), px(360.)), size(px(500.), px(340.)));
+        let pocket = super::place_tooltip(
+            point(px(100.), px(22.)),
+            tip_size,
+            win_small,
+            &[upper, lower_left],
+        );
+        assert!(pocket.intersect(&upper).is_empty(), "got {pocket:?}");
+        assert!(pocket.intersect(&lower_left).is_empty(), "got {pocket:?}");
     }
 }
