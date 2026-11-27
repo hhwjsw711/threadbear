@@ -235,13 +235,20 @@ function main(argv) {
   // Deploys from before the API URL was recorded aren't redone for that alone.
   const syncConfig = readJson(path.join(home, 'runner.json')).sync;
   const siteUrl = syncConfig?.url;
-  const siteAddress = websiteBuildAddress(syncConfig?.site, process.env.VITE_CONVEX_SITE_URL);
+  let siteAddress;
+  let siteProblem;
+  try {
+    siteAddress = websiteBuildAddress(syncConfig?.site, process.env.VITE_CONVEX_SITE_URL);
+  } catch (e) {
+    // A bad site only blocks hosts that can actually deploy the website.
+    siteProblem = e.message;
+  }
   const todo = {
     // A stepping-stone deploy left live (an interrupted run) is never up to
     // date, whatever the tree says: its machine is off until the deploy ends.
     // So is one whose timers haven't been rearmed since (rearmDue, below).
     functions: v.force || state.functions?.tree !== want.functions || state.stepping !== undefined || state.rearmDue === true,
-    site: v.force || state.site?.tree !== want.site || (state.site?.url !== undefined && state.site.url !== siteUrl) || state.site?.address !== siteAddress,
+    site: siteProblem !== undefined || v.force || state.site?.tree !== want.site || (state.site?.url !== undefined && state.site.url !== siteUrl) || state.site?.address !== siteAddress,
   };
   if (!todo.functions && !todo.site) {
     say(`Backend up to date at ${short}.`);
@@ -260,6 +267,7 @@ function main(argv) {
     say(`No deploy key in ${admin.file}, so the backend isn't deployed automatically. Make one with:\n  npx convex deployment token create threadbear-runner --prod --save-env "${admin.file}"`);
     return 0;
   }
+  if (siteProblem !== undefined) throw new Fail(siteProblem);
   const deployment = admin.kind === 'cloud' ? admin.deployment : undefined;
   const sync = syncDeployment(home);
   if (sync?.name && deployment && sync.name !== deployment) {

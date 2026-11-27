@@ -59,8 +59,14 @@ test('website rebuilds compare normalized sites, including inherited configurati
     const out = deployWithEnv(home, inherited, '--dry-run');
     assert.equal(out.status, 1);
     assert.match(out.stderr, /Website address/);
+    assert.doesNotMatch(out.stderr, /Error:|\n\s+at |Node\.js/);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'backend.json'), 'utf8')), saved);
   }
+  config();
+  const badInherited = deployWithEnv(home, { VITE_CONVEX_SITE_URL: 'javascript:bad' }, '--dry-run');
+  assert.equal(badInherited.status, 1);
+  assert.match(badInherited.stderr, /Website address/);
+  assert.doesNotMatch(badInherited.stderr, /Error:|\n\s+at |Node\.js/);
 });
 
 test('a deploy key and a self-hosted key together stop the deploy', () => {

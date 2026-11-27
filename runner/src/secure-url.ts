@@ -47,13 +47,13 @@ export function websiteUrl(raw: unknown): string | undefined {
   const text = raw.trim();
   if (!text) return undefined;
   const authority = /^https?:\/\/([^/?#]+)/i.exec(text)?.[1];
-  if (!authority || authority.includes('@') || /[\s;,\\"<>?#]/u.test(text)) throw new Error('Website address must be an https URL without userinfo, whitespace, query, fragment, commas or semicolons.');
+  if (!authority || authority.includes('@') || /[\s;,*\\"<>?#]/u.test(text)) throw new Error('Website address must be an https URL without userinfo, whitespace, query, fragment, commas, semicolons or wildcards.');
   let url: URL;
   try {
     url = new URL(text);
   } catch {
     throw new Error('Website address is not a valid URL.');
   }
-  if (!url.hostname || /[\s;,]/u.test(url.origin) || credentialUrlProblem(text)) throw new Error('Website address must be https, or http on loopback, without userinfo.');
+  if (!url.hostname || /[\s;,*]/u.test(url.origin) || credentialUrlProblem(text)) throw new Error('Website address must be https, or http on loopback, without userinfo or wildcards.');
   return url.href.replace(/\/+$/, '');
 }

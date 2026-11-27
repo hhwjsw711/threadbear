@@ -30,14 +30,12 @@ func siteOf(_ cloud: String?, site: Any? = nil) -> String? {
     guard let input = try? JSONSerialization.data(withJSONObject: values) else { return nil }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["node", "--input-type=module", "-e", "import { readFileSync } from 'node:fs'; const { siteOf } = await import(process.argv[1]); const c = JSON.parse(readFileSync(0, 'utf8')); const site = siteOf(c.cloud, c.site); if (site) process.stdout.write(site);", root.appendingPathComponent("runner/src/convex-admin.ts").absoluteString]
-    let stdin = Pipe(), stdout = Pipe()
-    process.standardInput = stdin
+    process.arguments = ["node", "--input-type=module", "-e", "const { siteOf } = await import(process.argv[1]); const c = JSON.parse(process.argv[2]); const site = siteOf(c.cloud, c.site); if (site) process.stdout.write(site);", root.appendingPathComponent("runner/src/convex-admin.ts").absoluteString, String(decoding: input, as: UTF8.self)]
+    let stdout = Pipe()
+    process.standardInput = FileHandle.nullDevice
     process.standardOutput = stdout
     process.standardError = FileHandle.nullDevice
     do { try process.run() } catch { return nil }
-    stdin.fileHandleForWriting.write(input)
-    try? stdin.fileHandleForWriting.close()
     let data = stdout.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { return nil }

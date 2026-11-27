@@ -42,6 +42,17 @@ print(String(decoding: try! JSONSerialization.data(withJSONObject: results), as:
     assert.equal(refused.status, 1, refused.stderr);
     assert.match(refused.stderr, /website address/);
     assert.doesNotMatch(refused.stderr, /reached code issuance/);
+    // Node may exit before processing the config (missing runtime/module).
+    // A large setting must still fail normally rather than die on SIGPIPE.
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'node'), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+    fs.writeFileSync(path.join(dir, 'runner.json'), JSON.stringify({ sync: { site: 'https://site.example.com/' + 'x'.repeat(70_000) } }));
+    const exited = spawnSync('swift', [file], { encoding: 'utf8', timeout: 120_000, env: { ...process.env, THREADBEAR_HOME: dir, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+    assert.equal(exited.status, 1, exited.stderr);
+    assert.equal(exited.signal, null);
+    assert.match(exited.stderr, /website address/);
+    assert.doesNotMatch(exited.stderr, /reached code issuance/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
