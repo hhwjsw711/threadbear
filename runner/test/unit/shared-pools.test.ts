@@ -1,4 +1,4 @@
-import { keepBackupChoices } from '../../../convex/pool-backups.ts';
+import { keepBackupChoices } from '../../../convex/poolBackups.ts';
 // Pools shared between runners (docs/protocol/settings.md, "Pools", "Shared between
 // runners"): the backend's list names logins by provider and email, and
 // each runner turns it into its own pools, and back again on pools.save.
