@@ -63,7 +63,7 @@ import type {
   ToolApprovalAnswer,
   TurnResult,
 } from './adapters/types.ts';
-import { MODEL_LIST_TIMEOUT_MS, SessionNotFoundError } from './adapters/types.ts';
+import { MODEL_LIST_TIMEOUT_MS, SessionNotFoundError, SessionUsageLimitError } from './adapters/types.ts';
 import type { UseResetOutcome } from './adapters/types.ts';
 import type { EventLog, ThreadRecord, ThreadStore, QueuedSend, SubagentRecord } from './store.ts';
 import { cutOut } from './store.ts';
@@ -3902,7 +3902,7 @@ export class Runner {
     this.coordinators?.onHelperTurn(rec.id, p.outcome, p.text, p.turnId);
   }
 
-  failTurn(st: ThreadState, message: string): void {
+  failTurn(st: ThreadState, message: string, errorKind?: 'usageLimit'): void {
     const { rec, rt } = st;
     const turn = rt.turn;
     if (!turn) return;
@@ -3921,7 +3921,7 @@ export class Runner {
     if (rec.unarchivedBySchedule) this.park(st, { kind: 'scheduleRunEnded' });
     const interrupted = turn.interruptRequested;
     if (!interrupted) this.emit(st, { type: 'error', message }, turn.turnId);
-    const limit = !interrupted && outOfUsage({ message });
+    const limit = !interrupted && (errorKind === 'usageLimit' || outOfUsage({ message }));
     const body: EventBody = {
       type: 'turn.completed',
       turnId: turn.turnId,
@@ -4144,7 +4144,7 @@ export class Runner {
           }
         }
       }
-      this.failTurn(st, err?.message || 'The CLI stopped unexpectedly.');
+      this.failTurn(st, err?.message || 'The CLI stopped unexpectedly.', err instanceof SessionUsageLimitError ? 'usageLimit' : undefined);
     } else {
       this.markDirty(st);
     }

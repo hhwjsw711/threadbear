@@ -26,7 +26,7 @@ import { fileContext, truncateResultText, type NormalizerContext } from '../cont
 import { formContent, formQuestions, type FormSchema } from '../elicitation.ts';
 import { acpCoordinatorTool, archiveReadTool, isHelperQuestionTool } from '../../coordinator-policy.ts';
 import type { AdapterOutput, AgentAdapter, AgentSession, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
-import { SessionNotFoundError } from '../types.ts';
+import { SessionNotFoundError, SessionUsageLimitError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
 import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, failureNote, genericRpcMessage, isFatalExecutionError, laterFailure, outOfUsage, textFromUpdate, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
 import { AcpMcpServer } from './mcp-http.ts';
@@ -407,7 +407,6 @@ export const ANTIGRAVITY_QUOTA_GRACE_MS = 30_000;
 // Give a tool that was already running time to finish, with a ceiling if
 // the executor died and will never send another update for it.
 export const ANTIGRAVITY_QUOTA_TOOL_GRACE_MS = 30 * 60_000;
-const ANTIGRAVITY_EXECUTOR_ERROR = /^Agent execution terminated due to error\. \("agent executor error:/i;
 const ANTIGRAVITY_EXECUTOR_429 = /^Agent execution terminated due to error\. \("agent executor error: Error 429\b/i;
 const ANTIGRAVITY_INDIVIDUAL_QUOTA = /^, Message: Individual quota reached\./i;
 const ANTIGRAVITY_EXHAUSTED_STATUS = /, Status: RESOURCE_EXHAUSTED\b/;
@@ -795,12 +794,7 @@ export class AcpSession implements AgentSession {
         this.chunkBuffer = '';
         const text = textFromUpdate(u);
         if (text && isFatalExecutionError(text)) {
-          const statusMatch = /(?:status|error)[:\s]+(\d{3})\b/i.exec(text);
-          const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
-          if (this.turn) {
-            this.turn.failure = laterFailure(this.turn.failure, { message: text, ...(httpStatus !== undefined ? { httpStatus } : {}) });
-          }
-          this.failFatal(text);
+          this.failFatalTool(text);
           return;
         }
       } else {
@@ -815,31 +809,36 @@ export class AcpSession implements AgentSession {
     for (const output of outputs) {
       if (output.kind !== 'event' || output.event.type !== 'tool.result' || output.event.ok) continue;
       const message = output.event.text?.trimStart();
-      if (!message || !ANTIGRAVITY_EXECUTOR_ERROR.test(message)) continue;
+      if (!message || !isFatalExecutionError(message)) continue;
       const prefix = message.match(ANTIGRAVITY_EXECUTOR_429)?.[0];
       // An executor 429 can also be a transient requests-per-minute limit.
       // Only the individual-quota diagnostic warrants a watchdog.
       if (prefix && ANTIGRAVITY_INDIVIDUAL_QUOTA.test(message.slice(prefix.length)) && ANTIGRAVITY_EXHAUSTED_STATUS.test(message)) {
         turn.quota ??= { message, earlierTools: new Set(this.callFrames.keys()) };
       } else if (!prefix || !ANTIGRAVITY_RATE_RETRY.test(message) || outOfUsage({ message })) {
-        this.failFatal(message);
+        this.failFatalTool(message);
       }
       this.syncQuotaDeadline();
       return true;
     }
     if (!turn.quota) return false;
-    // Antigravity can announce a tool in a permission request and then run
-    // it under another ID. Compare both IDs with what was known at quota time.
+    // An announcement can come before the frame that links a renamed tool
+    // to an earlier approval. Wait for work with a distinct identity.
     const toolId = isPlainObject(update) && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') && typeof update.toolCallId === 'string' ? update.toolCallId : undefined;
-    const oldTool = toolId !== undefined && (turn.quota.earlierTools.has(toolId) || turn.quota.earlierTools.has(this.normalizer.toolRowId(toolId) ?? toolId));
-    const newTool = toolId && !oldTool && isPlainObject(update) &&
-      (update.status === 'in_progress' || (update.sessionUpdate === 'tool_call' && update.status === undefined) ||
-        outputs.some((o) => o.kind === 'event' && o.event.type === 'tool.result' && o.event.ok));
+    const newTool = toolId && isPlainObject(update) &&
+      (update.status === 'in_progress' || outputs.some((o) => o.kind === 'event' && o.event.type === 'tool.result' && o.event.ok)) &&
+      this.normalizer.isNewToolWork(toolId, turn.quota.earlierTools);
     if (newTool || outputs.some((o) => o.kind === 'delta')) {
       clearTimeout(turn.quota.deadline?.timer);
       turn.quota = undefined;
     } else this.syncQuotaDeadline();
     return false;
+  }
+
+  private failFatalTool(message: string): void {
+    const code = /(?:status|error)[:\s]+(\d{3})\b/i.exec(message)?.[1];
+    if (this.turn) this.turn.failure = laterFailure(this.turn.failure, { message, ...(code ? { httpStatus: Number(code) } : {}) });
+    this.failFatal(message);
   }
 
   private syncQuotaDeadline(): void {
@@ -868,7 +867,7 @@ export class AcpSession implements AgentSession {
     this.held = [];
     const fail = this.turn ? this.failureFor(this.turn, new Error(detail)) : { error: detail };
     const errorText = fail.error ?? detail;
-    const err = new Error(errorText);
+    const err = fail.errorKind === 'usageLimit' ? new SessionUsageLimitError(errorText) : new Error(errorText);
     if (quotaTimedOut) this.deps.log.info('antigravity did not finish the prompt after reaching its quota', { threadId: this.opts.threadId });
     else this.deps.log.error('acp fatal execution error; terminating session', { threadId: this.opts.threadId, error: errorText, errorKind: fail.errorKind });
     this.proc.kill(new AcpExitedError(errorText));
@@ -1654,6 +1653,7 @@ export class AcpSession implements AgentSession {
     }
     switch (stop) {
       case 'cancelled':
+        if (turn.quota && !turn.interrupted) return { outcome: 'failed', durationMs, ...this.failureFor(turn) };
         return { outcome: 'interrupted', durationMs };
       case 'refusal':
         return { outcome: 'failed', durationMs, error: 'The model refused to continue.' };

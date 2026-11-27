@@ -480,11 +480,11 @@ async function agyPrompt(id, p, s, word, rest) {
     send({ id, result: { stopReason: 'end_turn' } });
     return;
   }
-  else if (word.startsWith('quota_') || ['rate_limit', 'retry_delay', 'executor_429'].includes(word)) {
+  else if (word.startsWith('quota_') || ['rate_limit', 'retry_delay', 'executor_429', 'executor_402', 'split_harness'].includes(word)) {
     const askQuestion = () => ask('elicitation/create', { mode: 'form', sessionId: p.sessionId, message: 'Finish the test prompt?' });
     const allow = [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }];
     const edit = { kind: 'edit', title: 'Edit before quota', locations: [{ path: path.join(where, 'old.txt') }] };
-    const oldEdit = word === 'quota_existing_edit'
+    const oldEdit = word.startsWith('quota_existing_edit')
       ? ask('session/request_permission', { sessionId: p.sessionId, toolCall: { ...edit, toolCallId: 'old-edit-approval', status: 'pending' }, options: allow })
       : undefined;
     const pendingQuestion = word.startsWith('quota_pending_') ? askQuestion() : undefined;
@@ -498,8 +498,11 @@ async function agyPrompt(id, p, s, word, rest) {
       retry_delay: ': RESOURCE_EXHAUSTED: Please retry in 1.5s.',
       executor_429: ', Message: Too many requests., Status: RESOURCE_EXHAUSTED',
     }[word] ?? ', Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED';
-    const text = `Agent execution terminated due to error. ("agent executor error: Error 429${reason}")`;
-    const split = word === 'quota_fail' || word === 'executor_429';
+    const text = {
+      executor_402: 'Agent execution terminated due to error. ("agent executor error: Error 402: Billing error")',
+      split_harness: 'Agent execution error: Harness process exited unexpectedly (WS close code 1006).',
+    }[word] ?? `Agent execution terminated due to error. ("agent executor error: Error 429${reason}")`;
+    const split = ['quota_fail', 'executor_429', 'executor_402', 'split_harness'].includes(word);
     update(p.sessionId, {
       sessionUpdate: 'tool_call_update',
       toolCallId,
@@ -510,7 +513,7 @@ async function agyPrompt(id, p, s, word, rest) {
       update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed' });
       return; // leaves session/prompt hanging, as agy_acp_server does
     }
-    if (word === 'quota_end_turn') return send({ id, result: { stopReason: 'end_turn' } });
+    if (word === 'quota_end_turn' || word === 'quota_cancelled') return send({ id, result: { stopReason: word === 'quota_cancelled' ? 'cancelled' : 'end_turn' } });
     if (word === 'quota_prompt_error') return send({ id, error: { code: -32603, message: 'Context length exceeded' } });
     if (word === 'quota_new_permission') {
       const recovery = await ask('session/request_permission', {
@@ -527,8 +530,22 @@ async function agyPrompt(id, p, s, word, rest) {
     if (oldEdit) {
       const approved = await oldEdit;
       if (approved.outcome?.outcome === 'selected') {
-        update(p.sessionId, { sessionUpdate: 'tool_call', ...edit, toolCallId: 'old-edit-running', status: 'in_progress' });
+        const wire = { toolCallId: 'old-edit-running' };
+        const first = {
+          quota_existing_edit_empty: { ...wire, rawInput: {} },
+          quota_existing_edit_no_status: { ...edit, ...wire },
+          quota_existing_edit_no_path: { ...wire, kind: 'edit', status: 'in_progress' },
+          quota_existing_edit_other: { ...wire, kind: 'other', status: 'in_progress' },
+          quota_existing_edit_recovers: { ...wire, kind: 'edit', status: 'in_progress' },
+        }[word];
+        if (first) update(p.sessionId, { sessionUpdate: 'tool_call', ...first });
+        const progress = word === 'quota_existing_edit_empty' ? { rawInput: { file_path: edit.locations[0].path } } : edit;
+        update(p.sessionId, { sessionUpdate: first ? 'tool_call_update' : 'tool_call', ...progress, ...wire, status: 'in_progress' });
         update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'old-edit-running', status: 'completed' });
+        if (word === 'quota_existing_edit_recovers') {
+          update(p.sessionId, { sessionUpdate: 'tool_call', ...edit, toolCallId: 'next-edit', status: 'in_progress' });
+          update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'next-edit', status: 'completed' });
+        }
       }
       return send({ id, result: { stopReason: 'end_turn' } });
     }

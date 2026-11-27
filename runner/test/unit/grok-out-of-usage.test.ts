@@ -21,6 +21,7 @@ import { grokLimits } from '../../src/adapters/acp/grok-billing.ts';
 import { acpAsker } from '../../src/models/acp-oneshot.ts';
 import { dueForRecheck, FIRST_READ_RETRY_MS } from '../../src/limit-recheck.ts';
 import type { AdapterOutput, SessionSink } from '../../src/adapters/types.ts';
+import { SessionUsageLimitError } from '../../src/adapters/types.ts';
 import type { Account, Pool } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
 import { ProcessRegistry } from '../../src/proc.ts';
@@ -526,7 +527,10 @@ test('a balance topped up before any recheck counts as back, whatever the login 
   assert.equal(h.runner.get(thread.id).waitingForRoom, undefined);
 });
 
-test('in the runner: a CLI exit with Gemini quota exhaustion fails the turn with usageLimit and moves pool', async () => {
+for (const [reason, error] of [
+  ['an individual quota message', new Error('Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")')],
+  ['a typed billing error', new SessionUsageLimitError('Billing error')],
+] as const) test(`in the runner: a Gemini CLI exit with ${reason} fails the turn with usageLimit and moves pool`, async () => {
   const geminiAccount: Account = { id: 'gemini-main', provider: 'antigravity', title: 'Gemini', configDir: '/tmp' };
   const claude = new FakeAdapter();
   const agyAdapter = new FakeAdapter('antigravity');
@@ -536,8 +540,7 @@ test('in the runner: a CLI exit with Gemini quota exhaustion fails the turn with
   assert.equal(thread.accountId, 'gemini-main');
   const s = agyAdapter.last;
   s.init(s.opts.sessionId, 'gemini-4-neon');
-  // CLI exits with Gemini 429 quota message
-  s.sink.exited(new Error('Agent execution terminated due to error. ("agent executor error: Error 429, Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED")'));
+  s.sink.exited(error);
   await tick();
   const failed = h.events(thread.id).find((e) => e.type === 'turn.completed') as { outcome?: string; errorKind?: string } | undefined;
   assert.ok(failed);

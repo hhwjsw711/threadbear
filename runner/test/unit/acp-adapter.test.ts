@@ -16,6 +16,7 @@ import { remoteCardShowsAll } from '../../src/tools.ts';
 import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
 import { FakeAccounts, makeHarness } from '../helpers/fakes.ts';
 import type { AdapterOutput, QuestionAnswer, QuestionRequest, SessionSink, StartSessionOptions, ToolApprovalAnswer, ToolApprovalRequest } from '../../src/adapters/types.ts';
+import { SessionUsageLimitError } from '../../src/adapters/types.ts';
 import type { Account, PermissionMode } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
 import { ProcessRegistry } from '../../src/proc.ts';
@@ -2105,9 +2106,29 @@ test('Antigravity: a tool introduced by a permission request after quota can sho
   assert.equal(results(r.outputs)[0]?.outcome, 'completed');
 });
 
-test('Antigravity: a new wire ID for an edit approved before quota does not show recovery', { timeout: 5000 }, async () => {
+for (const [scenario, description] of [
+  ['quota_existing_edit', 'arrives fully described'],
+  ['quota_existing_edit_empty', 'is initially empty'],
+  ['quota_existing_edit_no_status', 'is announced without a status'],
+  ['quota_existing_edit_no_path', 'begins running before its path arrives'],
+  ['quota_existing_edit_other', 'first reports a generic tool kind'],
+] as const) {
+  test(`Antigravity: the new wire ID for an earlier approved edit ${description} without clearing quota`, { timeout: 5000 }, async () => {
+    const r = agy({ mode: 'full' });
+    await turn(r, r.start(), scenario);
+    assert.equal(results(r.outputs)[0]?.errorKind, 'usageLimit');
+  });
+}
+
+test('Antigravity: a distinct edit can recover after an earlier approval was recognized late', { timeout: 5000 }, async () => {
   const r = agy({ mode: 'full' });
-  await turn(r, r.start(), 'quota_existing_edit');
+  await turn(r, r.start(), 'quota_existing_edit_recovers');
+  assert.equal(results(r.outputs)[0]?.outcome, 'completed');
+});
+
+test('Antigravity: a cancellation from the harness after quota still reports a usage limit', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'full' });
+  await turn(r, r.start(), 'quota_cancelled');
   assert.equal(results(r.outputs)[0]?.errorKind, 'usageLimit');
 });
 
@@ -2122,7 +2143,25 @@ test('Antigravity: an executor 429 split across frames still ends the session if
   const r = agy({ mode: 'full' });
   r.start().send({ id: 'executor-429', text: 'executor_429', images: [] });
   await r.exited();
-  assert.match(r.exitError()?.message ?? '', /Too many requests/);
+  const error = r.exitError();
+  assert.match(error?.message ?? '', /Too many requests/);
+  assert.ok(!(error instanceof SessionUsageLimitError));
+});
+
+test('Antigravity: a split executor billing error retains its HTTP 402 classification', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'full' });
+  r.start().send({ id: 'executor-402', text: 'executor_402', images: [] });
+  await r.exited();
+  const error = r.exitError();
+  assert.ok(error instanceof SessionUsageLimitError);
+  assert.match(error.message, /is out of Gemini usage.*Billing error/i);
+});
+
+test('Antigravity: a fatal harness error followed by a separate failed status ends the session', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'full' });
+  r.start().send({ id: 'split-harness', text: 'split_harness', images: [] });
+  await r.exited();
+  assert.match(r.exitError()?.message ?? '', /Harness process exited unexpectedly/);
 });
 
 for (const status of ['success', 'failure', 'retry']) {

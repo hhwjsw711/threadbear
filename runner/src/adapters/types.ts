@@ -266,6 +266,11 @@ export class SessionNotFoundError extends Error {
   }
 }
 
+// A CLI that exits before returning a TurnResult can still report a usage limit.
+export class SessionUsageLimitError extends Error {
+  override name = 'SessionUsageLimitError';
+}
+
 export interface AgentSession {
   // Starts a turn, or, sent while one runs, goes into it (steering): the
   // CLI then lists it in TurnResult.answered or counts it in queuedTurns.

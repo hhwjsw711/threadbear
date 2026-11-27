@@ -55,6 +55,9 @@ type Tool = {
   allowed?: boolean;
   // The files the request named outright (namedFiles).
   askedFiles?: string[];
+  // When a tool runs under a second ID, keep the approval link even if
+  // both rows are already visible and their IDs can no longer be merged.
+  approvalLink?: { kind: 'uses' | 'usedBy'; toolCallId: string };
   askedDiffs?: AcpToolContent[];
 };
 
@@ -467,13 +470,14 @@ export class AcpNormalizer {
   // with no link between the two. The new call then shows on the request's
   // row, so a card's row is the one that runs; what each call has said stays
   // its own, as the permission checks read it (Codex's review, 20 Nov 2026).
-  private askedFor(u: AcpToolCall, kind = u.kind): Tool | undefined {
+  private askedFor(u: AcpToolCall, kind = u.kind, knownPaths: string[] = []): Tool | undefined {
     // Only for an agent known to do it, and only once the new call says it
     // runs: a call that's only proposed may be another one entirely, still to
     // be asked about (Codex's third review, 20 Nov 2026).
     if (!this.movesAskedCalls || (u.status !== 'in_progress' && u.status !== 'completed')) return undefined;
     if (!writesFiles(kind)) return undefined;
-    const paths = namedFiles(u);
+    const named = namedFiles(u);
+    const paths = named.length ? named : knownPaths;
     if (!paths.length || !paths.every((p) => path.isAbsolute(p))) return undefined;
     const same = (a: string[], b: string[]) => {
       const x = new Set(a.map((p) => path.resolve(p)));
@@ -481,23 +485,27 @@ export class AcpNormalizer {
       return x.size === y.size && [...x].every((p) => y.has(p));
     };
     // The oldest first: an agent runs what it asked for in turn.
-    const found = [...this.tools.values()].find((t) => t.asked && t.allowed === true && !t.ran && !t.done && t.acpKind === kind && (t.askedFiles ?? []).every((p) => path.isAbsolute(p)) && same(t.askedFiles ?? [], paths));
+    const found = [...this.tools.values()].find((t) => t.asked && t.allowed === true && !t.approvalLink && !t.ran && !t.done && t.acpKind === kind && (t.askedFiles ?? []).every((p) => path.isAbsolute(p)) && same(t.askedFiles ?? [], paths));
     return found;
   }
 
   private toolUpdate(u: AcpToolCall, out: AdapterOutput[]): void {
     if (typeof u.toolCallId !== 'string' || !u.toolCallId) return;
-    // Tried again until the call's row is out, as its first frame may name
-    // no file yet (Codex's review, 20 Nov 2026).
+    // Later frames may name the file after the tool's row is already out.
     const had = this.tools.get(u.toolCallId);
-    const asked = !had ? this.askedFor(u) : !had.emitted && had.allowed === undefined && !had.done && had.row === had.id ? this.askedFor(u, typeof u.kind === 'string' ? u.kind : had.acpKind) : undefined;
+    const canLink = !had || ((!had.emitted || !had.asked) && !had.approvalLink && had.allowed === undefined && !had.done && had.row === had.id);
+    const asked = canLink ? this.askedFor(u, typeof u.kind === 'string' ? u.kind : had?.acpKind, had?.paths) : undefined;
     const t = this.tool(u.toolCallId);
     if (asked) {
-      asked.done = true;
-      t.row = asked.row;
-      t.emitted = asked.emitted;
-      t.diffed = asked.diffed;
-      t.askedDiffs = asked.askedDiffs;
+      t.approvalLink = { kind: 'uses', toolCallId: asked.id };
+      asked.approvalLink = { kind: 'usedBy', toolCallId: t.id };
+      if (!t.emitted) {
+        asked.done = true;
+        t.row = asked.row;
+        t.emitted = asked.emitted;
+        t.diffed = asked.diffed;
+        t.askedDiffs = asked.askedDiffs;
+      }
     }
     // Closed at a turn's end before it was ever shown: a row now would never
     // get its result.
@@ -583,8 +591,24 @@ export class AcpNormalizer {
     out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images } });
   }
 
-  toolRowId(toolCallId: string): string | undefined {
-    return this.tools.get(toolCallId)?.row;
+  isNewToolWork(toolCallId: string, earlierIds: ReadonlySet<string>): boolean {
+    const tool = this.tools.get(toolCallId);
+    if (!tool?.ran || earlierIds.has(tool.id) || earlierIds.has(tool.row)) return false;
+    if (tool.approvalLink?.kind === 'uses' && earlierIds.has(tool.approvalLink.toolCallId)) return false;
+    const kind = tool.acpKind === 'other' ? undefined : tool.acpKind;
+    if (tool.asked || (kind && !writesFiles(kind))) return true;
+    // A write can start under a second ID before the bridge sends its paths.
+    // An earlier, unused approval may still be the source of this work.
+    for (const id of earlierIds) {
+      const earlier = this.tools.get(id);
+      if (!earlier?.asked || !earlier.allowed || earlier.approvalLink || earlier.ran || earlier.done || !writesFiles(earlier.acpKind)) continue;
+      if (kind && kind !== earlier.acpKind) continue;
+      const files = earlier.askedFiles;
+      if (!tool.done || !tool.paths.length || !tool.paths.every((p) => path.isAbsolute(p)) || !files?.length || !files.every((p) => path.isAbsolute(p))) return false;
+      const paths = new Set(tool.paths.map((p) => path.resolve(p)));
+      if (files.some((p) => paths.has(path.resolve(p)))) return false;
+    }
+    return true;
   }
 
   hasRunningTools(): boolean {
