@@ -5,6 +5,14 @@ import type { ThreadbearWorld } from '../support/world.ts';
 
 // A chip's menu as text lines: `composer-menu` gives the same list on both
 // apps, the Swift one after "ok ".
+type WithBusy = { busy?: string[] };
+
+// A login, pool or folder change spins its chip and hides its popover until
+// the runner answers, so a real click can't open or pick from it until then.
+async function waitUntilChipReady(world: ThreadbearWorld, chip: string): Promise<void> {
+  await world.until(`the ${chip} chip ready`, (d) => !((d.composer as WithBusy).busy ?? []).includes(chip));
+}
+
 async function menuLines(world: ThreadbearWorld, menu: string): Promise<string[]> {
   const out = await world.app.do({ cmd: 'composer-menu', menu });
   return JSON.parse(out.slice(out.indexOf('['))) as string[];
@@ -21,8 +29,13 @@ Then('the {string} menu shows {string} ticked', async function (this: Threadbear
 });
 
 Then('the {string} menu has a row {string}', async function (this: ThreadbearWorld, menu: string, row: string) {
-  const lines = await menuLines(this, menu);
-  assert.ok(lines.some((l) => l.startsWith(row)), `no row "${row}" in the ${menu} menu:\n${lines.join('\n')}`);
+  let lines: string[] = [];
+  for (let tries = 0; tries < 40; tries += 1) {
+    lines = await menuLines(this, menu);
+    if (lines.some((l) => l.startsWith(row))) return;
+    await sleep(150);
+  }
+  assert.fail(`no row "${row}" in the ${menu} menu:\n${lines.join('\n')}`);
 });
 
 // Once a pick has landed, which takes a moment.
@@ -56,6 +69,7 @@ for (const [step, want] of [
 
 // The model chip clicked, as a person does, which opens its popover.
 When('I open the model picker', async function (this: ThreadbearWorld) {
+  await waitUntilChipReady(this, 'model');
   await this.app.do({ cmd: 'composer-menu', menu: 'model', show: true });
 });
 
@@ -68,6 +82,10 @@ When('I click {string} in the model picker', async function (this: ThreadbearWor
 });
 
 When('I pick {string} from the {string} menu', async function (this: ThreadbearWorld, title: string, menu: string) {
+  const chip = menu === '+' ? 'plus' : menu;
+  if (chip === 'model' || chip === 'account' || chip === 'plus') {
+    await waitUntilChipReady(this, chip);
+  }
   await this.app.do({ cmd: 'composer-menu', menu, click: title });
 });
 
@@ -231,6 +249,7 @@ Given('the runner takes its time to change threads', async function (this: Threa
 
 // One of the "+" menu's folders that isn't the thread's ("[ ] ~/dev/x").
 When('I pick another folder from the {string} menu', async function (this: ThreadbearWorld & { folder?: string }, _menu: string) {
+  await waitUntilChipReady(this, 'plus');
   const lines = await menuLines(this, 'plus');
   const other = lines.find((l) => l.startsWith('[ ] '));
   assert.ok(other, `no other folder in: ${lines.join(' | ')}`);
@@ -248,7 +267,6 @@ Then('the {string} menu has that folder ticked', async function (this: Threadbea
   assert.fail(`${this.folder} isn't ticked: ${lines.join(' | ')}`);
 });
 
-type WithBusy = { busy?: string[] };
 Then('the composer\'s {string} chip is spinning', async function (this: ThreadbearWorld, chip: string) {
   await this.until(`the ${chip} chip spinning`, (d) => ((d.composer as WithBusy).busy ?? []).includes(chip));
 });

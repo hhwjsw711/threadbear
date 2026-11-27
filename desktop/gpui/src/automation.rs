@@ -1359,7 +1359,11 @@ fn step(
                     _ => "",
                 });
             }
-            key.push_str(text(cmd, "key"));
+            // GPUI calls Return "enter"; the free models write "return".
+            key.push_str(match text(cmd, "key") {
+                "return" => "enter",
+                k => k,
+            });
             window.press(&key, cx);
             Ok(json!("ok"))
         }

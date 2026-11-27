@@ -856,6 +856,10 @@ fs.writeFileSync(path.join(dataDir, 'secrets/runner-token'), token + '\n', { mod
 // as a deploy would, so the app's "Runner restarted" note has two to name.
 let runnerVersion = '0.0.0-mock';
 let restarts = 0;
+let restartEpoch = 0;
+// In-flight settings.update calls (may be waiting in jitter) so mock.* setup
+// overrides wait for earlier client edits instead of being overwritten by them.
+const pendingSettingsUpdates = new Set();
 const startedAt = iso();
 // A restart waiting for threads (mock.restartPending): { when, reason?,
 // resumeThreadId?, requestedAt, waitingFor: string[] }.
@@ -961,24 +965,41 @@ async function handle(client, { id, method, params = {} }) {
     // A new thread on mac-mini through this runner, as the relay files it.
     caller = { ...client, as: BRUCE };
   }
-  // THREADBEAR_MOCK_JITTER_MS: every request answered after a random wait up
-  // to this long, so answers can come back in a different order from the
-  // asks, as a busy real runner's can (features/tools/stress.mjs).
-  const jitter = Number(process.env.THREADBEAR_MOCK_JITTER_MS ?? 0);
-  // Not the specs' own mock.* calls: they set up a scenario in order, and a
-  // real runner never sees them.
-  if (jitter > 0 && method !== 'hello' && !method.startsWith('mock.')) await new Promise((resolve) => setTimeout(resolve, Math.random() * jitter));
-  if (slow.ms > 0 && ['threads.send', 'threads.create', 'threads.update'].includes(method)) {
-    await new Promise((resolve) => setTimeout(resolve, slow.ms));
+  const epoch = restartEpoch;
+  const run = async () => {
+    // THREADBEAR_MOCK_JITTER_MS: every request answered after a random wait up
+    // to this long, so answers can come back in a different order from the
+    // asks, as a busy real runner's can (features/tools/stress.mjs).
+    const jitter = Number(process.env.THREADBEAR_MOCK_JITTER_MS ?? 0);
+    // Not the specs' own mock.* calls: they set up a scenario in order, and a
+    // real runner never sees them.
+    if (jitter > 0 && method !== 'hello' && !method.startsWith('mock.')) await new Promise((resolve) => setTimeout(resolve, Math.random() * jitter));
+    if (slow.ms > 0 && ['threads.send', 'threads.create', 'threads.update'].includes(method)) {
+      await new Promise((resolve) => setTimeout(resolve, slow.ms));
+    }
+    // If the client disconnected or the runner restarted while this delayed
+    // request was waiting, drop it instead of mutating post-restart state or
+    // replying to a dead socket.
+    if (!method.startsWith('mock.') && (client.ws.readyState !== 1 || !clients.has(client) || restartEpoch !== epoch)) return;
+    const result = await dispatch(caller, method, params);
+    if (id !== undefined && id !== null) reply(client, id, result ?? {});
+    // Like the real runner: a client that says hello hears about a restart
+    // that's waiting, straight after the hello result.
+    if (method === 'hello' && pendingRestart) {
+      const onYou = pendingRestart.waitingFor.filter((id) => threads.get(id)?.summary.status === 'waiting').length;
+      notice(client, 'info', pendingMessage(pendingRestart.waitingFor.length, onYou));
+    }
+  };
+  if (method === 'settings.update') {
+    const pending = run();
+    pendingSettingsUpdates.add(pending);
+    try {
+      return await pending;
+    } finally {
+      pendingSettingsUpdates.delete(pending);
+    }
   }
-  const result = await dispatch(caller, method, params);
-  if (id !== undefined && id !== null) reply(client, id, result ?? {});
-  // Like the real runner: a client that says hello hears about a restart
-  // that's waiting, straight after the hello result.
-  if (method === 'hello' && pendingRestart) {
-    const onYou = pendingRestart.waitingFor.filter((id) => threads.get(id)?.summary.status === 'waiting').length;
-    notice(client, 'info', pendingMessage(pendingRestart.waitingFor.length, onYou));
-  }
+  return run();
 }
 
 async function dispatch(client, method, p) {
@@ -2611,6 +2632,7 @@ async function dispatch(client, method, p) {
     case 'mock.restart':
       return restartNow(p);
     case 'mock.coordinatorExperiment': {
+      if (pendingSettingsUpdates.size) await Promise.allSettled([...pendingSettingsUpdates]);
       const experiment = settings.experiments?.find((e) => e.id === 'coordinators');
       if (!experiment) throw rpcError(-32601, 'The coordinator fixture is off.');
       experiment.on = Boolean(p.on);
@@ -3303,6 +3325,7 @@ function restartNow(p) {
   const downMs = Number(p.downMs ?? 3000);
   const resumeId = p.resume?.threadId ?? pendingRestart?.resumeThreadId;
   if (resumeId) need(resumeId);
+  restartEpoch += 1;
   const oldVersion = runnerVersion;
   const newVersion = `0.0.0-mock+r${restarts + 1}`;
   const text = p.resume?.text ?? 'The runner restarted on release 20261027T101500Z-abc1234. Check that your change works, then carry on.';
