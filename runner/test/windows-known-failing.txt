@@ -10,9 +10,12 @@
 # records' (check-cache, 22 Nov: it runs check.sh, which is bash, as
 # check-only does), and Grok's out-of-balance turns' (grok-out-of-usage,
 # 24 Nov: it starts the pretend ACP agent, a .mjs run by its #! line, as
+# acp-grok does), and OpenCode's background shells' (acp-background,
+# 27 Nov: it starts the pretend ACP agent, a .mjs run by its #! line, as
 # acp-grok does).
 account-isolation.test.ts
 acp-adapter.test.ts
+acp-background.test.ts
 acp-grok.test.ts
 agent-write-trust.test.ts
 background.test.ts
