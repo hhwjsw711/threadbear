@@ -1,7 +1,8 @@
 // A real check of every other machine's runner, through this Mac's live
 // runner and Convex, the way the Mac app reaches them by default. For each
-// runner online (Hetzner, bruce, the Pixel) it starts a throwaway Haiku
-// thread there, sends it a red square, checks the agent saw red, checks the
+// runner online (Hetzner, bruce, the Pixel) it starts a throwaway thread
+// there (Haiku when Claude can answer, otherwise another provider on that
+// machine), sends it a red square, checks the agent saw red, checks the
 // decision card it ends with keeps what each answer does on the way back,
 // and archives the thread. Then it checks the backend is on the version this
 // runner expects, that no machine says it can't follow GitHub's main, and
@@ -11,7 +12,7 @@
 // with itself; this proves the real machines do: a release that didn't
 // build, a backend that wasn't deployed, a key that broke. It's what found
 // nothing wrong by hand on 8 Nov after pictures to other runners landed.
-// It costs a few Haiku turns a run; the daily schedule runs it.
+// It costs a few turns a run; the daily schedule runs it.
 //
 //   node runner/scripts/canary.ts [--runner <name>]   (THREADBEAR_HOME for another data dir)
 //
@@ -29,13 +30,14 @@ import { forTerminal } from '../src/terminal-text.ts';
 
 type Ev = { seq: number; type: string; text?: string; outcome?: string; asks?: { action: string; options?: string[]; optionNotes?: string[] }[] };
 type Runner = { id: string; name: string; online: boolean };
-type Login = { id: string; provider: string; signedOut?: boolean; models?: { id: string }[]; usage?: { blocked?: boolean; windows?: { remainingPercent?: number; resetsAt?: string }[] } };
+type Login = { id: string; provider: string; signedOut?: boolean; planEnded?: boolean; models?: { id: string }[]; usage?: { blocked?: boolean; windows?: { remainingPercent?: number; resetsAt?: string }[] } };
 
-// A login's usage limit isn't Threadbear breaking: on 25 Nov every runner's
-// claude-main was out for the week and all three checks failed with "its
-// first turn failed". So the canary takes a Claude login with usage left, and
-// when there's none it says so as a skip, not a FAIL.
-const LIMIT = /hit your (weekly|session|usage) limit|out of usage|usage limit/i;
+// A login's own refusal isn't Threadbear breaking. On 25 Nov every runner's
+// claude-main was out for the week, and on 27 Nov the Claude subscriptions the
+// RAMP card pays were past due or turned off, and all three checks failed with
+// "its first turn failed". The canary takes a login that can answer (Claude
+// first, then another provider on that machine) and says a refusal as a skip.
+const LIMIT = /hit your (weekly|session|usage) limit|out of usage|usage limit|can't use your claude subscription|payment is past due|disabled claude subscription access/i;
 
 // Network blips worth trying a read again for (read(), below).
 const BLIP = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|aborted due to timeout/i;
@@ -94,24 +96,36 @@ process.exit(results.every((x) => x.ok) ? 0 : 1);
 
 async function check(r: Runner): Promise<void> {
   const logins = (await step("reading its logins", () => read('remoteThreads.logins', { runnerId: r.id }))) as { accounts: Login[] };
-  const claudes = logins.accounts.filter((a) => a.provider === 'claude');
-  const claude = claudes.find((a) => !a.signedOut && !a.usage?.blocked);
-  if (claudes.length && !claude && claudes.every((a) => a.usage?.blocked)) return say(true, `${r.name}: skipped, every Claude login there is out of usage${resets(claudes)}`);
-  const haiku = claude?.models?.find((m) => /haiku/i.test(m.id))?.id;
-  const made = (await step('starting a thread there', () => client.call('threads.create', { runnerId: r.id, text: BRIEF, title: 'Canary: Threadbear daily check', ...(claude ? { accountId: claude.id } : {}), ...(haiku ? { model: haiku } : {}) }))) as { thread: { id: string } };
+  const accounts = logins.accounts;
+  const tried = new Set<string>();
+  for (;;) {
+    const login = pickLogin(accounts.filter((a) => !tried.has(a.id)));
+    if (!login) return say(true, tried.size ? `${r.name}: skipped, its login was refused and no other one there can answer` : nowhere(r.name, accounts));
+    tried.add(login.id);
+    // 'done' already printed its own lines. 'refused' tries the next login.
+    if ((await probe(r, login)) === 'done') return;
+  }
+}
+
+// One throwaway thread on one login. 'refused' means the login itself said no
+// (usage, a past-due card, org access turned off), so the caller tries another.
+async function probe(r: Runner, login: Login): Promise<'done' | 'refused'> {
+  const haiku = login.provider === 'claude' ? login.models?.find((m) => /haiku/i.test(m.id))?.id : undefined;
+  const made = (await step('starting a thread there', () => client.call('threads.create', { runnerId: r.id, text: BRIEF, title: 'Canary: Threadbear daily check', accountId: login.id, ...(haiku ? { model: haiku } : {}) }))) as { thread: { id: string } };
   const id = made.thread.id;
   try {
     const first = await turnEnd(id, 0);
     // A failed turn is one line, not three FAILs that read as a broken
     // runner. The relay says only that it failed; the reason is in that
-    // runner's thread. Only the CLI's own usage-limit words count as a skip.
+    // runner's thread. A refusal in the reply is the login, not the runner.
     if (first.card?.outcome === 'failed') {
       // Its usage read can be hours old, so a limit still shows up here.
       const said = reply(first.events, first.from);
-      if (LIMIT.test(said)) return say(true, `${r.name}: skipped, its login ran out of usage (${said.slice(0, 80)})`);
-      return say(false, `${r.name}: its first turn failed (thread ${id}; its events on ${r.name} say why)`);
+      if (LIMIT.test(said)) return 'refused';
+      say(false, `${r.name}: its first turn failed (thread ${id}; its events on ${r.name} say why)`);
+      return 'done';
     }
-    say(/\bready\b/i.test(reply(first.events, first.from)), `${r.name}: a new thread started there and answered`);
+    say(/\bready\b/i.test(reply(first.events, first.from)), `${r.name}: a new thread on ${login.provider} started there and answered`);
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-canary-'));
     const file = path.join(dir, 'red.png');
@@ -125,6 +139,7 @@ async function check(r: Runner): Promise<void> {
     const ask = second.card?.asks?.[0];
     const notes = Boolean(ask && ask.options?.length === 2 && ask.optionNotes?.filter(Boolean).length === 2);
     say(notes, `${r.name}: its decision card came back with what each answer does${notes ? '' : ` (thread ${id}, card ${JSON.stringify(second.card?.asks ?? null)})`}`);
+    return 'done';
   } finally {
     await client.call('threads.update', { threadId: id, archived: true }).catch((e) => say(false, `${r.name}: couldn't archive the canary thread ${id}: ${(e as Error).message}`));
   }
@@ -217,4 +232,24 @@ function reply(events: Ev[], after: number): string {
     .map((e) => e.text ?? '')
     .join(' ')
     .trim();
+}
+
+// Claude when one can answer: that's the cheap check. Otherwise Codex, then
+// whatever else on that machine still has room. A signed-out or blocked login
+// is skipped here so the create doesn't land on it by default.
+function openLogin(a: Login): boolean {
+  return !a.signedOut && !a.planEnded && !a.usage?.blocked;
+}
+
+function pickLogin(accounts: Login[]): Login | undefined {
+  const open = accounts.filter(openLogin);
+  return open.find((a) => a.provider === 'claude') ?? open.find((a) => a.provider === 'codex') ?? open[0];
+}
+
+// No login can be tried. Keeps the usage line the 25 Nov skip already used.
+function nowhere(name: string, accounts: Login[]): string {
+  const claudes = accounts.filter((a) => a.provider === 'claude');
+  if (claudes.length && claudes.every((a) => a.usage?.blocked)) return `${name}: skipped, every Claude login there is out of usage${resets(claudes)}`;
+  if (accounts.length && accounts.every((a) => a.signedOut)) return `${name}: skipped, every login there is signed out`;
+  return `${name}: skipped, no login there can answer`;
 }

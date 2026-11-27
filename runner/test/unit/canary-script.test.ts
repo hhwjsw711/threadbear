@@ -28,6 +28,18 @@ test("the canary's lines reach the terminal through forTerminal", () => {
   assert.equal(text.match(/console\.(log|error)\(/g)?.length, 1, 'say is the only place it prints');
 });
 
+// 27 Nov: the RAMP card was empty, so every remote Claude login refused the
+// turn (past due, or the org had turned subscription access off). That is the
+// login, same as a usage limit. The canary tries another provider, and skips
+// the machine only when nothing else there can answer.
+test('a refused Claude subscription tries another login instead of failing the runner', () => {
+  const text = fs.readFileSync(file, 'utf8');
+  assert.match(text, /payment is past due/);
+  assert.match(text, /disabled claude subscription access/);
+  assert.match(text, /no other one there can answer/);
+  assert.match(text, /pickLogin/);
+});
+
 // A failed remote turn can mean a usage limit, not a sign-out. On 24 Nov
 // all three weekly-limit failures were reported as signed-out logins.
 test('a failed first turn points to its evidence without diagnosing a sign-out', () => {
