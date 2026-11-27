@@ -15,7 +15,8 @@ import { useConvex, useMutation } from 'convex/react';
 import { useLiveQuery } from './live';
 import type { FunctionReturnType } from 'convex/server';
 import { api } from '../../convex/_generated/api';
-import { useState, type ReactNode } from 'react';
+import { useContext, useState, type ReactNode } from 'react';
+import { OpenReview } from './review-open';
 import { bareLinks, draftFrom, fenceClosed, draftHTML, draftLabel, draftLines, draftPlainText, editedLabel, type Draft, type Span } from './draft';
 import { planBody, planDecisionLabel, planTitle } from './plan';
 
@@ -209,6 +210,7 @@ export function MessageText({
 }) {
   // The exact text Markdown reads, so a block's position can be looked up in it.
   const markdown = escapeDestinations(text);
+  const openReview = useContext(OpenReview);
   return (
     <div className="md" id={seq === undefined ? undefined : stepId(seq)}>
       <Markdown
@@ -299,6 +301,20 @@ export function MessageText({
               }
             }
             if (link.kind === 'button') return button ? button(link.id, children) : <>{children}</>;
+            if (link.kind === 'review' && openReview) {
+              return (
+                <a
+                  href="#"
+                  title="Open the design review"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    openReview(link.id);
+                  }}
+                >
+                  {children}
+                </a>
+              );
+            }
             if (link.kind === 'thread' && threadPath) {
               const path = threadPath(link.id);
               return (

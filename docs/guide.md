@@ -323,6 +323,16 @@ marks, videos and sounds need API 106 or newer. If the review changes on
 the Mac while you're answering, your answer stays in the sheet while it
 reloads, ready for you to check and send again.
 
+On the website it's the same board, over the whole window: click Reviews in
+the thread's header, a review link in a reply, or the card's button. Drag to
+move it, scroll a mouse wheel or pinch a trackpad to zoom (two fingers on a
+trackpad move it), or on a phone drag with one finger and pinch with two.
+Click a picture to fly to it, and again to look closer; the arrows at the
+bottom, or ← and →, step through the agent's order. The tools at the top
+circle, highlight or pin part of a picture as on the iPhone, and ⌘Return
+sends. Your answer stays while the board is closed, until you reload the
+page.
+
 In the thread, a review's card shows the agent's lead and each option's
 small picture and name. Click one to open the comparison window on that
 option, or the card's button to start at the beginning. A review from a

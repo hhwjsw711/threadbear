@@ -2,7 +2,7 @@
 // sidebar (sidebar.tsx) beside a thread with each finished turn folded to
 // "Worked for 4m 12s" and its reply, and the agent's card of asks joined to
 // the composer. A shared thread (/s/<slug>) is share.tsx.
-import { Component, Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Component, Fragment, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useMutation } from 'convex/react';
 import { useLiveQuery } from './live';
 import { InboxProvider, useInbox } from './inbox';
@@ -28,6 +28,9 @@ import { pastedOf } from './picture-chips';
 import { Rail } from './rail';
 // Loaded only when it's opened: the viewer's diagrams are most of its size.
 const MachinesPage = lazy(() => import('./machines'));
+// The design review board, loaded when one is opened.
+const ThreadReviews = lazy(() => import('./review-board'));
+import { OpenReview } from './review-open';
 import { NewThread, ProjectPage, ProjectsList, RunnerPage, RunnersList, ScheduledList, SchedulePage, UsageList, UsagePage } from './pages';
 import { duration, fold, gapLabel, isNote, splitTurns, type Item } from './turns';
 import { folderName, sender } from './format';
@@ -195,6 +198,8 @@ function ThreadView({ token, threadId }: { token: string; threadId: string }) {
   const list = useRef<HTMLDivElement>(null);
   const keepFromBottom = useRef<number | null>(null);
   const seen = useRef(false);
+  // The design review board over the page: a review's id, '' for the pending list.
+  const [reviewShown, setReviewShown] = useState<string>();
   const lastSeq = shown?.messages.at(-1)?.seq;
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' });
@@ -305,6 +310,7 @@ function ThreadView({ token, threadId }: { token: string; threadId: string }) {
   };
 
   return (
+    <OpenReview.Provider value={setReviewShown}>
     <article className="thread">
       <header className="thread-head">
         <button className="icon-btn back" onClick={() => go('/')} aria-label="Back to the threads" title="Back to the threads">
@@ -315,6 +321,12 @@ function ThreadView({ token, threadId }: { token: string; threadId: string }) {
           <span className="sep">/</span>
           <h1>{t.title || 'Untitled'}</h1>
         </div>
+        {(t.pendingReviews ?? 0) > 0 ? (
+          <button className="btn plain reviews-btn" onClick={() => setReviewShown('')} title="Read the pending design reviews and answer">
+            <Icon.Boards />
+            Reviews
+          </button>
+        ) : null}
         <ShareControl token={token} threadId={threadId} share={t.share} preview={previewOf(t.title, messages, pictures.filter((p) => !p.src?.startsWith('picture:')))} />
         <MoreMenu
           items={[
@@ -356,7 +368,13 @@ function ThreadView({ token, threadId }: { token: string; threadId: string }) {
         <CommandNote command={change} sending />
         <Dock token={token} thread={t} lastSeq={lastSeq} onArchive={() => act({ archive: true })} archiving={change.busy} linkTo={linkTo} />
       </div>
+      {reviewShown !== undefined ? (
+        <Suspense fallback={<div className="rb"><div className="rb-wait center"><span className="spinner" /></div></div>}>
+          <ThreadReviews token={token} threadId={threadId} reviewId={reviewShown} onClose={() => setReviewShown(undefined)} />
+        </Suspense>
+      ) : null}
     </article>
+    </OpenReview.Provider>
   );
 }
 
@@ -403,6 +421,7 @@ type Draft = { text: string; picks: { card?: number; by: Record<number, number> 
 function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { token: string; thread: Row; lastSeq?: number; onArchive: () => void; archiving: boolean; linkTo: (id: string) => string }) {
   const send = useMutation(api.phone.send);
   const interrupt = useMutation(api.phone.interrupt);
+  const openReview = useContext(OpenReview);
   const [text, setText] = useState('');
   // Stop pressed: a spinner in its place, taking no more clicks, until the
   // turn is over (or STOP_HOLD_MS after its runner said done, as the iPhone
@@ -566,11 +585,11 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
                   >
                     {l.title}
                   </a>
-                ) : /^review:/i.test(l.url) ? (
-                  // A show_options review in this thread: its window is on the Mac.
-                  <span key={l.url} className="btn inert-link" title="This review opens in Threadbear on your Mac or iPhone">
-                    {l.title} (on your Mac or iPhone)
-                  </span>
+                ) : /^review:/i.test(l.url) && openReview ? (
+                  // A show_options review in this thread: its board opens over the page.
+                  <button key={l.url} className="btn primary" onClick={() => openReview(l.url.slice(7).trim())} title="Open the design review">
+                    {l.title}
+                  </button>
                 ) : (
                   <OutLink key={l.url} className="btn primary" href={l.url}>
                     {l.title} ↗

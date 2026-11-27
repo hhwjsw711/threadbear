@@ -237,3 +237,34 @@ export const Clipboard = () => (
     <path d="M5.5 2.5H3.5v12h9v-12h-2M6 1.5h4v2H6zM6 7h4.5M6 9.5h4.5M6 12h4.5" />
   </svg>
 );
+// The review board's tools and its button in a thread's header
+// (SF Symbols' highlighter, mappin, rectangle.on.rectangle).
+export const Highlighter = () => (
+  <svg {...base}>
+    <path d="m9.5 2.5 4 4-5.5 5.5H5.5V9.5zM5.5 12 3.5 14H2l.5-2.5M8 4l4 4" />
+  </svg>
+);
+export const Pin = () => (
+  <svg {...base}>
+    <circle cx="8" cy="5.5" r="3" />
+    <path d="M8 8.5v6" />
+  </svg>
+);
+export const Boards = () => (
+  <svg {...base}>
+    <rect x="4.5" y="2" width="9.5" height="8" rx="1.5" />
+    <path d="M2 5.5v7.5c0 .6.4 1 1 1h8" />
+  </svg>
+);
+export const StopFill = () => (
+  <svg {...base} fill="currentColor" stroke="none">
+    <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" />
+  </svg>
+);
+export const Note = () => (
+  <svg {...base}>
+    <path d="M6 12V3l7-1.5v9" />
+    <circle cx="4.5" cy="12" r="1.6" />
+    <circle cx="11.5" cy="10.5" r="1.6" />
+  </svg>
+);

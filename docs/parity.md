@@ -74,12 +74,12 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | "6 min later" divider before a woken turn | `row.gap` | Yes | Yes | Yes |
 | Plan first card, waiting for approval | `row.planCard` | Yes | Yes | Yes |
 | Another lab's review of the turn | `row.labReview` | Yes | Yes | Yes |
+| Design review card | `row.review` | Yes | No: Not drawn yet. | Yes |
 | A failed turn's error | `row.error` | Yes | No: Not drawn yet. | Yes |
 | Background jobs still going | `row.background` | Yes | Yes | No: Not drawn yet. |
 | Thinking | `row.reasoning` | No: Not drawn yet. | No: Not drawn yet. | Yes |
 | An edit's diff | `row.diff` | No: Not drawn yet. | No: Not drawn yet. | Yes |
 | A tool's pictures | `row.images` | No: Not drawn yet. | No: Not drawn yet. | Yes |
-| Design review card | `row.review` | Yes | No: Not drawn yet. | No: Not drawn yet. |
 | Turn footer ("Worked for 3m") | `row.footer` | No: Not drawn yet. | No: Not drawn yet. | Yes |
 | Plan checklist (plan.updated) | `row.plan` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
 | Changed files card | `row.changes` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
@@ -189,7 +189,7 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | Link to a step of the working | `link.work` | Yes | Yes | Yes |
 | Link to another thread | `link.thread` | Yes | Yes | Yes |
 | Reply button | `link.button` | Yes | Yes | Yes |
-| Link to a design review | `link.review` | Yes | No: Not drawn yet. | No: Not drawn yet. |
+| Link to a design review | `link.review` | Yes | No: Not drawn yet. | Yes |
 
 ## A thread link's mark (LinkMark, link_marks.rs)
 

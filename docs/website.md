@@ -146,6 +146,37 @@ Sharing with specific people (an emailed code, through Resend) was built
 on 28 Oct and taken out on 29 Oct: Mike wanted a public link and nothing
 else for now, and it needed a Resend key Threadbear doesn't have.
 
+## Design reviews
+
+A thread's design reviews open as the comparison board, over the whole
+window (since 27 Nov 2026, thread 5e71442b): from the header's Reviews
+button while the thread has pending ones, a `review:<id>` link in a reply,
+or an ask's review link. It's a port of the iPhone's board
+(`ios/Threadbear/ReviewBoard.swift`), which ports the Mac's: the logic
+(layout, tour, camera, ink, the draft and its marks) is
+`web/src/review-model.ts` with its tests, the drawing
+`web/src/review-board.tsx`, and the calls `web/src/review-backend.ts`:
+`phone:designReviews` and `phone:respondReview` as commands followed with
+`phone:command`, the stills and media through `phone:reviewImages`, and each
+mark's cut-out cropped in a canvas and uploaded with `phone:imageUploadUrl`
+(fresh every attempt, discarded with `phone:discardImage` if the send
+fails). The browser token works for all of these, as for the rest of
+`phone:*`. The board follows the site's light or dark theme, with the Mac's
+colours for each, and the notes' handwriting is Caveat, served from
+`web/public/fonts/` with its licence (no font CDN).
+
+Cut-outs read the stills from file storage on `.convex.cloud`, which
+answers with CORS for the site, so the canvas stays readable. The upload
+goes to `/phone/upload` on `.convex.site`, the site's own origin, so it
+only works on the hosted site, not from Vite on localhost (no CORS there):
+from localhost a send with marks fails and keeps the answer.
+
+To check the board without a runner, `web/review-fixture.html` (dev only;
+the build takes `index.html` alone) draws it with sample data and a
+pretend backend: `npm run web:dev`, then `/review-fixture.html`
+(`?fail=1`, `?answered=1`, `?id=` for the list; what it would have sent is
+in `window.__reviewSent`).
+
 ## Signing in
 
 The browser holds a browser token (`convex/tokens.ts`) in localStorage. The

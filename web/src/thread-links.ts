@@ -1,11 +1,12 @@
 // Links from a message back into the thread (docs/protocol/needs-you.md, "Links into the
 // thread"), as the Mac's WorkLinks and the phone's ThreadLinks read them:
 // `work:<words>` quotes a step in the turn's working, `thread:<id>` is another
-// thread and `review:<id>` a design review, which only the Mac can open.
+// thread and `review:<id>` a design review, which opens as the comparison
+// board (review-board.tsx).
 // `button:<id>` is a reply button (docs/protocol/events.md, "Reply buttons"). `plain`
 // is one of those too long to read, shown as its words.
 
-export type LinkTarget = { kind: 'step'; quote: string } | { kind: 'thread'; id: string } | { kind: 'review' } | { kind: 'button'; id: string } | { kind: 'plain' };
+export type LinkTarget = { kind: 'step'; quote: string } | { kind: 'thread'; id: string } | { kind: 'review'; id: string } | { kind: 'button'; id: string } | { kind: 'plain' };
 type Row = { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; summary?: boolean };
 
 // The markdown with work: and thread: destinations escaped, as agents write
@@ -87,7 +88,7 @@ function read(href: string): LinkTarget | undefined {
     case 'button':
       return words ? { kind: 'button', id: words } : undefined;
     default:
-      return { kind: 'review' };
+      return words ? { kind: 'review', id: words } : undefined;
   }
 }
 
