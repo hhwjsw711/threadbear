@@ -1902,7 +1902,10 @@ impl PaneRow {
             })
             .when(needs_blank_icon, |s| s.child(div().w(px(16.)).flex_none()))
             .child(body);
-        let row = row.when(self.on_click.is_some(), |s| {
+        // Give the row an id so GPUI keeps hover state for it and redraws when
+        // the pointer enters or leaves; without one the highlight only appeared
+        // when something else happened to redraw the pane.
+        let row = row.id("row").when(self.on_click.is_some(), |s| {
             s.hover(move |st| st.bg(hover)).cursor_pointer()
         });
         let mut wrapper = div().id(self.id).px(px(OUTER_INSET)).child(row);
