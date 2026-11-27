@@ -160,6 +160,8 @@ test('OpenCode background shell keeps thread in Running (waitState job, not Inbo
     assert.equal(summary.waitState, 'job');
     assert.equal(sectionOf(summary.waitState!, false), 'running');
     assert.deepEqual(summary.background, [{ kind: 'shell', description: 'Run test suite' }]);
+    // Ended without end_turn to wait for the shell: no notification or phone push yet.
+    assert.equal(summary.needsYou, false);
 
     // Advancing well past idleMs must NOT release the OpenCode CLI while its shell runs.
     clock.advance(60_000);
@@ -180,6 +182,7 @@ test('OpenCode background shell keeps thread in Running (waitState job, not Inbo
     clock.advance(11_000);
     await until(() => rig.h.runner.get(thread.id).background === undefined);
     assert.equal(rig.h.runner.get(thread.id).live, true, 'CLI stays live until idleMs elapses after wake grace');
+    assert.equal(rig.h.runner.get(thread.id).needsYou, true, "no wake came, so it's Mike's");
     clock.advance(600);
     await until(() => rig.h.runner.get(thread.id).live === false);
   } finally {

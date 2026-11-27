@@ -27,6 +27,16 @@ Codex), is refused once a turn without `askWhen` "jobsEnd" or "now". With
 run the summary has `asksAfterJobs: true` and the thread is as with
 sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks.
 
+A turn that ends with no say at all (no `end_turn`, nothing asked in its
+text) while a shell job it started still runs, on a CLI that wakes when jobs
+end, is waiting on that job mid-work: OpenCode tells the model to end its
+response and be resumed when a command it moved to the background finishes
+(27 Nov 2026, dafafece). `needsYou` stays false (no notification or phone
+push) while one of those shells runs and through the wake grace after; the
+turn the CLI opens to read the result has its say, and if none comes the
+thread is Mike's as usual (`awaitedShells` in runner.ts). Shells from an
+earlier turn, or left after an `end_turn`, don't count.
+
 - **The tool.** Every thread's own agent (not its sub-agents) has
   `end_turn` in the `threadbear` tools: `{ needs?: "you" | "nothing",
   summary?: string[], asks?: { action, reply?, why?, options?,

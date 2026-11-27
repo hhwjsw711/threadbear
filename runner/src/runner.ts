@@ -322,6 +322,9 @@ export type Turn = {
   // shell or async subagent finished, or a background subagent asked for
   // approval). There's no user.message.
   auto?: boolean;
+  // Shell jobs the CLI started during this turn, by id, so one it ends
+  // without end_turn to wait for them stays unfinished (awaitedShells).
+  shellsStarted?: Set<string>;
   // A message in it was more than the runner carrying an earlier turn on
   // (isCarryOn): new work, from Mike, a schedule, another thread or the
   // runner's own reports (settleInstructionsNews).
@@ -541,6 +544,13 @@ export type Runtime = {
   // starts a turn of its own after the result, so the wake grace starts
   // when the turn ends.
   taskEndedInTurn?: boolean;
+  // Shell jobs the last turn started and then ended without end_turn, on a
+  // CLI that wakes when they end: the agent is waiting on them mid-work
+  // (OpenCode's "end your response; you will be resumed"), so the thread
+  // isn't Mike's yet while one runs or its result is about to be read.
+  // A turn that took end_turn leaves none: a shell after its card is often
+  // a dev server or a watcher for Mike (agentsStillWorking).
+  awaitedShells?: string[];
   // A done card that would have finished the thread (markFinished, then
   // the quiet-inbox and inbox-guess steps) but for background work that
   // ended during or just before its turn: the turn the CLI may open to read
@@ -2019,6 +2029,15 @@ export class Runner {
     return ids.every((id) => going.has(id));
   }
 
+  // Whether a shell the last turn left running without end_turn is still
+  // going, or has just ended with its result about to be read (awaitedShells).
+  private awaitingShells(st: ThreadState): boolean {
+    const ids = st.rt.awaitedShells;
+    if (!ids?.length) return false;
+    const going = new Set([...st.rt.tasks, ...(st.rt.wakeTimer ? st.rt.finished : [])].map((t) => t.id));
+    return ids.some((id) => going.has(id));
+  }
+
   // For end_turn's handler: whether the thread's CLI still runs background
   // jobs or sub-agents of its own whose end wakes it (threadbear-mcp.ts,
   // projectStepNote). Codex doesn't wake for them (wakesAfterTasks).
@@ -3247,6 +3266,11 @@ export class Runner {
         break;
       case 'tasks': {
         const endedTasks = rt.tasks.filter((t) => !o.tasks.some((n) => n.id === t.id));
+        if (rt.turn) {
+          for (const t of o.tasks) {
+            if (t.kind === 'shell' && !rt.tasks.some((b) => b.id === t.id)) (rt.turn.shellsStarted ??= new Set()).add(t.id);
+          }
+        }
         // Claude starts a turn of its own to read a finished task's result;
         // Codex doesn't (wakesAfterTasks: false), so there it would only
         // look busy for WAKE_GRACE_MS for nothing.
@@ -3484,6 +3508,11 @@ export class Runner {
         ? { next: rec.needs.next, ...(rec.needs.nextPick ? { nextPick: rec.needs.nextPick } : {}), ...(rec.needs.nextSuggested !== undefined ? { nextSuggested: rec.needs.nextSuggested } : {}) }
         : undefined;
     const said = outcome === 'completed' ? turnNeeds(turn) : undefined;
+    // Ended without a say (no end_turn, nothing asked in its text) while a
+    // shell it started still runs: it's waiting on that, not on Mike.
+    const awaited = outcome === 'completed' && !said && !turn.local && this.wakes(st) ? [...(turn.shellsStarted ?? [])] : [];
+    if (awaited.length) rt.awaitedShells = awaited;
+    else delete rt.awaitedShells;
     const explicitNext = Boolean(turn.endTurn && typeof turn.endTurn === 'object' && 'next' in turn.endTurn && (turn.endTurn as Record<string, unknown>).next !== undefined);
     if (outcome === 'completed' && !turn.local && !turn.byMike && said?.needs === 'nothing' && !said.next?.length && !explicitNext && prevNext) {
       said.next = prevNext.next;
@@ -5348,7 +5377,7 @@ export class Runner {
     // phone push until they're done and the agent has had its say on them.
     // Asks the agent said wait for its shell jobs count them too.
     const afterJobs = this.asksHeld(st);
-    const unfinished = running || (this.coordinators?.forThread(rec.id) ? afterJobs : agentsStillWorking(background, afterJobs));
+    const unfinished = running || this.awaitingShells(st) || (this.coordinators?.forThread(rec.id) ? afterJobs : agentsStillWorking(background, afterJobs));
     const card = rec.needs?.seq === rec.lastTurnCompletedSeq ? rec.needs : undefined;
     const asks = card?.asks;
     const active = card && asks && this.coordinators?.activeAsks(rec.id, asks, card.seq);
