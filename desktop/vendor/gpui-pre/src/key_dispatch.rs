@@ -1639,6 +1639,56 @@ mod tests {
     }
 
     #[crate::test]
+    fn test_focus_changed_by_interceptor_reroutes_bindings_and_ime(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.bind_keys([KeyBinding::new("ctrl-k", TestAction, Some("Terminal"))]));
+        let (test, cx) = cx.add_window_view(|_, cx| PendingTextInputTestView::new(cx));
+        let input_focus = test.read_with(cx, |test, _| test.focus_handle.clone());
+        let other = cx.update(|_, cx| cx.focus_handle());
+        let _interceptor = cx
+            .update(|_, cx| cx.intercept_keystrokes(move |_, window, cx| window.focus(&other, cx)));
+        for key in ["ctrl-k", "enter"] {
+            cx.update(|window, cx| {
+                window.focus(&input_focus, cx);
+                window.activate_window();
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                assert!(!window.dispatch_keystroke(Keystroke::parse(key).expect("test key"), cx))
+            });
+        }
+        test.read_with(cx, |test, _| {
+            assert_eq!(
+                test.action_count.get(),
+                0,
+                "old text context must not receive the binding"
+            );
+            assert!(
+                test.text.borrow().is_empty(),
+                "old IME handler must not receive a newline"
+            );
+        });
+    }
+
+    #[crate::test]
+    fn test_control_ime_input_still_reaches_its_focused_handler(cx: &mut TestAppContext) {
+        let (test, cx) = cx.add_window_view(|_, cx| PendingTextInputTestView::new(cx));
+        let focus = test.read_with(cx, |test, _| test.focus_handle.clone());
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            window.activate_window();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let mut key = Keystroke::parse("ctrl-e").expect("test key");
+            key.key_char = Some("control-input".into());
+            assert!(window.dispatch_keystroke(key, cx));
+        });
+        test.read_with(cx, |test, _| {
+            assert_eq!(test.text.borrow().as_str(), "control-input")
+        });
+    }
+
+    #[crate::test]
     fn test_keystroke_input_preference(cx: &mut TestAppContext) {
         let (test, cx) = setup_altgr_test(cx);
         let intercepted_preferences = Rc::new(RefCell::new(Vec::new()));

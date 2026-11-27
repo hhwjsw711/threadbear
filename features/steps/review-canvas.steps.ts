@@ -233,7 +233,7 @@ Then('a live HTML input cannot edit or submit the focused reply draft', async fu
   // The native probe renders only before the click from reply into the
   // mounted input, then tests focus notification and shortcuts without a frame.
   const probe = JSON.parse(okValue(await this.app.do({cmd: 'review', id: reviewId(this), open: false, canvasReplyFocusProbe: true}, 30)));
-  if (!probe.notified || probe.sameTickKeys !== 5) throw new Error(`Incomplete no-repaint probe: ${JSON.stringify(probe)}`);
+  if (!probe.notified || probe.sameTickKeys !== 5 || probe.nativeShortcuts !== 2) throw new Error(`Incomplete no-repaint probe: ${JSON.stringify(probe)}`);
   const guarded = await board(this);
   if (guarded.status !== 'pending' || guarded.reply !== 'Keep this draft') throw new Error(`HTML shortcut changed the review: ${JSON.stringify(guarded)}`);
   await board(this, {focusReply: true});
@@ -244,5 +244,23 @@ Then('a live HTML input cannot edit or submit the focused reply draft', async fu
     await key('a');
     await key('v');
     await untilBoard(this, 'normal reply editing after clicking back', (s) => s.reply === 'Edited back in the reply');
+    const native = async (code: number, text: string, modifiers: number) => this.app.do({cmd: 'native-shortcut', review: reviewId(this), code, text, modifiers});
+    await native(123, '\uf702', 1); // Cmd-Left, then native Cocoa kill-line.
+    await native(40, 'k', 2);
+    await untilBoard(this, 'Control-K still edits the genuinely focused reply', (s) => s.reply === '');
+    await this.app.do({cmd: 'native-keys', review: reviewId(this), text: 'normal typing'});
+    await untilBoard(this, 'native typing in the reply', (s) => s.reply === 'normal typing');
+    await native(123, '\uf702', 1);
+    await native(124, '\uf703', 1);
+    await native(51, '\x7f', 1);
+    await untilBoard(this, 'Cmd-Right and Cmd-Backspace still edit the reply', (s) => s.reply === '');
+    await this.app.do({cmd: 'native-keys', review: reviewId(this), text: 'Reply submitted normally'});
+    await native(36, '\r', 1);
+    let submitted = false;
+    for (let i = 0; i < 30; i++) {
+      try { if ((await board(this, {open: true})).status === 'answered') { submitted = true; break; } } catch { /* The send closes the old window before reopening its answered record. */ }
+      await sleep(100);
+    }
+    if (!submitted) throw new Error('Cmd-Return stopped working in the genuine reply');
   } finally { await this.app.do({cmd: 'clipboard', set: clipboard}); }
 });

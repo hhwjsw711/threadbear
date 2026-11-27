@@ -454,6 +454,31 @@ void tb_view_send_keys(void *nativeView, const char *text) {
   }
 }
 
+// A scripted shortcut through NSWindow, including performKeyEquivalent and
+// native first-responder delivery. It never posts to the system event tap.
+// Bits: command=1, control=2, shift=4, option=8.
+void tb_view_send_shortcut(void *nativeView, unsigned short code, const char *characters, unsigned int modifiers) {
+  NSView *view = (__bridge NSView *)nativeView;
+  NSWindow *window = view.window;
+  NSString *text = characters ? [NSString stringWithUTF8String:characters] : nil;
+  if (!window || !text) { return; }
+  NSEventModifierFlags flags = 0;
+  if (modifiers & 1) { flags |= NSEventModifierFlagCommand; }
+  if (modifiers & 2) { flags |= NSEventModifierFlagControl; }
+  if (modifiers & 4) { flags |= NSEventModifierFlagShift; }
+  if (modifiers & 8) { flags |= NSEventModifierFlagOption; }
+  if (code >= 123 && code <= 126) { flags |= NSEventModifierFlagFunction | NSEventModifierFlagNumericPad; }
+  for (int down = 1; down >= 0; down--) {
+    NSEvent *event = [NSEvent keyEventWithType:(down ? NSEventTypeKeyDown : NSEventTypeKeyUp)
+                                      location:NSZeroPoint modifierFlags:flags
+                                     timestamp:[[NSProcessInfo processInfo] systemUptime]
+                                  windowNumber:window.windowNumber context:nil
+                                    characters:text charactersIgnoringModifiers:text
+                                     isARepeat:NO keyCode:code];
+    [window sendEvent:event];
+  }
+}
+
 // A scripted app's stand-in for a person's click at (x, y) in the window
 // GPUI's view `nativeView` fills, in GPUI's coordinates (from the top left):
 // a mouse down and up handed to the window, which hit-tests and delivers them

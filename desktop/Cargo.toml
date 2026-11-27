@@ -105,6 +105,11 @@ gpui-base = { path = "vendor/gpui-base" }
 # And ListState::jumps and note_jump, counting every move other than
 # set_offset_from_scrollbar, so gpui-base's wheel glide stops when the view
 # is moved some other way (27 Nov).
+# And key dispatch recomputes its focus path after keystroke interceptors
+# move focus. Simulated IME input only reaches the text handler painted for
+# the current focus, so a native HTML page can keep its shortcuts without
+# editing the review reply through a stale GPUI handler (window.rs,
+# key_dispatch.rs focus-interception regressions).
 gpui-pre = { path = "vendor/gpui-pre" }
 # gpui-pre-macos 0.3.11 as published, except that with a native view inside
 # the window holding the keyboard (a web panel's page), a key without ⌘ or

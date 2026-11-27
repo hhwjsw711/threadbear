@@ -132,9 +132,9 @@ impl Shared {
     }
 }
 
-// SAFETY: native registration borrows Arc::as_ptr while PanelPage owns its
-// Shared. Drop unregisters before removing the view or releasing that Arc.
 unsafe extern "C" fn page_focused(context: *mut c_void) {
+    // SAFETY: native registration borrows Arc::as_ptr while PanelPage owns its
+    // Shared. Drop unregisters before removing the view or releasing that Arc.
     let shared = unsafe { &*context.cast::<Shared>() };
     shared.send(Event::Focused);
 }

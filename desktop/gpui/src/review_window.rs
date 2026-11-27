@@ -85,9 +85,9 @@ pub(crate) fn edit_page_command(handle: AnyWindowHandle, command: &str, cx: &App
 
 /// Runs before GPUI dispatches command/control keys through its last frame's
 /// focus tree. Native CEF ownership wins even if that tree still names reply.
-pub(crate) fn guard_page_shortcut(key: &Keystroke, window: &mut Window, cx: &mut App) -> bool {
+pub(crate) fn guard_page_shortcut(key: &Keystroke, window: &mut Window, cx: &mut App) {
     if !key.modifiers.platform && !key.modifiers.control {
-        return false;
+        return;
     }
     let handle = window.window_handle();
     let view = cx.try_global::<Reviews>().and_then(|r| {
@@ -96,7 +96,9 @@ pub(crate) fn guard_page_shortcut(key: &Keystroke, window: &mut Window, cx: &mut
             .find(|(w, _)| *w == handle)
             .map(|(_, v)| v.clone())
     });
-    view.is_some_and(|v| v.update(cx, |this, cx| this.capture_page_key(key, window, cx)))
+    if let Some(view) = view {
+        view.update(cx, |this, cx| this.release_reply_keys(window, cx));
+    }
 }
 
 struct PendingList {
@@ -226,7 +228,17 @@ fn bind_keys(cx: &mut App) {
     } else {
         "ctrl-v"
     };
-    BOUND.call_once(|| cx.bind_keys([KeyBinding::new(chord, Paste, Some("ReviewWindow"))]));
+    BOUND.call_once(|| {
+        cx.bind_keys([KeyBinding::new(chord, Paste, Some("ReviewWindow"))]);
+        // The kit has Control-A/E but no Mac kill-line binding. Keep this
+        // one in the reply's Input context, outside the native page's path.
+        #[cfg(target_os = "macos")]
+        cx.bind_keys([KeyBinding::new(
+            "ctrl-k",
+            gpui_kit::component::input::DeleteToEndOfLine,
+            Some("ReviewWindow > Input"),
+        )]);
+    });
 }
 
 impl Threadbear {
@@ -1104,31 +1116,6 @@ impl ReviewWindow {
         }
     }
 
-    fn capture_page_key(
-        &mut self,
-        key: &Keystroke,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let m = &key.modifiers;
-        if !self.page_has_keys() || (!m.platform && !m.control) {
-            return false;
-        }
-        self.release_reply_keys(window, cx);
-        // Keep the window/app commands working while editing stays in CEF.
-        if m.platform && !m.shift && !m.control && !m.alt {
-            match key.key.as_str() {
-                "w" => self.close(cx),
-                "q" => cx.quit(),
-                "h" => cx.hide(),
-                "m" => window.minimize_window(),
-                _ => {}
-            }
-        }
-        cx.stop_propagation();
-        true
-    }
-
     // ------------------------------------------------------------ keys
 
     /// The window's keys, outside the reply box, which keeps its own arrows
@@ -1145,9 +1132,6 @@ impl ReviewWindow {
         }
         if self.page_has_keys() {
             self.release_reply_keys(window, cx);
-            if m.platform || m.control {
-                cx.stop_propagation();
-            }
             if !m.platform && !m.control && !m.alt && ev.keystroke.key == "escape" {
                 self.canvas_stop_playing(cx);
                 crate::web_panels::keyboard_to_app(window);
@@ -1682,9 +1666,6 @@ impl Render for ReviewWindow {
             .size_full()
             .bg(cx.theme().background)
             .text_color(style::label_text(cx))
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                this.capture_page_key(&event.keystroke, window, cx);
-            }))
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
             // ⌘Return in the reply box sends rather than making a new line.
@@ -1694,8 +1675,8 @@ impl Render for ReviewWindow {
                         this.release_reply_keys(window, cx);
                     } else {
                         this.submit(cx);
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
                 }
             }))
             // A paste nothing else took goes in the reply box.
@@ -1720,6 +1701,7 @@ impl Render for ReviewWindow {
             // The app's own keys, which the main window handles for itself.
             .on_action(|_: &crate::shell::QuitApp, _, cx| cx.quit())
             .on_action(|_: &crate::shell::HideApp, _, cx| cx.hide())
+            .on_action(|_: &crate::shell::HideOtherApps, _, cx| cx.hide_other_apps())
             .on_action(|_: &crate::shell::MinimizeWindow, window, _| window.minimize_window())
             // A drag that started on the stage follows the pointer anywhere
             // in the window.
@@ -2311,28 +2293,84 @@ async fn reply_focus_probe(
         for key in keys {
             let reply = view.read(cx).reply.read(cx).focus_handle(cx);
             window.focus(&reply, cx); // Deliberately leave AppKit with CEF.
-            let key =
+            let mut key =
                 Keystroke::parse_with_os(key, cx.platform_info().os).map_err(|e| e.to_string())?;
+            if key.key == "enter" {
+                key.key_char = Some("\n".into());
+            }
             let handled = window.dispatch_keystroke(key.clone(), cx);
             window.dispatch_event(
                 gpui_kit::PlatformInput::KeyUp(KeyUpEvent { keystroke: key }),
                 cx,
             );
             let v = view.read(cx);
-            if !handled
+            if handled
                 || v.reply.read(cx).value().to_string() != seed
                 || v.session.submitting()
                 || !v.session.review().is_pending()
             {
-                return Err("a shortcut edited/submitted the reply before a repaint".into());
+                return Err(
+                    "a shortcut was swallowed or edited/submitted the reply before a repaint"
+                        .into(),
+                );
             }
         }
         Ok(())
     })
     .map_err(|e| e.to_string())??;
+    // Real AppKit events must continue past GPUI into the mounted input.
+    // Query CEF only; no GPUI frame can hide propagation or focus mistakes.
+    for (code, text, expected) in [
+        (
+            123,
+            "\u{f702}",
+            "document.getElementById('reply-guard-test').selectionStart === 0",
+        ),
+        (
+            51,
+            "\u{7f}",
+            "document.getElementById('reply-guard-test').value === ''",
+        ),
+    ] {
+        let setup = "(() => {const i=document.getElementById('reply-guard-test');i.value='HTML shortcut';i.focus();i.setSelectionRange(i.value.length,i.value.length);return true})()";
+        page.devtools("Runtime.evaluate", json!({"expression":setup}))
+            .await
+            .map_err(|_| "page closed")??;
+        crate::web_panels::send_shortcut(handle, code, text, 1, cx)?;
+        let mut reached = false;
+        for _ in 0..30 {
+            cx.background_executor()
+                .timer(Duration::from_millis(10))
+                .await;
+            let answer = page
+                .devtools(
+                    "Runtime.evaluate",
+                    json!({"expression":expected,"returnByValue":true}),
+                )
+                .await
+                .map_err(|_| "page closed")??;
+            if answer["result"]["value"] == true {
+                reached = true;
+                break;
+            }
+        }
+        if !reached {
+            return Err(format!(
+                "AppKit command key {code} never reached the HTML input"
+            ));
+        }
+        let unchanged = view.read_with(cx, |v, cx| {
+            v.reply.read(cx).value().to_string() == seed
+                && !v.session.submitting()
+                && v.session.review().is_pending()
+        });
+        if !unchanged {
+            return Err("AppKit shortcut changed the reply draft".into());
+        }
+    }
     Ok(json!(format!(
         "ok {}",
-        json!({"notified":notified, "sameTickKeys":keys.len()})
+        json!({"notified":notified, "sameTickKeys":keys.len(), "nativeShortcuts":2})
     )))
 }
 

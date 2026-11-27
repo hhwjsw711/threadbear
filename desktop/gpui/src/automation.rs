@@ -251,32 +251,6 @@ async fn run(
     if cmd["cmd"] == "convex" {
         return crate::web_panels::convex_command(app, cmd, cx).await;
     }
-    // `text` typed as a person's keys are, through AppKit, to whoever has the
-    // window's keyboard (`keyboard` in the dump): a page's view takes them
-    // from GPUI's. Out here, not in an update, as AppKit hands them straight
-    // to GPUI, which updates the window itself.
-    if cmd["cmd"] == "native-keys" {
-        // A frame first, as a person's keys come after the screen has caught
-        // up with their last one: a scripted window behind others draws only
-        // when asked, and it's a frame that places the pages.
-        cx.update_window(window, |_, window, cx| window.render_frame(cx))
-            .map_err(|e| e.to_string())?;
-        return crate::web_panels::send_keys(window, text(cmd, "text"), cx).map(|()| json!("ok"));
-    }
-    // A click at (`x`, `y`) in the window as AppKit hands a person's one on,
-    // so a page's view under it gets it as it would a real click: DevTools'
-    // clicks (`webPanel` `click`) skip AppKit's hit-testing and first-click
-    // rules, where the missed clicks in a panel were (16 Nov).
-    if cmd["cmd"] == "native-click" {
-        cx.update_window(window, |_, window, cx| window.render_frame(cx))
-            .map_err(|e| e.to_string())?;
-        let (x, y) = (
-            cmd["x"].as_f64().ok_or("native-click needs x")?,
-            cmd["y"].as_f64().ok_or("native-click needs y")?,
-        );
-        return crate::web_panels::send_click(window, x as f32, y as f32, cx)
-            .map(|said| json!(said));
-    }
     // The activity log (activity.rs), as the Swift app's `activity`: a press
     // or a key, then what today's file has, a moment later.
     if cmd["cmd"] == "activity" {
@@ -352,6 +326,41 @@ async fn run(
     } else {
         window
     };
+    // `text` typed as a person's keys are, through AppKit, to whoever has the
+    // window's keyboard (`keyboard` in the dump): a page's view takes them
+    // from GPUI's. Out here, not in an update, as AppKit hands them straight
+    // to GPUI, which updates the window itself.
+    if cmd["cmd"] == "native-shortcut" {
+        let code = cmd["code"]
+            .as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .ok_or("native-shortcut needs a key code")?;
+        let modifiers = cmd["modifiers"].as_u64().unwrap_or(0) as u32;
+        return crate::web_panels::send_shortcut(window, code, text(cmd, "text"), modifiers, cx)
+            .map(|()| json!("ok"));
+    }
+    if cmd["cmd"] == "native-keys" {
+        // A frame first, as a person's keys come after the screen has caught
+        // up with their last one: a scripted window behind others draws only
+        // when asked, and it's a frame that places the pages.
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .map_err(|e| e.to_string())?;
+        return crate::web_panels::send_keys(window, text(cmd, "text"), cx).map(|()| json!("ok"));
+    }
+    // A click at (`x`, `y`) in the window as AppKit hands a person's one on,
+    // so a page's view under it gets it as it would a real click: DevTools'
+    // clicks (`webPanel` `click`) skip AppKit's hit-testing and first-click
+    // rules, where the missed clicks in a panel were (16 Nov).
+    if cmd["cmd"] == "native-click" {
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .map_err(|e| e.to_string())?;
+        let (x, y) = (
+            cmd["x"].as_f64().ok_or("native-click needs x")?,
+            cmd["y"].as_f64().ok_or("native-click needs y")?,
+        );
+        return crate::web_panels::send_click(window, x as f32, y as f32, cx)
+            .map(|said| json!(said));
+    }
     if cmd["cmd"] == "screenshot" {
         let path = std::path::PathBuf::from(text(cmd, "path"));
         // A covered window draws only when asked, so a move started by the

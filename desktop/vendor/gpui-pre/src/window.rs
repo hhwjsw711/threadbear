@@ -5816,6 +5816,7 @@ impl Window {
         }
 
         if let Some(input) = keystroke.key_char
+            && self.focused_text_input == self.focus
             && let Some(mut input_handler) = self.platform_window.take_input_handler()
         {
             input_handler.dispatch_input(&input, self, cx);
@@ -6283,8 +6284,8 @@ impl Window {
             self.draw(cx).clear(cx);
         }
 
-        let node_id = self.focus_node_id_in_rendered_frame(self.focus);
-        let dispatch_path = self.rendered_frame.dispatch_tree.dispatch_path(node_id);
+        let mut node_id = self.focus_node_id_in_rendered_frame(self.focus);
+        let mut dispatch_path = self.rendered_frame.dispatch_tree.dispatch_path(node_id);
 
         let mut keystroke: Option<Keystroke> = None;
 
@@ -6346,12 +6347,19 @@ impl Window {
         let input_preference = self.input_preference(event, cx);
 
         cx.propagate_event = true;
+        let focus_before_interception = self.focus;
         self.dispatch_keystroke_interceptors(
             &keystroke,
             input_preference,
             self.context_stack(),
             cx,
         );
+        // An interceptor can hand keys to a native child while releasing a
+        // GPUI text box. Route this same event through the new focus path.
+        if self.focus != focus_before_interception {
+            node_id = self.focus_node_id_in_rendered_frame(self.focus);
+            dispatch_path = self.rendered_frame.dispatch_tree.dispatch_path(node_id);
+        }
         if !cx.propagate_event {
             self.finish_dispatch_key_event(
                 event,

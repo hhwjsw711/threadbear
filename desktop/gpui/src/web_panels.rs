@@ -127,8 +127,8 @@ pub(crate) fn init(cx: &mut App) {
     // ⌘C and the like while a page has the keyboard are the page's.
     cx.intercept_keystrokes(|event, window, cx| {
         // Native focus can change before a frame rebuilds GPUI's key tree.
-        let guarded = crate::review_window::guard_page_shortcut(&event.keystroke, window, cx);
-        if edit_key(&event.keystroke, window.window_handle(), cx) || guarded {
+        crate::review_window::guard_page_shortcut(&event.keystroke, window, cx);
+        if edit_key(&event.keystroke, window.window_handle(), cx) {
             cx.stop_propagation();
         }
     })
@@ -344,6 +344,27 @@ pub(crate) fn send_keys(
     // SAFETY: the content view of `window`, read just now in this task on the
     // main thread, with nothing awaited in between for it to close.
     unsafe { threadbear_web::send_keys(view as *mut c_void, text) };
+    Ok(())
+}
+
+/// AppKit shortcut delivery, outside a window borrow so key equivalents can
+/// reenter GPUI safely. Unlike the GPUI test helpers this forces no frame.
+pub(crate) fn send_shortcut(
+    window: AnyWindowHandle,
+    code: u16,
+    text: &str,
+    modifiers: u32,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let view = cx
+        .update_window(window, |_, window, _| {
+            native_view(window).map(|v| v as usize)
+        })
+        .map_err(|e| e.to_string())?
+        .ok_or("the window has no view")?;
+    // SAFETY: this open window's view was read immediately above on the
+    // main thread; nothing awaits between reading it and sending the event.
+    unsafe { threadbear_web::send_shortcut(view as *mut c_void, code, text, modifiers) };
     Ok(())
 }
 
