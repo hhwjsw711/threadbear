@@ -817,6 +817,7 @@ mod selection_tests {
     // took the keyboard, so whatever was picked from the Mac's went nowhere.
     #[gpui_kit::test]
     fn a_right_click_in_a_text_field_opens_no_outer_menu(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestEventExt as _;
         use gpui_kit::{point, px, size, Bounds, MouseButton, Point, WindowBounds};
         cx.update(gpui_kit::init);
         let panel_menus = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -829,22 +830,18 @@ mod selection_tests {
                 })),
                 ..Default::default()
             };
-            let mut panel = None;
-            let handle = gpui_kit::open_window(options, cx, |window, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
                 let fields = cx.new(|cx| Fields {
                     input: cx.new(|cx| InputState::new(window, cx)),
                     textarea: cx.new(|cx| TextareaState::new(window, cx)),
                     editor: cx.new(|cx| EditorState::new(window, cx)),
                 });
-                let view = cx.new(|_| Panel {
+                cx.new(|_| Panel {
                     fields,
                     panel_menus: counted,
-                });
-                panel = Some(view.clone());
-                view
+                })
             })
-            .unwrap();
-            (handle, panel.unwrap())
+            .unwrap()
         });
         let places = cx
             .update_window(handle, |_, window, cx| {
