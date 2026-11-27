@@ -61,6 +61,29 @@ Built 28 Oct 2026 (thread 66935d23).
   from `runner.status`'s `sync.url` (`.convex.cloud` → `.convex.site`), so
   it only shows while sync is on.
 
+## Hosted artifact prototype
+
+On a development deployment with the prototype, run these from the repo
+root with the deployment selected in `.env.local`:
+
+```sh
+node scripts/artifact.mjs publish trip.html "Trip plan"
+node scripts/artifact.mjs update <slug> trip.html "Trip plan"
+node scripts/artifact.mjs unpublish <slug>
+```
+
+Publish prints a standalone link anyone can open. It sends the HTML file
+and title to Convex through the signed-in Convex CLI. Opening or editing the
+local file leaves the published version alone. Update keeps the link, and
+unpublish takes it down. The slug is the last part of the published URL.
+
+The prototype takes one UTF-8 HTML file up to 64 KiB. Inline styles and
+embedded images work. The browser runs the page in a sandbox with scripts,
+forms and external resources blocked. The public route is
+`GET /a/<slug>`; it returns 404 for an unknown or unpublished link and
+its responses are never cached. There is no Threadbear sign-in on that
+page. Only deployment admins can publish, update or unpublish.
+
 ## Sharing
 
 A thread can be shared by link (docs/protocol/runners.md, "Sharing"): from the

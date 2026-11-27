@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as artifactPage from "../artifactPage.js";
+import type * as artifacts from "../artifacts.js";
 import type * as boxHooks from "../boxHooks.js";
 import type * as boxImage from "../boxImage.js";
 import type * as boxMachine from "../boxMachine.js";
@@ -60,6 +62,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  artifactPage: typeof artifactPage;
+  artifacts: typeof artifacts;
   boxHooks: typeof boxHooks;
   boxImage: typeof boxImage;
   boxMachine: typeof boxMachine;

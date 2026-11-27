@@ -16,8 +16,18 @@ import { takeUpload } from './uploads';
 import { safeDecode, withCard } from './shareCard';
 import { promoteRoute } from './boxImage';
 import { cappedJson } from './httpJson';
+import { ARTIFACT_PATH, artifactPage, artifactSlug } from './artifactPage';
 
 const http = httpRouter();
+
+http.route({
+  pathPrefix: ARTIFACT_PATH,
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const slug = artifactSlug(new URL(request.url).pathname);
+    return artifactPage(slug ? await ctx.runQuery(internal.artifacts.readPublished, { slug }) : null);
+  }),
+});
 
 // No other site may put these pages in a frame. Framed out of sight, a
 // thread's link and then the Open button of the website's own "Open this in

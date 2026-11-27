@@ -262,6 +262,12 @@ export const moveStates = ['asking', 'ready', 'packing', 'unpacking', 'claimed',
 // Named as well as the default, so the state machines (machines.ts) can be
 // defined against it.
 export const appSchema = defineSchema({
+  // One current version of each explicitly published HTML file.
+  artifacts: defineTable({
+    slug: v.string(),
+    title: v.string(),
+    html: v.string(),
+  }).index('by_slug', ['slug']),
   // One row per runner (the Mac, Tinker Desk later), written every minute.
   // A phone treats one not seen for 3 minutes as offline.
   runners: defineTable({
