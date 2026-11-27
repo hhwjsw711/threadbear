@@ -953,7 +953,7 @@ that isn't archived):
 | `waitState` | Section | What it means |
 |---|---|---|
 | `working` | Running | A turn is running or starting. |
-| `job` | Running | No turn, a background job or (for a project coordinator) a helper still going, and nothing asked of Mike that it isn't still working on. A coordinator whose helper works never reads as `scheduled`, so it isn't said to hibernate with "nothing needs you" while the helper builds what it promised. |
+| `job` | Running | No turn, a background job or (for a project coordinator) a helper still going, and nothing asked of Mike that it isn't still working on. |
 | `onThreads` | Running | Its agent put it away to hear back from other threads (`waitingOn`). |
 | `landing` | Running | Its agent put it away until something it watches for, with commits not on main. |
 | `appRestart` | Running | Its agent put it away until the app restarts onto what it landed (`awaitingAppRestart`). |
@@ -963,7 +963,7 @@ that isn't archived):
 | `needsYou` | Inbox | The last turn asked him for something he hasn't done, read or not, or ended without saying and he hasn't read it, or it's marked unread. |
 | `limit` | Inbox | Out of usage (`waitingForRoom`); carries on at the reset, but counts as wanting him. |
 | `done` | Inbox | Finished with nothing for him. |
-| `scheduled` | Hibernating | Idle, nothing for him, and a schedule will message it. |
+| `scheduled` | Hibernating | Idle, nothing for him, and a schedule will message it (never an active project coordinator, which stays awake as `done`). |
 | `hibernating` | Hibernating | Snoozed, and not waiting on its own work. |
 | `archived` | Archived | Archived. |
 

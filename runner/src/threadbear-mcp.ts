@@ -1777,6 +1777,17 @@ export function buildThreadbearTools(
     throw new Error(ALREADY_ENDED);
   };
 
+  // Active project coordinators stay awake: refuse archive, snooze and
+  // waitFor in end_turn so the agent sees why and ends normally instead.
+  const checkCoordinatorStayAwake = (input: { archive?: unknown; snooze?: unknown; waitFor?: unknown }): void => {
+    if (!opts.coordinators?.()?.isActive(selfId)) return;
+    const hasSnooze = typeof input.snooze === 'string' && input.snooze.trim().length > 0;
+    const hasWaitFor = Array.isArray(input.waitFor) && input.waitFor.length > 0;
+    if (input.archive === true || hasSnooze || hasWaitFor) {
+      throw new Error('Not ended: an active project coordinator stays awake and cannot be archived or hibernated. Leave archive, snooze and waitFor out of end_turn (use coordinator action update with wakeAt for a timed follow-up).');
+    }
+  };
+
   // snooze is refused before anything else, so the agent can say it
   // again: "off" means nothing here, and words past what Hibernate in
   // words takes would fail once the turn was over, out of its sight.
@@ -1908,6 +1919,7 @@ export function buildThreadbearTools(
         findings: findingsArg,
       },
       handle(sayingOpenCards(async (input) => {
+        checkCoordinatorStayAwake(input);
         checkSnooze(input.snooze);
         const parsed = needsFromTool(input);
         const needs = parsed?.needs ?? 'nothing';
@@ -2031,6 +2043,7 @@ export function buildThreadbearTools(
         findings: findingsArg,
       },
       handle(sayingOpenCards(async (args) => {
+        checkCoordinatorStayAwake(args);
         checkSnooze(args.snooze);
         await checkWaitFor(args.waitFor, needsFromTool(args)?.needs ?? 'nothing');
         // Archive wins over snooze in the runner, so only one is said.

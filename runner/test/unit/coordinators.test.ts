@@ -215,7 +215,8 @@ test('a coordinator with a helper still working reads as busy, not hibernating f
   assert.equal(c.helpersWorking(coordinator.threadId), 0);
   endsDone(antigravity.sessions.filter((s) => s.opts.threadId === coordinator.threadId).at(-1)!);
   await tick();
-  assert.equal(h.runner.get(coordinator.threadId).waitState, 'scheduled');
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'done', 'active coordinator stays awake even once idle with a schedule');
+  assert.equal(said(), 0, 'active coordinator never posts a Moved to Hibernating note');
   assert.equal(c.helpersWorking(started.helperId), 0, 'only a coordinator thread counts helpers');
   c.stop();
 });
@@ -2903,4 +2904,127 @@ test('Not yet, Wait and Postpone the launch remain decision options', async (t) 
   assert.equal(task.decision?.answer, 'Not yet');
   assert.equal(task.state, 'done');
   assert.equal(task.due, undefined);
+});
+
+test('an idle active coordinator with a booked schedule stays awake and emits no Moved to Hibernating note, until paused (Omi, 26 Nov)', async (t) => {
+  const { h, c, project, antigravity } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'antigravity-main', model: 'gemini-4-neon' });
+  await tick();
+  const schedule: Schedule = { id: 's1', title: 'Omi DiCoW first-day check (today)', text: 'check', whenText: 'today', threadId: coordinator.threadId, nextRunAt: '2099-01-01T00:00:00Z' } as Schedule;
+  h.runner.schedulesFor = () => [schedule];
+
+  const endsDone = (s: (typeof antigravity.sessions)[number]) => {
+    s.out({ kind: 'event', event: { type: 'tool.call', itemId: `e${Math.random()}`, name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+    s.result('completed');
+  };
+  endsDone(antigravity.sessions.at(-1)!);
+  await tick();
+  await tick();
+
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'done', 'active coordinator stays awake even with a schedule booked');
+  h.runner.publish({ method: 'schedules.updated', params: { schedules: [schedule] } });
+  await tick();
+  await tick();
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'done');
+  const notes = () => h.runner.events(coordinator.threadId, { limit: 10_000 }).events.filter((e) => e.type === 'system.note').map((e) => e.text);
+  assert.equal(notes().filter((text) => text.startsWith('Moved to Hibernating')).length, 0);
+
+  // Pausing returns it to normal scheduled behaviour.
+  await c.pause(project.id, true);
+  await tick();
+  await tick();
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'scheduled');
+
+  // Resuming wakes it without falsely claiming the schedule disappeared, and ending again keeps it awake.
+  await c.pause(project.id, false);
+  await tick();
+  await tick();
+  assert.equal(notes().filter((text) => text.includes('no schedule is booked')).length, 0);
+  endsDone(antigravity.sessions.filter((s) => s.opts.threadId === coordinator.threadId).at(-1)!);
+  await tick();
+  await tick();
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'done');
+  assert.equal(notes().filter((text) => text.startsWith('Moved to Hibernating')).length, 1, 'only the paused interval emitted a hibernating note');
+});
+
+test('an active coordinator cannot be hibernated or archived via end_turn or hibernateWhen, while a paused one can', async (t) => {
+  const { h, c, project, claude } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  const { thread: other } = h.runner.create({ text: 'Side task', accountId: 'claude-3' });
+  await tick();
+
+  for (const oneReply of [true, false]) {
+    const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, {
+      coordinators: () => c,
+      provider: 'codex',
+      oneReply: () => oneReply,
+      plainCardNote: false,
+    }).find((item) => item.name === 'end_turn')!;
+    const call = (input: Record<string, unknown>) => tool.handler(input as never, {});
+    const text = (res: Awaited<ReturnType<typeof call>>) => res.content.find((part) => part.type === 'text')?.text ?? '';
+
+    for (const badInput of [
+      { needs: 'nothing', snooze: '2h' },
+      { needs: 'nothing', snooze: 'when the phone arrives' },
+      { needs: 'nothing', waitFor: [other.id] },
+      { needs: 'nothing', archive: true },
+    ]) {
+      const res = await call(badInput);
+      assert.equal(res.isError, true, `oneReply=${oneReply} input=${JSON.stringify(badInput)}`);
+      assert.match(text(res), /active project coordinator.*stays awake/i);
+    }
+
+    const ok = await call({ needs: 'nothing', ...(oneReply ? { headline: 'All set' } : { summary: ['All set'] }) });
+    assert.ok(!ok.isError, `plain end_turn accepted (oneReply=${oneReply}): ${text(ok)}`);
+  }
+
+  // hibernateWhen refuses an active coordinator too (both time and words).
+  await assert.rejects(h.runner.hibernateWhen({ threadId: coordinator.threadId, said: 'tomorrow' }), /Pause/);
+  await assert.rejects(h.runner.hibernateWhen({ threadId: coordinator.threadId, said: 'when the phone arrives' }), /Pause/);
+
+  // Defense in depth: even if a turn completes with snooze/waitFor/archive on its end_turn event,
+  // finishTurn does not throw, does not hibernate/archive it, and emits no bogus note.
+  const runTurnWith = async (input: Record<string, unknown>) => {
+    const s = claude.sessions.filter((x) => x.opts.threadId === coordinator.threadId).at(-1)!;
+    s.out({ kind: 'event', event: { type: 'tool.call', itemId: `e-${Math.random()}`, name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input } });
+    s.result('completed');
+    await tick();
+    await tick();
+  };
+  await runTurnWith({ needs: 'nothing', snooze: '2h' });
+  assert.equal(h.runner.get(coordinator.threadId).snoozedUntil, undefined);
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'done');
+
+  h.runner.send(coordinator.threadId, 'check again', []);
+  await tick();
+  await runTurnWith({ needs: 'nothing', waitFor: [other.id] });
+  assert.equal(h.runner.get(coordinator.threadId).snoozedUntil, undefined);
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'done');
+
+  h.runner.send(coordinator.threadId, 'check once more', []);
+  await tick();
+  await runTurnWith({ needs: 'nothing', archive: true });
+  assert.equal(h.runner.get(coordinator.threadId).archivedAt, undefined);
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'done');
+  const notes = h.runner.events(coordinator.threadId, { limit: 10_000 }).events.filter((e) => e.type === 'system.note').map((e) => e.text);
+  assert.equal(notes.some((n) => n.startsWith('Hibernating') || n.startsWith('Archived')), false);
+
+  // Once paused, end_turn, hibernateWhen and update all allow snoozing/archiving as normal.
+  await c.pause(project.id, true);
+  await tick();
+  const pausedEndTurn = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, {
+    coordinators: () => c,
+    provider: 'codex',
+    oneReply: () => true,
+    plainCardNote: false,
+  }).find((item) => item.name === 'end_turn')!;
+  const pausedSnooze = await pausedEndTurn.handler({ needs: 'nothing', snooze: '2h', headline: 'Paused' } as never, {});
+  assert.ok(!pausedSnooze.isError, JSON.stringify(pausedSnooze));
+  const pausedArchive = await pausedEndTurn.handler({ needs: 'nothing', archive: true, headline: 'Paused' } as never, {});
+  assert.ok(!pausedArchive.isError, JSON.stringify(pausedArchive));
+  await h.runner.hibernateWhen({ threadId: coordinator.threadId, said: 'tomorrow' });
+  assert.ok(h.runner.get(coordinator.threadId).snoozedUntil);
+  assert.equal(h.runner.get(coordinator.threadId).waitState, 'hibernating');
 });

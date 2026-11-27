@@ -502,6 +502,12 @@ export class Coordinators {
     return view(row);
   }
   forThread(threadId: string): Coordinator | undefined { return [...this.rows.values()].find((r) => r.threadId === threadId); }
+  // Whether this thread is an active project coordinator: stays awake rather
+  // than hibernating for a schedule, and refuses snooze/archive. Checks the
+  // registry's persisted state directly (ignoring `this.stopped` and
+  // `enabled()`), so neither a handover nor a disabled-experiment restart
+  // weakens the protection (turning the experiment off live pauses rows first).
+  isActive(threadId: string): boolean { return this.forThread(threadId)?.state === 'active'; }
   // How many of this coordinator thread's helpers are still at work, for its
   // wait state (wait-state.ts): 0 for any other thread.
   // One a restart cut off, which the next runner carries on, counts too:

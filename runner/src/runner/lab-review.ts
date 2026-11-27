@@ -84,7 +84,7 @@ export const labReviewPart = {
   // none to do.
   startLabReview(this: Runner, st: ThreadState, turnId: string, reply: string | undefined, upTo?: number): string[] | undefined {
     const { rec } = st;
-    if (rec.reviewOf || rec.archivedAt) return undefined;
+    if (rec.reviewOf || rec.archivedAt || this.activeCoordinator(rec.id)) return undefined;
     if (!this.cfg.labReview) return undefined;
     if ((rec.labReviews ?? 0) >= LAB_REVIEW_ROUNDS) return undefined;
     const change = this.turnChange(st, turnId, upTo);

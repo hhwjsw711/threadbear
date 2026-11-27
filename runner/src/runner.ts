@@ -1666,7 +1666,7 @@ export class Runner {
   // as any summary made meanwhile would already have the new state.
   recheckWaitStates(): void {
     const now = new Set<string>();
-    for (const st of this.threads.values()) if (this.scheduled(st.rec.id)) now.add(st.rec.id);
+    for (const st of this.threads.values()) if (this.hibernatesForSchedule(st.rec.id)) now.add(st.rec.id);
     // The first time, every thread a summary has said is scheduled counts
     // as before, so the first schedule removed after a start is sent too.
     // A thread adopted since (a handover) was never in the last list: what
@@ -1692,6 +1692,16 @@ export class Runner {
 
   scheduled(threadId: string): boolean {
     return this.nextSchedule(threadId) !== undefined;
+  }
+
+  activeCoordinator(threadId: string): boolean {
+    return Boolean(this.coordinators?.isActive(threadId));
+  }
+
+  // Whether a booked schedule moves this thread under Hibernating: active
+  // project coordinators always stay awake (Mike, 26 Nov 2026).
+  hibernatesForSchedule(threadId: string): boolean {
+    return this.scheduled(threadId) && !this.activeCoordinator(threadId);
   }
 
   // The line for a move into or out of Hibernating for a schedule, once
@@ -1721,7 +1731,7 @@ export class Runner {
     // its line, for the moment before the turn began (Gemini's review, 26 Nov
     // 2026).
     const starting = st.rec.queue.length > 0 && !st.rt.turn;
-    return waitStateOf(sum, { now: this.clock.now(), scheduled: this.scheduled(st.rec.id) && !starting, helpers: this.coordinators?.helpersWorking(st.rec.id) ?? 0 });
+    return waitStateOf(sum, { now: this.clock.now(), scheduled: this.hibernatesForSchedule(st.rec.id) && !starting, helpers: this.coordinators?.helpersWorking(st.rec.id) ?? 0 });
   }
 
   // Turn ends and folder moves, for the librarian.
@@ -3489,17 +3499,20 @@ export class Runner {
     // for later: a job ending opens a turn that never shows it, so it could
     // put the thread away past "keep this open" (Codex review).
     const away = outcome === 'completed' && said?.needs === 'nothing' && rec.queue.every(q => isAutomaticInput(q) && q.beforeMessage) && !rt.approvals.size && !rec.interruptedMessages?.length;
-    const archive = away && archiveFromTool(turn.endTurn);
+    // Active project coordinators stay awake (end_turn refuses archive, snooze
+    // and waitFor too, but a refused first call can still sit on turn.endTurn).
+    const activeCoordinator = this.activeCoordinator(rec.id);
+    const archive = !activeCoordinator && away && archiveFromTool(turn.endTurn);
     // Hibernating likewise (end_turn's snooze). Archive wins if it asked for both.
-    const snooze = away && !archive ? snoozeFromTool(turn.endTurn) : undefined;
+    const snooze = !activeCoordinator && away && !archive ? snoozeFromTool(turn.endTurn) : undefined;
     // Waiting on other threads (end_turn's waitFor), with snooze as the
     // latest it wakes.
-    const waitFor = away && !archive ? waitForFromTool(turn.endTurn) : undefined;
+    const waitFor = !activeCoordinator && away && !archive ? waitForFromTool(turn.endTurn) : undefined;
     // Done for now but waiting to hear the app restarted onto its change
     // (wait_for_app_restart): it hibernates until that message wakes it,
     // a day at most as the request lapses then, rather than sitting in
     // Mike's inbox as done when it isn't (18 Nov 2026, 41324bd6).
-    const forApp = away && !archive && !snooze && !waitFor && !!this.awaitingAppRestart?.(rec.id);
+    const forApp = !activeCoordinator && away && !archive && !snooze && !waitFor && !!this.awaitingAppRestart?.(rec.id);
     // Done, with nothing left running: any thread waiting on this one hears.
     // Not if it put itself away to wait too, as it hasn't finished. An auto
     // turn counts (the one after a sub-agent or background job ends is
@@ -3517,7 +3530,7 @@ export class Runner {
     const reviewEnded = !turn.local && outcome === 'completed' && this.awaitedReview(rec) &&
       !waitForFromTool(turn.endTurn) && !snoozeFromTool(turn.endTurn);
     const done = (reviewEnded || (outcome === 'completed' && said?.needs === 'nothing' && !archive && !forApp &&
-      !snoozeFromTool(turn.endTurn) && !waitForFromTool(turn.endTurn))) && !rec.queue.length &&
+      (activeCoordinator || (!snoozeFromTool(turn.endTurn) && !waitForFromTool(turn.endTurn))))) && !rec.queue.length &&
       !rec.subagents?.some((a) => a.status === 'running') && !rt.tasks.length && !rt.approvals.size;
     // A job that ended mid-turn or just before: the CLI may open a turn to
     // read its result, so the finish waits for the wake grace to pass with
@@ -3605,7 +3618,7 @@ export class Runner {
     if (rec.unarchivedBySchedule) {
       const by = rec.unarchivedBySchedule.by;
       const goingOn = !!limitHit || !!netLost || movedOff || (outcome === 'completed' && said?.needs === 'nothing');
-      if (!goingOn || rec.archivedAt) this.park(st, { kind: 'scheduleRunEnded' });
+      if (!goingOn || rec.archivedAt || activeCoordinator) this.park(st, { kind: 'scheduleRunEnded' });
       else if (!rec.queue.length && !rt.turn && finished && !review && !rec.labReviewOwed && !this.stopping) {
         this.park(st, { kind: 'scheduleRunEnded' });
         this.emit(st, { type: 'system.note', text: 'Back in the archive: the scheduled run ended with nothing for you.' });
@@ -3726,8 +3739,10 @@ export class Runner {
     if (rec.unarchivedBySchedule) {
       const by = rec.unarchivedBySchedule.by;
       this.park(st, { kind: 'scheduleRunEnded' });
-      this.emit(st, { type: 'system.note', text: 'Back in the archive: the scheduled run ended with nothing for you.' });
-      this.update({ threadId: rec.id, archived: true, archivedBy: by ?? 'threadbear', noted: true });
+      if (!this.activeCoordinator(rec.id)) {
+        this.emit(st, { type: 'system.note', text: 'Back in the archive: the scheduled run ended with nothing for you.' });
+        this.update({ threadId: rec.id, archived: true, archivedBy: by ?? 'threadbear', noted: true });
+      }
       this.markDirty(st);
       return;
     }
@@ -4185,7 +4200,7 @@ export class Runner {
   }): { thread: ThreadSummary } {
     const st = this.mustGet(params.threadId);
     const { rec, rt } = st;
-    if (this.coordinators?.forThread(rec.id)?.state === 'active' && (params.archived || params.snoozedUntil)) {
+    if (this.activeCoordinator(rec.id) && (params.archived || params.snoozedUntil)) {
       throw new RpcError(ErrorCode.badParams, 'Pause this project’s coordinator before archiving or hibernating its conversation.');
     }
     // Checked before anything changes, so a refused rename changes nothing else either.
@@ -4634,7 +4649,7 @@ export class Runner {
   // bring the thread back: the same test as its wait state's, so the two
   // agree, and schedules.updated looks at it again (recheckWaitStates).
   quietWakeShows(rec: ThreadRecord): boolean {
-    return Boolean(rec.quietWake) && this.bucket(rec) === 'inbox' && !this.scheduled(rec.id);
+    return Boolean(rec.quietWake) && this.bucket(rec) === 'inbox' && !this.hibernatesForSchedule(rec.id);
   }
 
   saidNothing(rec: ThreadRecord): boolean {

@@ -46,6 +46,9 @@ export const hibernationPart = {
   // something to happen (WakeWhen.by).
   async hibernateWhen(this: Runner, params: { threadId: string; said: string; by?: 'agent'; askedBy?: Authority }): Promise<{ thread: ThreadSummary; until?: string; topic?: string; why: string }> {
     const st = this.mustGet(params.threadId);
+    if (this.activeCoordinator(st.rec.id)) {
+      throw new RpcError(ErrorCode.badParams, 'Pause this project’s coordinator before archiving or hibernating its conversation.');
+    }
     const said = params.said.trim();
     if (!said) throw new RpcError(ErrorCode.badParams, 'Say when it should wake.');
     if (said.length > SAID_MAX) throw new RpcError(ErrorCode.badParams, `That's more than ${SAID_MAX} characters.`);
@@ -782,7 +785,7 @@ export const hibernationPart = {
     const quiet = agentSnooze && !check && this.quietWake(st);
     // Starting "Woke up" is what gives it the bear in the app (RowContent.isWakeNote).
     // One staying under Hibernating gets the line for that instead (sayScheduled).
-    if (!(quiet && this.scheduled(rec.id))) this.emit(st, { type: 'system.note', text });
+    if (!(quiet && this.hibernatesForSchedule(rec.id))) this.emit(st, { type: 'system.note', text });
     // Already drawn under Hibernating for its schedule (its time passed
     // while a start held the wake), so no move will say it: said here.
     else if (st.rt.waitState === 'scheduled') queueMicrotask(() => this.sayScheduled(st, true));

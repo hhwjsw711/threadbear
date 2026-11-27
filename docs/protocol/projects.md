@@ -950,7 +950,7 @@ Queued coordinator updates survive runner recovery. An update already started
 has a durable receipt; a still-queued update remains queued rather than becoming
 an unsent-message note. Runner handover ends coordinator sessions and records
 unfinished work before the replacement takes over the registry. A project with
-an active coordinator cannot be deleted or merged: pause it first. Removal then
+an active coordinator cannot be deleted or merged: pause it first. An active coordinator also stays awake (never moves to `scheduled` for a booked schedule, and refuses `snooze`, `waitFor`, `archive` and `threads.hibernateWhen` until paused). Removal then
 archives its conversation and execution records before removing the identity.
 
 This version watches completed project threads and literal interest keywords.
