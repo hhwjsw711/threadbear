@@ -448,11 +448,17 @@ async function agyPrompt(id, p, s, word, rest) {
     send({ id, result: { stopReason: 'end_turn' } });
     return;
   }
-  else if (['quota_fail', 'quota_recovers', 'quota_question', 'quota_pending_question', 'quota_parallel_tool', 'quota_prompt_error', 'rate_limit', 'retry_delay', 'executor_429'].includes(word)) {
+  else if (word.startsWith('quota_') || ['rate_limit', 'retry_delay', 'executor_429'].includes(word)) {
     const askQuestion = () => ask('elicitation/create', { mode: 'form', sessionId: p.sessionId, message: 'Finish the test prompt?' });
-    const pendingQuestion = word === 'quota_pending_question' ? askQuestion() : undefined;
-    const parallelTool = word === 'quota_parallel_tool' ? 'parallel-command' : undefined;
-    if (parallelTool) update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId: parallelTool, title: 'parallel work', kind: 'execute', status: 'in_progress' });
+    const allow = [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }];
+    const edit = { kind: 'edit', title: 'Edit before quota', locations: [{ path: path.join(where, 'old.txt') }] };
+    const oldEdit = word === 'quota_existing_edit'
+      ? ask('session/request_permission', { sessionId: p.sessionId, toolCall: { ...edit, toolCallId: 'old-edit-approval', status: 'pending' }, options: allow })
+      : undefined;
+    const pendingQuestion = word.startsWith('quota_pending_') ? askQuestion() : undefined;
+    const startsAfterAnswer = word === 'quota_pending_tool';
+    const parallelTool = word.startsWith('quota_parallel_') || startsAfterAnswer ? 'parallel-command' : undefined;
+    if (parallelTool) update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId: parallelTool, title: 'parallel work', kind: 'execute', status: startsAfterAnswer ? 'pending' : 'in_progress' });
     const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
     update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'run', kind: 'execute', status: 'in_progress', rawInput: {} });
     const reason = {
@@ -461,18 +467,39 @@ async function agyPrompt(id, p, s, word, rest) {
       executor_429: ', Message: Too many requests., Status: RESOURCE_EXHAUSTED',
     }[word] ?? ', Message: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h32m53s., Status: RESOURCE_EXHAUSTED';
     const text = `Agent execution terminated due to error. ("agent executor error: Error 429${reason}")`;
+    const split = word === 'quota_fail' || word === 'executor_429';
     update(p.sessionId, {
       sessionUpdate: 'tool_call_update',
       toolCallId,
-      ...(word === 'quota_fail' ? {} : { status: 'failed' }),
+      ...(split ? {} : { status: 'failed' }),
       content: [{ type: 'content', content: { type: 'text', text } }],
     });
-    if (word === 'quota_fail') {
+    if (split) {
       update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed' });
       return; // leaves session/prompt hanging, as agy_acp_server does
     }
-    if (word === 'executor_429') return;
+    if (word === 'quota_end_turn') return send({ id, result: { stopReason: 'end_turn' } });
     if (word === 'quota_prompt_error') return send({ id, error: { code: -32603, message: 'Context length exceeded' } });
+    if (word === 'quota_new_permission') {
+      const recovery = await ask('session/request_permission', {
+        sessionId: p.sessionId,
+        toolCall: { toolCallId: 'recovery', title: 'New work', kind: 'execute', status: 'pending', rawInput: { CommandLine: 'pwd', Cwd: where } },
+        options: allow,
+      });
+      if (recovery.outcome?.outcome === 'selected') {
+        update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'recovery', status: 'in_progress' });
+        update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'recovery', status: 'completed' });
+      }
+      return send({ id, result: { stopReason: 'end_turn' } });
+    }
+    if (oldEdit) {
+      const approved = await oldEdit;
+      if (approved.outcome?.outcome === 'selected') {
+        update(p.sessionId, { sessionUpdate: 'tool_call', ...edit, toolCallId: 'old-edit-running', status: 'in_progress' });
+        update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'old-edit-running', status: 'completed' });
+      }
+      return send({ id, result: { stopReason: 'end_turn' } });
+    }
     if (word === 'quota_recovers') {
       await tool('read', 'Running view_file', { AbsolutePath: '/tmp/example' }, {}, () => log({ recovered: true }));
     }
@@ -481,11 +508,22 @@ async function agyPrompt(id, p, s, word, rest) {
     } else {
       if (pendingQuestion) {
         await pendingQuestion;
+        if (startsAfterAnswer) update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: parallelTool, status: 'in_progress' });
         update(p.sessionId, { sessionUpdate: 'usage_update', used: 42 });
+        if (word === 'quota_pending_hangs') return;
       }
       // Let the test advance its clock without sending the client another frame.
       await new Promise((resolve) => pausedPrompts.set(p.sessionId, resolve));
-      if (parallelTool) update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: parallelTool, status: 'completed' });
+      if (word === 'quota_exit') process.exit(1);
+      if (parallelTool) {
+        const failed = ['quota_parallel_failure', 'quota_parallel_retry'].includes(word);
+        const rawOutput = {
+          quota_parallel_failure: 'command failed',
+          quota_parallel_retry: 'Agent execution terminated due to error. ("agent executor error: Error 429: RESOURCE_EXHAUSTED: Please retry in 1.5s.")',
+        }[word] ?? 'command completed';
+        update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: parallelTool, status: failed ? 'failed' : 'completed', rawOutput });
+        if (word !== 'quota_parallel_tool') return;
+      }
     }
   }
   update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'done' } });

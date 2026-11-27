@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { AcpAdapter, AcpSession, ANTIGRAVITY_QUOTA_GRACE_MS, EDIT_RULE, LIMITS_POLL_MS, modelChoices } from '../../src/adapters/acp/adapter.ts';
+import { AcpAdapter, AcpSession, ANTIGRAVITY_QUOTA_GRACE_MS, ANTIGRAVITY_QUOTA_TOOL_GRACE_MS, EDIT_RULE, LIMITS_POLL_MS, modelChoices } from '../../src/adapters/acp/adapter.ts';
 import { ACP_AGENTS, acpAccounts, antigravityInput, folderPlugins, isCursorBinary, isGoogleSigned, opencodeEnv } from '../../src/adapters/acp/agents.ts';
 import type { AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
@@ -2044,13 +2044,14 @@ test('Antigravity: completed tool output with error words and assistant explanat
   assert.equal(res[0].outcome, 'completed');
 });
 
-async function quotaBeforeStatus() {
+async function quotaFailure(scenario = 'quota_fail', o: Parameters<typeof agy>[0] = {}) {
   const failedTool = Promise.withResolvers<void>();
-  const r = agy({ mode: 'full', onOutput: (out) => {
+  const r = agy({ mode: 'full', ...o, onOutput: (out) => {
+    o.onOutput?.(out);
     if (out.kind === 'event' && out.event.type === 'tool.result' && !out.event.ok) failedTool.resolve();
   } });
   const s = r.start();
-  s.send({ id: 'turn-quota', text: 'quota_fail', images: [] });
+  s.send({ id: 'turn-quota', text: scenario, images: [] });
   const exit = r.exited();
   await Promise.race([failedTool.promise, exit]);
   assert.equal(r.exitError(), null, 'the prompt gets a chance to return');
@@ -2059,7 +2060,7 @@ async function quotaBeforeStatus() {
 
 test('Antigravity: a quota diagnostic sent before the failed tool status still ends an unanswered prompt', { timeout: 5000 }, async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { r, exit } = await quotaBeforeStatus();
+  const { r, exit } = await quotaFailure();
   t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
   await exit;
   const err = r.exitError();
@@ -2069,7 +2070,7 @@ test('Antigravity: a quota diagnostic sent before the failed tool status still e
 
 test('Antigravity: Stop during an unanswered quota failure exits without a usage error', { timeout: 5000 }, async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { r, s, exit } = await quotaBeforeStatus();
+  const { r, s, exit } = await quotaFailure();
   await s.interrupt();
   t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
   await exit;
@@ -2085,11 +2086,105 @@ test('Antigravity: a specific prompt error takes precedence over a quota-looking
   assert.equal(result?.errorKind, undefined);
 });
 
-test('Antigravity: an executor 429 without an individual quota or retry diagnostic still ends the session', { timeout: 5000 }, async () => {
+test('Antigravity: end_turn without recovery after quota exhaustion still reports a usage limit', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'full' });
+  await turn(r, r.start(), 'quota_end_turn');
+  const result = results(r.outputs)[0];
+  assert.equal(result?.outcome, 'failed');
+  assert.equal(result?.errorKind, 'usageLimit');
+});
+
+test('Antigravity: a tool introduced by a permission request after quota can show recovery', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'ask' });
+  await turn(r, r.start(), 'quota_new_permission');
+  assert.equal(r.cards.length, 1);
+  assert.equal(results(r.outputs)[0]?.outcome, 'completed');
+});
+
+test('Antigravity: a new wire ID for an edit approved before quota does not show recovery', { timeout: 5000 }, async () => {
+  const r = agy({ mode: 'full' });
+  await turn(r, r.start(), 'quota_existing_edit');
+  assert.equal(results(r.outputs)[0]?.errorKind, 'usageLimit');
+});
+
+test('Antigravity: a spontaneous process exit preserves an unrecovered quota diagnostic', { timeout: 5000 }, async () => {
+  const { r, s, exit } = await quotaFailure('quota_exit');
+  s['proc'].notify('_test/finish_prompt', { sessionId: s['sessionId'] });
+  await exit;
+  assert.match(r.exitError()?.message ?? '', /is out of Gemini usage.*Individual quota reached/i);
+});
+
+test('Antigravity: an executor 429 split across frames still ends the session if it has no retry diagnostic', { timeout: 5000 }, async () => {
   const r = agy({ mode: 'full' });
   r.start().send({ id: 'executor-429', text: 'executor_429', images: [] });
   await r.exited();
   assert.match(r.exitError()?.message ?? '', /Too many requests/);
+});
+
+for (const status of ['success', 'failure', 'retry']) {
+  test(`Antigravity: a parallel tool's ${status} starts a fresh quota deadline`, { timeout: 5000 }, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const parallelDone = Promise.withResolvers<void>();
+    const { r, s, exit } = await quotaFailure(`quota_parallel_${status}`, { onOutput: (out) => {
+      if (out.kind === 'event' && out.event.type === 'tool.result' && out.event.itemId === 'parallel-command') parallelDone.resolve();
+    } });
+    t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+    assert.equal(r.exitError(), null);
+    s['proc'].notify('_test/finish_prompt', { sessionId: s['sessionId'] });
+    await Promise.race([parallelDone.promise, exit]);
+    t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS - 1);
+    assert.equal(r.exitError(), null);
+    t.mock.timers.tick(1);
+    await exit;
+    assert.match(r.exitError()?.message ?? '', /is out of Gemini usage/);
+  });
+}
+
+test('Antigravity: a tool left open indefinitely cannot hide a quota failure', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { r, exit } = await quotaFailure('quota_parallel_tool');
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_TOOL_GRACE_MS - 1);
+  assert.equal(r.exitError(), null);
+  t.mock.timers.tick(1);
+  await exit;
+  assert.match(r.exitError()?.message ?? '', /is out of Gemini usage/);
+});
+
+test('Antigravity: an answered question starts the quota deadline if the prompt is still open', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const answered = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<QuestionAnswer>();
+  const { r, exit } = await quotaFailure('quota_pending_hangs', { question: () => answer.promise, onOutput: (out) => {
+    if (out.kind === 'context' && out.contextTokens === 42) answered.resolve();
+  } });
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS * 2);
+  assert.equal(r.exitError(), null);
+  answer.resolve({ answers: null });
+  await Promise.race([answered.promise, exit]);
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  await exit;
+  assert.match(r.exitError()?.message ?? '', /is out of Gemini usage/);
+});
+
+test('Antigravity: a tool announced before the quota failure can start later without clearing it', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const started = Promise.withResolvers<void>();
+  const finished = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<QuestionAnswer>();
+  const { r, s, exit } = await quotaFailure('quota_pending_tool', { question: () => answer.promise, onOutput: (out) => {
+    if (out.kind !== 'event' || !('itemId' in out.event) || out.event.itemId !== 'parallel-command') return;
+    if (out.event.type === 'tool.call') started.resolve();
+    if (out.event.type === 'tool.result') finished.resolve();
+  } });
+  answer.resolve({ answers: null });
+  await Promise.race([started.promise, exit]);
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  assert.equal(r.exitError(), null);
+  s['proc'].notify('_test/finish_prompt', { sessionId: s['sessionId'] });
+  await Promise.race([finished.promise, exit]);
+  t.mock.timers.tick(ANTIGRAVITY_QUOTA_GRACE_MS);
+  await exit;
+  assert.match(r.exitError()?.message ?? '', /is out of Gemini usage/);
 });
 
 for (const [scenario, description, resumedTool] of [

@@ -403,6 +403,10 @@ const CLOSE_SESSION_MS = 5_000;
 const USAGE_TEXT_MAX = 64_000;
 // The bridge can finish the prompt or resume work after a failed tool.
 export const ANTIGRAVITY_QUOTA_GRACE_MS = 30_000;
+// Give a tool that was already running time to finish, with a ceiling if
+// the executor died and will never send another update for it.
+export const ANTIGRAVITY_QUOTA_TOOL_GRACE_MS = 30 * 60_000;
+const ANTIGRAVITY_EXECUTOR_ERROR = /^Agent execution terminated due to error\. \("agent executor error:/i;
 const ANTIGRAVITY_EXECUTOR_429 = /^Agent execution terminated due to error\. \("agent executor error: Error 429\b/i;
 const ANTIGRAVITY_INDIVIDUAL_QUOTA = /^, Message: Individual quota reached\./i;
 const ANTIGRAVITY_EXHAUSTED_STATUS = /, Status: RESOURCE_EXHAUSTED\b/;
@@ -418,7 +422,7 @@ type Turn = {
   dropped: string[];
   failure?: { message: string; httpStatus?: number };
   dispatched?: boolean;
-  quota?: { message: string; timer: NodeJS.Timeout };
+  quota?: { message: string; earlierTools: ReadonlySet<string>; deadline?: { kind: 'idle' | 'tools'; timer: NodeJS.Timeout } };
 };
 // cancelled: what a cancelled turn answers it with (a form's differs).
 type Pending = { abort: AbortController; options: PermissionOption[]; cancelled?: unknown };
@@ -505,7 +509,14 @@ export class AcpSession implements AgentSession {
     this.proc = new AcpProcess({ binary, args, env, cwd: opts.cwd, registry: deps.registry, log: deps.log, label: opts.threadId, timings: deps.timings, forms: true, lowered: true });
     this.proc.onNotification = (method, params) => this.notification(method, params);
     this.proc.onRequest = (id, method, params) => this.request(id, method, params);
-    this.proc.onExit = (err) => this.exited(err);
+    this.proc.onExit = (err) => {
+      const turn = this.turn;
+      if (err && turn?.quota && !turn.interrupted) {
+        this.exited(new Error(this.failureFor(turn).error ?? err.message, { cause: err }));
+      } else {
+        this.exited(err);
+      }
+    };
   }
 
   private addRules(rules: string[]): void {
@@ -748,7 +759,7 @@ export class AcpSession implements AgentSession {
     }
     const outputs = this.normalizer.handle(update);
     this.emit(outputs);
-    if (this.turn && this.deps.agent.provider === 'antigravity' && this.antigravity429(this.turn, outputs)) {
+    if (this.turn && this.deps.agent.provider === 'antigravity' && this.antigravityUpdate(this.turn, update, outputs)) {
       this.chunkBuffer = '';
       return;
     }
@@ -787,39 +798,52 @@ export class AcpSession implements AgentSession {
 
   // Antigravity can send the error text and the failed status in separate
   // updates. The normalizer joins them before it emits the failed result.
-  private antigravity429(turn: Turn, outputs: AdapterOutput[]): boolean {
+  private antigravityUpdate(turn: Turn, update: unknown, outputs: AdapterOutput[]): boolean {
     for (const output of outputs) {
       if (output.kind !== 'event' || output.event.type !== 'tool.result' || output.event.ok) continue;
       const message = output.event.text?.trimStart();
-      const prefix = message?.match(ANTIGRAVITY_EXECUTOR_429)?.[0];
-      if (!message || !prefix) continue;
+      if (!message || !ANTIGRAVITY_EXECUTOR_ERROR.test(message)) continue;
+      const prefix = message.match(ANTIGRAVITY_EXECUTOR_429)?.[0];
       // An executor 429 can also be a transient requests-per-minute limit.
       // Only the individual-quota diagnostic warrants a watchdog.
-      const individualQuota = ANTIGRAVITY_INDIVIDUAL_QUOTA.test(message.slice(prefix.length)) && ANTIGRAVITY_EXHAUSTED_STATUS.test(message);
-      if (!individualQuota) return ANTIGRAVITY_RATE_RETRY.test(message) && !outOfUsage({ message });
-      // A parallel tool can fail while the bridge is already waiting for an
-      // answer. Giving that answer must not expose an old prompt deadline.
-      if (!turn.quota && this.pending.size === 0) {
-        const timer = setTimeout(() => {
-          if (this.turn !== turn || this.state !== 'turn') return;
-          if (turn.interrupted) this.kill();
-          else if (this.pending.size || this.normalizer.hasRunningTools()) this.clearQuotaNotice(turn);
-          else this.failFatal(message, true);
-        }, ANTIGRAVITY_QUOTA_GRACE_MS);
-        timer.unref();
-        turn.quota = { message, timer };
+      if (prefix && ANTIGRAVITY_INDIVIDUAL_QUOTA.test(message.slice(prefix.length)) && ANTIGRAVITY_EXHAUSTED_STATUS.test(message)) {
+        turn.quota ??= { message, earlierTools: new Set(this.callFrames.keys()) };
+      } else if (!prefix || !ANTIGRAVITY_RATE_RETRY.test(message) || outOfUsage({ message })) {
+        this.failFatal(message);
       }
+      this.syncQuotaDeadline();
       return true;
     }
-    if (turn.quota && outputs.some((o) => o.kind === 'delta' || (o.kind === 'event' && (o.event.type === 'tool.call' || (o.event.type === 'tool.result' && o.event.ok))))) {
-      this.clearQuotaNotice(turn);
-    }
+    if (!turn.quota) return false;
+    // Antigravity can announce a tool in a permission request and then run
+    // it under another ID. Compare both IDs with what was known at quota time.
+    const toolId = isPlainObject(update) && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') && typeof update.toolCallId === 'string' ? update.toolCallId : undefined;
+    const oldTool = toolId !== undefined && (turn.quota.earlierTools.has(toolId) || turn.quota.earlierTools.has(this.normalizer.toolRowId(toolId) ?? toolId));
+    const newTool = toolId && !oldTool && isPlainObject(update) &&
+      (update.status === 'in_progress' || (update.sessionUpdate === 'tool_call' && update.status === undefined) ||
+        outputs.some((o) => o.kind === 'event' && o.event.type === 'tool.result' && o.event.ok));
+    if (newTool || outputs.some((o) => o.kind === 'delta')) {
+      clearTimeout(turn.quota.deadline?.timer);
+      turn.quota = undefined;
+    } else this.syncQuotaDeadline();
     return false;
   }
 
-  private clearQuotaNotice(turn: Turn): void {
-    clearTimeout(turn.quota?.timer);
-    turn.quota = undefined;
+  private syncQuotaDeadline(): void {
+    const turn = this.turn;
+    const quota = turn?.quota;
+    if (!turn || !quota || this.state !== 'turn') return;
+    if (turn.interrupted) return this.kill();
+    const kind = this.pending.size ? undefined : this.normalizer.hasRunningTools() ? 'tools' : 'idle';
+    if (kind === quota.deadline?.kind) return;
+    clearTimeout(quota.deadline?.timer);
+    quota.deadline = undefined;
+    if (!kind) return;
+    const timer = setTimeout(() => {
+      if (this.turn === turn && turn.quota === quota && this.state === 'turn') this.failFatal(quota.message, true);
+    }, kind === 'tools' ? ANTIGRAVITY_QUOTA_TOOL_GRACE_MS : ANTIGRAVITY_QUOTA_GRACE_MS);
+    timer.unref();
+    quota.deadline = { kind, timer };
   }
 
   // A fatal harness crash or agent execution termination leaves the agent's
@@ -1005,13 +1029,6 @@ export class AcpSession implements AgentSession {
   }
 
   private request(id: RequestId, method: string, params: unknown): void {
-    // A new user-facing request means the bridge is still working, even if
-    // it sends no more updates while it waits for Mike to answer.
-    const turn = this.turn;
-    if (turn?.quota && !this.replaying && isPlainObject(params) && params.sessionId === this.sessionId &&
-        ((method === 'session/request_permission' && isPlainObject(params.toolCall)) || (method === 'elicitation/create' && params.mode === 'form'))) {
-      this.clearQuotaNotice(turn);
-    }
     if (method === 'session/request_permission' && !this.replaying) {
       const p = (isPlainObject(params) ? params : {}) as { toolCall?: AcpToolCall; options?: PermissionOption[]; _meta?: unknown };
       // Its own frame counts in the call's history too, as sent.
@@ -1022,6 +1039,7 @@ export class AcpSession implements AgentSession {
         this.deps.log.error('acp permission handler threw', { threadId: this.opts.threadId, error: String(e) });
         this.pending.delete(id);
         this.proc.respond(id, { outcome: { outcome: 'cancelled' } });
+        this.syncQuotaDeadline();
       });
       return;
     }
@@ -1030,6 +1048,7 @@ export class AcpSession implements AgentSession {
         this.deps.log.error('acp form handler threw', { threadId: this.opts.threadId, error: String(e) });
         this.pending.delete(id);
         this.proc.respond(id, { action: 'cancel' });
+        this.syncQuotaDeadline();
       });
       return;
     }
@@ -1339,6 +1358,7 @@ export class AcpSession implements AgentSession {
     const placed = paths.length ? placesNow() : '';
     const pending: Pending = { abort: new AbortController(), options };
     this.pending.set(id, pending);
+    this.syncQuotaDeadline();
     let a: ToolApprovalAnswer;
     try {
       a = await this.sink.requestApproval({
@@ -1361,6 +1381,7 @@ export class AcpSession implements AgentSession {
     }
     // Already answered as cancelled: an interrupt, or the session ending.
     if (!this.pending.delete(id)) return;
+    this.syncQuotaDeadline();
     if (a.decision === 'expired') return void this.proc.respond(id, { outcome: { outcome: 'cancelled' } });
     const allow = a.decision === 'allow' || a.decision === 'allowAlways';
     if (allow && ((frames && frameState(frames) !== asked) || (paths.length && placesNow() !== placed))) {
@@ -1398,6 +1419,7 @@ export class AcpSession implements AgentSession {
     const questions: Question[] = built ? built.questions : [{ question: message || `${name} has a question`, header: name.slice(0, 30), multiSelect: false, options: [{ label: 'Accept' }, { label: 'Decline' }] }];
     const pending: Pending = { abort: new AbortController(), options: [], cancelled: { action: 'cancel' } };
     this.pending.set(id, pending);
+    this.syncQuotaDeadline();
     let a: QuestionAnswer;
     try {
       a = await this.sink.requestQuestion({ toolUseId: typeof p.toolCallId === 'string' ? p.toolCallId : undefined, questions, signal: pending.abort.signal });
@@ -1407,6 +1429,7 @@ export class AcpSession implements AgentSession {
     }
     // Already answered as cancelled: an interrupt, or the session ending.
     if (!this.pending.delete(id)) return;
+    this.syncQuotaDeadline();
     if (!a.answers) return void this.proc.respond(id, { action: 'decline' });
     if (!built) return void this.proc.respond(id, a.answers[questions[0].question] === 'Accept' ? { action: 'accept', content: {} } : { action: 'decline' });
     const content = formContent(built, a.answers);
@@ -1497,7 +1520,7 @@ export class AcpSession implements AgentSession {
       result = { outcome: turn.interrupted ? 'interrupted' : 'failed', durationMs: Math.max(0, this.now() - turn.startedAt), ...(auth ? { errorKind: 'auth' as const } : {}) };
       if (!turn.interrupted) Object.assign(result, auth ? { error: (e as Error).message } : this.failureFor(turn, e));
     } finally {
-      clearTimeout(turn.quota?.timer);
+      clearTimeout(turn.quota?.deadline?.timer);
     }
     if (this.turn !== turn) return;
     turn.dispatched = dispatched;
@@ -1577,6 +1600,7 @@ export class AcpSession implements AgentSession {
       case 'error':
         return { outcome: 'failed', durationMs, ...this.failureFor(turn) };
       default:
+        if (turn.quota && !turn.interrupted) return { outcome: 'failed', durationMs, ...this.failureFor(turn) };
         return { outcome: turn.interrupted ? 'interrupted' : 'completed', durationMs };
     }
   }
@@ -1599,6 +1623,7 @@ export class AcpSession implements AgentSession {
     turn.interrupted = true;
     this.cancelPending(true);
     this.proc.notify('session/cancel', { sessionId: this.sessionId });
+    this.syncQuotaDeadline();
   }
 
   // ---- Settings: from the next turn (settingsApplyNextTurn), except the
@@ -1675,7 +1700,7 @@ export class AcpSession implements AgentSession {
     this.proc.onRequest = null;
     this.mcp?.close();
     this.emit(this.normalizer.closeOpen('Interrupted'));
-    clearTimeout(this.turn?.quota?.timer);
+    clearTimeout(this.turn?.quota?.deadline?.timer);
     this.turn = undefined;
     if (this.ownFolder) removeQuietly(this.ownFolder);
     this.resolveExit();

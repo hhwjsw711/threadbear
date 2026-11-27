@@ -583,6 +583,10 @@ export class AcpNormalizer {
     out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images } });
   }
 
+  toolRowId(toolCallId: string): string | undefined {
+    return this.tools.get(toolCallId)?.row;
+  }
+
   hasRunningTools(): boolean {
     for (const tool of this.tools.values()) {
       if (tool.ran && !tool.done) return true;
