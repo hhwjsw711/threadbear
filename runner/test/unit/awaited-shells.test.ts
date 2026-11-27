@@ -168,3 +168,57 @@ test('asks carried for an earlier job stay consistent: needsYou and the Inbox ag
   assert.equal(t.needs, 'you');
   assert.equal(t.needsYou, t.waitState === 'needsYou', `needsYou ${t.needsYou} but waitState ${t.waitState}`);
 });
+
+// Round 2 of the review: an awaited shell whose grace ran out stayed on the
+// list, so a dev server's exit later pulled the thread back out of Needs you.
+test("an awaited shell that was never woken for doesn't come back with another job's grace", async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Start the server and test');
+  const dev = { ...SHELL, id: 'sh_dev', description: 'npm run dev' };
+  s.out({ kind: 'tasks', tasks: [dev] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m1', 'Server up.');
+  s.result('completed');
+  await tick();
+  h.runner.send(id, 'Now run the tests');
+  await tick();
+  const s2 = h.adapter.sessions.filter((x) => x.opts.threadId === id).at(-1)!;
+  s2.out({ kind: 'tasks', tasks: [dev, SHELL] });
+  s2.text('m2', 'Tests running.');
+  s2.result('completed');
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, false);
+  s2.out({ kind: 'tasks', tasks: [dev] });
+  h.clock.advance(16_000);
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, true);
+  // The dev server stops: its grace isn't the tests' result.
+  s2.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, true);
+});
+
+// Round 2: a grace that ran out during Mike's next turn emptied the finished
+// list, and the turn's end then dropped the shell it was still to read.
+test('an awaited shell whose grace runs out during the next turn is still awaited after it', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h);
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.text('m1', 'Waiting on the tests.');
+  s.result('completed');
+  await tick();
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.runner.send(id, 'Meanwhile, what does this do?');
+  await tick();
+  h.clock.advance(16_000);
+  await tick();
+  const s2 = h.adapter.sessions.filter((x) => x.opts.threadId === id).at(-1)!;
+  s2.text('m2', 'It parses the config.');
+  s2.result('completed');
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, false, 'the grace starts again for the unread result');
+  h.clock.advance(16_000);
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, true);
+});

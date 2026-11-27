@@ -549,7 +549,9 @@ export type Runtime = {
   // (OpenCode's "end your response; you will be resumed"), so the thread
   // isn't Mike's yet while one runs or its result is about to be read.
   // A turn that took end_turn leaves none: a shell after its card is often
-  // a dev server or a watcher for Mike (agentsStillWorking).
+  // a dev server or a watcher for Mike (agentsStillWorking). Each stays
+  // until it's read: a wake turn opening drops the ended ones, and so does
+  // a wake grace running out with no turn going (pruneAwaited).
   awaitedShells?: string[];
   // A done card that would have finished the thread (markFinished, then
   // the quiet-inbox and inbox-guess steps) but for background work that
@@ -1607,6 +1609,8 @@ export class Runner {
     // stop within those 15 s would leave it unfinished for good.
     if (!rt.turn) this.settlePendingFinish(st);
     rt.wakeTimer?.cancel();
+    rt.wakeTimer = undefined;
+    delete rt.awaitedShells;
     this.flushDeltas(st);
     // Output and exits from CLIs that are about to be killed no longer count.
     this.cli(st, { kind: 'drop', forget: forgetCli });
@@ -2037,11 +2041,23 @@ export class Runner {
     const { rt } = st;
     const ids = rt.awaitedShells;
     if (!ids?.length || card) return false;
-    // A wake grace is a result on its way, even one whose finished list a
-    // grace that ran out mid-turn emptied (Gemini's review).
-    if (rt.wakeTimer) return true;
+    // One still running, or one ended and unread with its wake grace on.
+    // An ended one is kept only until read (pruneAwaited), so a grace then
+    // is for it, even one whose finished list a grace that ran out mid-turn
+    // emptied (Gemini's review, 28 Nov 2026).
     const going = new Set(rt.tasks.map((t) => t.id));
-    return ids.some((id) => going.has(id));
+    return ids.some((id) => going.has(id)) || (Boolean(rt.wakeTimer) && ids.some((id) => !going.has(id)));
+  }
+
+  // The awaited shells whose results have been read (a wake turn opened)
+  // or never will be (the grace ran out with no turn going) come off.
+  private pruneAwaited(st: ThreadState): void {
+    const { rt } = st;
+    if (!rt.awaitedShells) return;
+    const going = new Set(rt.tasks.map((t) => t.id));
+    const left = rt.awaitedShells.filter((id) => going.has(id));
+    if (left.length) rt.awaitedShells = left;
+    else delete rt.awaitedShells;
   }
 
   // For end_turn's handler: whether the thread's CLI still runs background
@@ -3418,6 +3434,7 @@ export class Runner {
       // No turn came to read the result: a done card held back for one
       // stands, and a helper's held turn ends its run.
       if (!rt.turn) {
+        this.pruneAwaited(st);
         this.settlePendingFinish(st);
         this.settleHelperPending(st);
       }
@@ -3435,6 +3452,7 @@ export class Runner {
     const { rec, rt } = st;
     rt.wakeTimer?.cancel();
     rt.wakeTimer = undefined;
+    this.pruneAwaited(st);
     // What finished and woke the CLI, so the transcript can mark the wait
     // between this turn and the last one with what ended it (Mike, 3 Nov:
     // "still waiting" and "it's back" read as one breath).
@@ -3520,10 +3538,9 @@ export class Runner {
     // and Gemini's review, 28 Nov 2026). A runner-answered command changes
     // nothing.
     if (!turn.local) {
-      // An earlier one counts while it runs or its result is still to be read.
-      const live = new Set([...rt.tasks, ...rt.finished].map((t) => t.id));
-      const kept = (rt.awaitedShells ?? []).filter((id) => live.has(id));
-      const awaited = outcome === 'completed' && !said && this.wakes(st) ? new Set([...kept, ...(turn.shellsStarted ?? [])]) : new Set<string>();
+      // Earlier ones are kept: still running, or ended with the result
+      // still to be read (pruneAwaited takes them off when it is).
+      const awaited = outcome === 'completed' && !said && this.wakes(st) ? new Set([...(rt.awaitedShells ?? []), ...(turn.shellsStarted ?? [])]) : new Set<string>();
       if (awaited.size) rt.awaitedShells = [...awaited];
       else delete rt.awaitedShells;
     }
