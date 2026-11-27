@@ -29,6 +29,10 @@ test('real sounds pass', () => {
   assert.equal(sniffAudio(Buffer.concat([mp3Frame(), mp3Frame()]))?.mediaType, 'audio/mpeg');
   assert.equal(sniffAudio(Buffer.concat([id3(30), mp3Frame(), mp3Frame()]))?.mediaType, 'audio/mpeg');
   assert.equal(sniffAudio(Buffer.concat([id3(0, 3), mp3Frame(), mp3Frame()]))?.mediaType, 'audio/mpeg');
+  // A v2.4 footer flag is a real flag, and moves the frames on by ten.
+  const footed = id3(0);
+  footed[5] = 0x10;
+  assert.equal(sniffAudio(Buffer.concat([footed, Buffer.alloc(10), mp3Frame(), mp3Frame()]))?.mediaType, 'audio/mpeg');
   assert.equal(sniffAudio(Buffer.concat([adtsFrame(), adtsFrame()]))?.mediaType, 'audio/aac');
   const wav = Buffer.alloc(44);
   wav.write('RIFF', 0);
@@ -51,6 +55,11 @@ test('look-alikes are refused', () => {
     'free bitrate': Buffer.concat([Buffer.from([0xff, 0xfb, 0x00, 0x64]), Buffer.alloc(900)]),
     'one ADTS frame and junk': Buffer.concat([adtsFrame(), Buffer.alloc(40, 0x41)]),
     'RIFF but AVI': Buffer.concat([Buffer.from('RIFF\0\0\0\0AVI LIST'), Buffer.alloc(40)]),
+    'one MP3 frame and the next header only': Buffer.concat([mp3Frame(), mp3Frame().subarray(0, 7)]),
+    'one MP3 frame and most of the next': Buffer.concat([mp3Frame(), mp3Frame().subarray(0, 416)]),
+    'one ADTS frame and the next header only': Buffer.concat([adtsFrame(), adtsFrame().subarray(0, 7)]),
+    'ID3v2.4 with a reserved flag bit': (() => { const t = id3(0); t[5] = 0x01; return Buffer.concat([t, mp3Frame(), mp3Frame()]); })(),
+    'ID3v2.3 with a reserved flag bit': (() => { const t = id3(0, 3); t[5] = 0x10; return Buffer.concat([t, mp3Frame(), mp3Frame()]); })(),
     'MP4 video brand': Buffer.concat([Buffer.from([0, 0, 0, 16]), Buffer.from('ftypisom'), Buffer.alloc(40)]),
   };
   for (const [what, bytes] of Object.entries(rejects)) assert.equal(sniffAudio(bytes), null, what);

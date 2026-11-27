@@ -123,25 +123,47 @@ public struct DesignReviewDraft: Codable, Sendable, Hashable {
     /// the runner's draft: a Mac's marks point at its own cut-outs.
     public var marks: [ReviewUserMark]? = nil
     /// The highest number among the Mac's saved marks, from the runner: the
-    /// phone's go on from there, and all of them count towards the cap.
+    /// phone's are numbered on from there.
     public var nextMark: Int?
+    /// How many marks the Mac has saved: they and the phone's share the cap of 20.
+    /// Older runners don't say, so `nextMark` stands in.
+    public var markCount: Int?
 
-    private enum CodingKeys: String, CodingKey { case pickedId, pickedIds, notes, reply, none, nextMark }
+    private enum CodingKeys: String, CodingKey { case pickedId, pickedIds, notes, reply, none, nextMark, markCount }
 
     public init() { notes = [:] }
 
-    /// Numbers the Mac's marks already have.
-    private var macMarks: Int { min(ReviewUserMark.maxCount, max(0, nextMark ?? 0)) }
+    /// The first number the phone may give a mark.
+    public var firstMarkNumber: Int { max(0, nextMark ?? 0) + 1 }
 
-    /// The numbers the phone may use: after the Mac's, up to the cap.
-    public var markNumbers: ClosedRange<Int>? {
-        macMarks < ReviewUserMark.maxCount ? (macMarks + 1)...ReviewUserMark.maxCount : nil
+    /// How many marks the phone may have, after the Mac's.
+    public var markCapacity: Int { max(0, ReviewUserMark.maxCount - max(0, markCount ?? nextMark ?? 0)) }
+
+    /// The lowest number the phone can still give a mark, or nil when there's no room.
+    public var nextMarkNumber: Int? {
+        let marks = marks ?? []
+        guard marks.count < markCapacity else { return nil }
+        let used = Set(marks.map(\.n))
+        return (firstMarkNumber...).first { !used.contains($0) }
     }
 
-    /// The lowest number the phone can still give a mark, or nil when all are taken.
-    public var nextMarkNumber: Int? {
-        let used = Set((marks ?? []).map(\.n))
-        return markNumbers?.first { !used.contains($0) }
+    /// Takes the Mac's marks as a freshly loaded review has them. A phone
+    /// mark whose number the Mac has since used is numbered on from the Mac's,
+    /// and the reply's "[Mark n]" follow it.
+    public mutating func takeMacMarks(from fresh: DesignReviewDraft) {
+        nextMark = fresh.nextMark
+        markCount = fresh.markCount
+        guard var mine = marks, !mine.isEmpty, mine.contains(where: { $0.n < firstMarkNumber }) else { return }
+        mine.sort { $0.n < $1.n }
+        var text = reply
+        // Through placeholders, so a new number that an old one had isn't rewritten twice.
+        for (i, mark) in mine.enumerated() { text = text?.replacingOccurrences(of: mark.token, with: "\u{1}\(i)\u{1}") }
+        for i in mine.indices {
+            mine[i].n = firstMarkNumber + i
+            text = text?.replacingOccurrences(of: "\u{1}\(i)\u{1}", with: mine[i].token)
+        }
+        marks = mine
+        reply = text
     }
     public var picks: Set<String> { Set(pickedIds ?? pickedId.map { [$0] } ?? []) }
 
@@ -173,10 +195,10 @@ public struct DesignReviewDraft: Codable, Sendable, Hashable {
     private func marksFit(_ review: PhoneDesignReview) -> Bool {
         let marks = marks ?? []
         guard !marks.isEmpty else { return true }
-        guard let numbers = markNumbers, marks.count <= numbers.count, Set(marks.map(\.n)).count == marks.count else { return false }
+        guard marks.count <= markCapacity, Set(marks.map(\.n)).count == marks.count else { return false }
         return marks.allSatisfy { mark in
             // A reference is there to compare against, not to answer on.
-            guard numbers.contains(mark.n),
+            guard mark.n >= firstMarkNumber,
                   let option = review.options.first(where: { $0.id == mark.optionId }), option.reference != true,
                   option.shots.indices.contains(mark.shot), mark.box.count == 4,
                   mark.box.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { return false }

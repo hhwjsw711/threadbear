@@ -58,14 +58,16 @@ function phoneMarks(marks: AgentMark[]) {
 // canMark: this runner takes the phone's own marks (mergePhoneMarks), which
 // an older one would drop, so the phone offers marking only with it.
 // draft.nextMark: the highest number among the marks saved on the Mac (0
-// with none); the phone numbers its own from the one after.
+// with none); the phone numbers its own from the one after, so numbers can
+// go past 20. draft.markCount: how many there are, for the 20-mark limit,
+// which counts marks, not numbers.
 export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string> = new Set(), media: ReadonlySet<string> = new Set()) {
   return {
     id: review.id, title: review.title, status: review.status, revision: review.revision,
     canMark: true as const,
     ...(review.note ? { note: review.note } : {}),
     ...(review.recommended ? { recommended: review.recommended } : {}),
-    draft: { ...phoneDraft(review.response ?? review.draft), nextMark: Math.max(0, ...(review.draft.marks ?? []).map((m) => m.n)) },
+    draft: { ...phoneDraft(review.response ?? review.draft), nextMark: Math.max(0, ...(review.draft.marks ?? []).map((m) => m.n)), markCount: review.draft.marks?.length ?? 0 },
     options: review.options.map((option) => ({
       id: option.id, title: option.title,
       ...(option.note ? { note: option.note } : {}),
@@ -148,12 +150,20 @@ export function draftFromPhone(raw: unknown, images: readonly ImageRef[] = []): 
 // as a saved one is refused rather than either being lost: the phone
 // numbers from nextMark + 1, so a clash means the draft changed on the Mac
 // meanwhile. Errors go to the phone as the command's note, so no paths.
+//
+// Only a pending review is checked for clashes. Once it's answered its
+// draft holds the phone's marks too, so a retry of the same answer (a lost
+// reply) would clash with itself: there the phone's marks stand in for
+// saved ones of the same number, and reviews.respond decides, a retry as
+// the same answer (sameDraft) and anything else as already answered.
 export function mergePhoneMarks(review: DesignReview, draft: ReviewDraft): ReviewDraft {
   if (!draft.marks?.length) return draft;
-  const saved = review.draft.marks ?? [];
-  const clash = draft.marks.find((m) => saved.some((s) => s.n === m.n));
+  const phone = draft.marks;
+  let saved = review.draft.marks ?? [];
+  if (review.status !== 'pending') saved = saved.filter((s) => !phone.some((m) => m.n === s.n));
+  const clash = phone.find((m) => saved.some((s) => s.n === m.n));
   if (clash) throw new Error(`Mark ${clash.n} is already on this review from the Mac. Reload the review and mark again.`);
-  const marks = [...saved, ...draft.marks];
+  const marks = [...saved, ...phone];
   if (marks.length > maxDraftMarks) throw new Error(`A review answer can have at most ${maxDraftMarks} marks, counting the ${saved.length} made on the Mac.`);
   return { ...draft, marks };
 }

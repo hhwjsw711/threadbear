@@ -112,7 +112,7 @@ struct DesignReviewsTests {
         #expect(!draft.canSend(to: review))
         draft.marks = [.init(n: 1, optionId: "A", shot: 0, box: [0.1, 0.1, 1.4, 0.4])]
         #expect(!draft.canSend(to: review))
-        draft.marks = [.init(n: 21, optionId: "A", shot: 0, box: [0.1, 0.1, 0.4, 0.4])]
+        draft.marks = [.init(n: 0, optionId: "A", shot: 0, box: [0.1, 0.1, 0.4, 0.4])]
         #expect(!draft.canSend(to: review))
     }
 
@@ -146,7 +146,8 @@ struct DesignReviewsTests {
         draft.marks = [.init(n: 3, optionId: "A", shot: 0, box: [0, 0, 0.5, 0.5])]
         #expect(!draft.canSend(to: review))
         draft.nextMark = 20
-        #expect(draft.markNumbers == nil && draft.nextMarkNumber == nil)
+        draft.marks = nil
+        #expect(draft.markCapacity == 0 && draft.nextMarkNumber == nil)
         review.draft = DesignReviewDraft()
         #expect(review.draft.nextMarkNumber == 1)
     }
@@ -155,5 +156,39 @@ struct DesignReviewsTests {
         let review = try review()
         #expect(review.canMark == nil)
         #expect(review.draft.nextMark == nil)
+    }
+
+    @Test func capacityIsByCountAndNumbersCanPassTwenty() throws {
+        let review = try JSONDecoder().decode(PhoneDesignReview.self, from: Data(#"{"id":"r","title":"T","status":"pending","revision":0,"canMark":true,"draft":{"notes":{},"nextMark":25,"markCount":18},"options":[{"id":"A","title":"A","shots":[{"src":"review:r:a","kind":"image"}]}]}"#.utf8))
+        var draft = review.draft
+        #expect(draft.markCount == 18 && draft.markCapacity == 2)
+        #expect(draft.nextMarkNumber == 26)
+        draft.marks = [.init(n: 26, optionId: "A", shot: 0, box: [0, 0, 0.5, 0.5])]
+        #expect(draft.nextMarkNumber == 27)
+        draft.marks?.append(.init(n: 27, optionId: "A", shot: 0, box: [0.5, 0.5, 1, 1]))
+        #expect(draft.nextMarkNumber == nil)
+        #expect(draft.canSend(to: review))
+        draft.marks?.append(.init(n: 28, optionId: "A", shot: 0, box: [0.2, 0.2, 0.3, 0.3]))
+        #expect(!draft.canSend(to: review))
+    }
+
+    @Test func aReloadRenumbersPhoneMarksTheMacHasSinceUsed() throws {
+        var draft = DesignReviewDraft()
+        draft.marks = [.init(n: 2, optionId: "A", shot: 0, box: [0.5, 0.5, 1, 1]),
+                       .init(n: 1, optionId: "A", shot: 0, box: [0, 0, 0.5, 0.5])]
+        draft.reply = "See [Mark 1] and [Mark 2], not [Mark 3]"
+        var fresh = DesignReviewDraft()
+        fresh.nextMark = 2
+        fresh.markCount = 1
+        draft.takeMacMarks(from: fresh)
+        #expect(draft.nextMark == 2 && draft.markCount == 1)
+        #expect(draft.marks?.map(\.n) == [3, 4])
+        #expect(draft.marks?.map(\.box) == [[0, 0, 0.5, 0.5], [0.5, 0.5, 1, 1]])
+        // [Mark 3] was the Mac's own, so it stays as written.
+        #expect(draft.reply == "See [Mark 3] and [Mark 4], not [Mark 3]")
+        // Numbers already clear of the Mac's are left alone.
+        let before = draft
+        draft.takeMacMarks(from: fresh)
+        #expect(draft == before)
     }
 }

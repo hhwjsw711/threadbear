@@ -182,6 +182,8 @@ export function id3End(buf: Buffer): number | undefined | null {
   if (buf.length < 10 || buf.toString('ascii', 0, 3) !== 'ID3') return undefined;
   const version = buf[3]!;
   if (version < 2 || version > 4 || buf[4] === 0xff) return null;
+  // The flags' unused low bits are zero: 6 of them in v2.2, 5 in v2.3, 4 in v2.4.
+  if (buf[5]! & (0xff >> (version === 2 ? 2 : version === 3 ? 3 : 4))) return null;
   for (let i = 6; i < 10; i++) if (buf[i]! >= 0x80) return null;
   const size = (buf[6]! << 21) | (buf[7]! << 14) | (buf[8]! << 7) | buf[9]!;
   // A v2.4 footer adds ten more.
@@ -229,7 +231,9 @@ function audioFramesAt(buf: Buffer, at: number): ImageInfo | null {
   const first = frameAt(buf, at);
   if (!first) return null;
   const second = frameAt(buf, at + first.length);
-  return second && second.mediaType === first.mediaType ? { mediaType: first.mediaType } : null;
+  // The whole of both, not just the second's header (Codex's review).
+  if (!second || second.mediaType !== first.mediaType || at + first.length + second.length > buf.length) return null;
+  return { mediaType: first.mediaType };
 }
 
 // Reads the start of a file and, past an ID3 tag too big for it (cover art),

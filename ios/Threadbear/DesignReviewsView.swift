@@ -135,6 +135,9 @@ struct DesignReviewsView: View {
                 review = loaded
                 imageReload += 1
                 if !kept { draft = drafts[loaded.id] ?? loaded.draft }
+                // The Mac's marks as they are now, whichever draft is kept:
+                // the Mac may have added some since.
+                draft.takeMacMarks(from: loaded.draft)
             } else if let list = result.reviews {
                 entries = list
                 truncated = result.truncated == true

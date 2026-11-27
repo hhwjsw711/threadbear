@@ -2666,6 +2666,21 @@ test("commands: a review answer's marks from the phone keep their cut-outs", asy
   assert.equal(marks[2]!.image, undefined);
   assert.ok(marks[1]!.image && fs.existsSync(marks[1]!.image.path), 'the cut-out is kept with the review');
   assert.ok(marks[1]!.image.path.includes(path.join('reviews', review.id, 'reply')));
+  // The same answer again (a reply lost on the way back): a quiet success,
+  // not a clash with its own marks, and no second message to the agent.
+  const sends = h.events(t.id).filter((e: { type: string }) => e.type === 'user.message').length;
+  answer('rv2', [{ n: 2, kind: 'circle', optionId: 'A', shot: 0, box: [0.1, 0.1, 0.5, 0.5], image: 0 }, { n: 3, kind: 'pin', optionId: 'B', shot: 0, box: [0.3, 0.3, 0.3, 0.3] }]);
+  await tick(10);
+  const again = calls.filter((c) => c.fn === 'sync:finishCommand').map((c) => c.args);
+  assert.equal(again[2]!.ok, true, String(again[2]!.note));
+  assert.equal(h.runner.getReview(t.id, review.id).review.revision, answered.revision);
+  assert.equal(h.events(t.id).filter((e: { type: string }) => e.type === 'user.message').length, sends);
+  // A different answer now is told it's answered, not about mark numbers.
+  answer('rv3', [{ n: 4, kind: 'pin', optionId: 'A', shot: 0, box: [0.6, 0.6, 0.6, 0.6] }]);
+  await tick(10);
+  const late = calls.filter((c) => c.fn === 'sync:finishCommand').map((c) => c.args);
+  assert.equal(late[3]!.ok, false);
+  assert.match(String(late[3]!.note), /answered/i);
   const inbox = path.join(h.cfg.home, 'inbox');
   assert.deepEqual(fs.existsSync(inbox) ? fs.readdirSync(inbox) : [], [], 'nothing left in the inbox');
   await sync.stop();

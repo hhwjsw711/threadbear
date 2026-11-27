@@ -39,6 +39,8 @@ struct ReviewBoard: View {
     @State private var tourIndex: Int?
     @State private var drawing: Drawing?
     @State private var drawCancelled = false
+    /// A finger is drawing: true from a stroke's start until it ends or is cancelled.
+    @GestureState private var stroking = false
     @State private var playback = BoardPlayback()
     @State private var selection: TextSelection?
     @FocusState private var replyFocused: Bool
@@ -88,7 +90,15 @@ struct ReviewBoard: View {
         .background(BoardInk.board.ignoresSafeArea())
         .onChange(of: fitInputs) { _, _ in if !userMoved { fitAll(animated: false) } }
         .onChange(of: marking) { _, on in if !on { drawing = nil } }
-        .onChange(of: busy) { _, now in if now { drawing = nil; drawCancelled = true } }
+        .onChange(of: busy) { _, now in
+            if now {
+                if drawing != nil { drawing = nil; drawCancelled = true }
+            } else if !stroking {
+                drawCancelled = false
+            }
+        }
+        // However a stroke ends, ended or cancelled by the system, the next starts clean.
+        .onChange(of: stroking) { _, live in if !live { drawing = nil; drawCancelled = false } }
         .onDisappear { playback.stop() }
         .task(id: shotFrames.count + pictures.count * 1000) { pose() }
     }
@@ -325,6 +335,7 @@ struct ReviewBoard: View {
 
     private func drawGesture(_ key: ShotKey, size: CGSize, media: URL?) -> some Gesture {
         DragGesture(minimumDistance: 0)
+            .updating($stroking) { _, live, _ in live = true }
             .onChanged { value in
                 // Sending started mid-drag, or a second finger came: this circle's off.
                 guard !drawCancelled, !busy, pinchAnchor == nil else { drawing = nil; drawCancelled = true; return }
@@ -425,8 +436,9 @@ struct ReviewBoard: View {
             scale = s
             offset = CGPoint(x: location.x - anchor.x * s, y: location.y - anchor.y * s)
         default:
+            // Not drawCancelled: a finger still down from a cancelled stroke
+            // would commit it from where it began. The stroke's end clears it.
             pinchAnchor = nil
-            drawCancelled = false
         }
     }
 

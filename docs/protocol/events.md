@@ -306,10 +306,14 @@ review, so the answer reads as a Mac's does (`[Mark N]` in the reply, a
 line and a cut-out per mark). The phone's marks join the ones saved on the
 Mac, which stay: the review carries `canMark: true` from a runner that
 does this (an older one would drop them, so the phone offers marking only
-with it), and `draft.nextMark`, the highest number among the Mac's saved
-marks (0 with none). The phone numbers its marks from `nextMark + 1`; a
-mark numbered as a saved one, or more than 20 in all, fails the command
-with a note saying so.
+with it), `draft.nextMark`, the highest number among the Mac's saved marks
+(0 with none), and `draft.markCount`, how many there are. The phone numbers
+its marks from `nextMark + 1` (numbers need only be unique, so they can go
+past 20) and allows `20 - markCount` more. A mark numbered as a saved one,
+or more than 20 marks in all, fails the command with a note saying so. Only
+a pending review is checked for that: a retry of an answer that already
+went through is the same answer (a quiet success), and any other answer
+to an answered review is refused as answered.
 
 The phone's Reviews sheet opens from the pending-review button or a
 `review:<id>` link. It shows reference and recommended options, each shot's

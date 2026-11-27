@@ -25,7 +25,7 @@ test('phone reviews keep choices and labels without exposing local paths or HTML
   const sound = phoneReview({ ...review, options: [{ ...review.options[0], shots: [{ image: review.options[0].image, media: { path: '/private/bed.m4a', mediaType: 'audio/mp4' } }] }] });
   assert.equal(sound.options[0].shots[0].kind, 'audio');
   assert.ok(!JSON.stringify(dto).includes('/private'));
-  assert.deepEqual(dto.draft, { notes: {}, nextMark: 0 });
+  assert.deepEqual(dto.draft, { notes: {}, nextMark: 0, markCount: 0 });
   assert.equal(dto.canMark, true);
 });
 
@@ -35,7 +35,7 @@ test("a draft's pasted pictures, which are paths on the Mac, never reach the pho
     draft: { pickedIds: ['A'], notes: { A: 'Tighter' }, reply: 'Go', images: [{ path: '/Users/me/Library/Application Support/Threadbear/threads/t/media/reviews/r/reply/abc.png', mediaType: 'image/png' }] },
   };
   const dto = phoneReview(withImages);
-  assert.deepEqual(dto.draft, { pickedIds: ['A'], notes: { A: 'Tighter' }, reply: 'Go', nextMark: 0 });
+  assert.deepEqual(dto.draft, { pickedIds: ['A'], notes: { A: 'Tighter' }, reply: 'Go', nextMark: 0, markCount: 0 });
   assert.ok(!JSON.stringify(dto).includes('/Users/'), JSON.stringify(dto));
   // An answered review shows its response, which is cleaned the same way.
   const answered = phoneReview({ ...withImages, status: 'answered', response: withImages.draft });
@@ -159,7 +159,7 @@ test("the agent's marks reach the phone, Mike's saved ones and their paths don't
   ]);
   assert.equal(dto.options[1].shots[0].marks, undefined);
   // Only the number to go on from: the phone numbers its own marks after it.
-  assert.deepEqual(dto.draft, { notes: {}, reply: '[Mark 1]', nextMark: 1 });
+  assert.deepEqual(dto.draft, { notes: {}, reply: '[Mark 1]', nextMark: 1, markCount: 1 });
   assert.ok(!JSON.stringify(dto).includes('/Users/'), JSON.stringify(dto));
   // An answer from the phone with no marks brings none in, so the Mac's stay.
   assert.ok(!('marks' in draftFromPhone({ notes: [], marks: [] })));
@@ -251,4 +251,10 @@ test("the phone's marks join the Mac's saved ones; a clash or too many is refuse
   assert.deepEqual(mergePhoneMarks(r, { notes: {} }), { notes: {} });
   assert.throws(() => mergePhoneMarks(r, { notes: {}, marks: [phone(2)] }), /Mark 2 is already on this review from the Mac/);
   assert.throws(() => mergePhoneMarks(r, { notes: {}, marks: Array.from({ length: 20 }, (_, i) => phone(i + 3)) }), /at most 20 marks/);
+  // The limit counts marks, not numbers: 19 more numbered past 20 are fine.
+  assert.equal(mergePhoneMarks(r, { notes: {}, marks: Array.from({ length: 19 }, (_, i) => phone(i + 30)) }).marks!.length, 20);
+  // Answered (its draft has the phone's marks now): a retry's marks stand in
+  // for theirs, no clash, and reviews.respond decides.
+  const answered: DesignReview = { ...r, status: 'answered', draft: { notes: {}, marks: [saved, phone(3)] } };
+  assert.deepEqual(mergePhoneMarks(answered, { notes: {}, marks: [phone(3)] }).marks, [saved, phone(3)]);
 });
