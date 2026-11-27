@@ -616,6 +616,8 @@ export type Drain = {
   timer?: TimerHandle;
   // When this drain first saw each open card on a kept thread (lapseCards).
   cardsSince: Map<string, number>;
+  // Threads whose cards lapsed, with their titles, told as they go across.
+  lapsed: Map<string, string[]>;
   cardMs: number;
 };
 

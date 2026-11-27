@@ -73,6 +73,7 @@ export const handoversPart = {
       checkQueued: false,
       ready: opts.ready ?? (() => true),
       cardsSince: new Map(),
+      lapsed: new Map(),
       cardMs: opts.cardMs ?? DRAIN_CARD_WAIT_MS,
     };
     this.draining = d;
@@ -154,6 +155,10 @@ export const handoversPart = {
       }
       if (d.going.has(id) || this.lapseCards(st, d) || !this.readyToHandOver(st, d)) continue;
       d.going.add(id);
+      const lapsed = d.lapsed.get(id);
+      d.lapsed.delete(id);
+      // Queued while it's going: it moves across with the thread (kickQueue).
+      if (lapsed) this.sendTo(st, lapsedCardsMessage(lapsed), [], { origin: 'runner', queue: true, wakeReason: 'A request lapsed during an update' });
       void this.letGo(st).then(
         () => {
           d.going.delete(id);
@@ -176,24 +181,39 @@ export const handoversPart = {
   // refused as no longer pending), its turn is stopped, and a message from
   // the runner queued behind it goes across with it and starts there, so
   // the agent asks again on the new release. True when it lapsed them; the
-  // thread goes across once the turn has ended. Anything else running
-  // (background work, a hook, an action) holds it as before.
+  // thread goes across once the turn has ended (background work then holds
+  // it only for its own limits).
   lapseCards(this: Runner, st: ThreadState, d: Drain): boolean {
-    const { rt } = st;
+    const { rec, rt } = st;
     if (rt.approvals.size === 0) return false;
     const now = this.clock.now();
-    for (const id of rt.approvals.keys()) if (!d.cardsSince.has(id)) d.cardsSince.set(id, now);
-    if (rt.tasks.length || rt.hooksRunning || rt.runningActions?.size || rt.editing || rt.preparing || rt.wakeTimer) return false;
-    if ([...rt.approvals.keys()].some((id) => now - d.cardsSince.get(id)! < d.cardMs)) return false;
-    const titles = [...rt.approvals.values()].map((p) => ('title' in p ? p.title : undefined) ?? (p.kind === 'secret' ? 'a secret' : p.kind === 'request' ? 'a request' : 'an approval'));
+    // Something else going (a hook, an action, an edit, setup, wake grace):
+    // the wait counts again from when it ends (Codex's review, 27 Nov 2026).
+    // Background work doesn't stop the count: a subagent waiting on its own
+    // card is a task too, and the work keeps its own limits once across.
+    const busy = rt.hooksRunning || rt.runningActions?.size || rt.editing || rt.preparing || rt.wakeTimer;
+    for (const id of rt.approvals.keys()) if (busy || !d.cardsSince.has(id)) d.cardsSince.set(id, now);
+    if (busy) return false;
+    // The oldest card decides, so new ones coming and going can't hold an
+    // old one open for good; they all lapse together.
+    if (Math.min(...[...rt.approvals.keys()].map((id) => d.cardsSince.get(id)!)) > now - d.cardMs) return false;
+    const pending = [...rt.approvals.values()];
+    const titles = pending.map((p) => ('title' in p ? p.title : undefined) ?? (p.kind === 'secret' ? 'a secret' : p.kind === 'request' ? 'a request' : 'an approval'));
     for (const id of rt.approvals.keys()) d.cardsSince.delete(id);
     const minutes = Math.round(d.cardMs / 60_000);
-    this.emit(st, { type: 'system.note', text: `Threadbear updated while this waited ${minutes} minutes for an answer, so ${titles.length === 1 ? 'the request' : 'its requests'} lapsed and the agent will ask again on the new release: ${titles.join('; ')}.` }, rt.turn?.turnId);
+    // A saved message of Mike's that a stop left unread goes first, so the
+    // runner's message waits for his next one (kickQueue).
+    const asksAgain = !rec.interruptedMessages?.length;
+    this.emit(st, { type: 'system.note', text: `Threadbear updated while this waited ${minutes} minutes for an answer, so ${titles.length === 1 ? 'the request' : 'its requests'} lapsed${asksAgain ? ' and the agent will ask again on the new release' : '; write to it to carry on'}: ${titles.join('; ')}.` }, rt.turn?.turnId);
     this.expireApprovals(st, 'It lapsed while Threadbear updated.');
-    if (rt.turn) this.interrupt(st.rec.id);
-    // Queued (the runner is draining): it goes across with the thread.
-    this.sendTo(st, lapsedCardsMessage(titles), [], { origin: 'runner', queue: true, wakeReason: 'A request lapsed during an update' });
-    this.log.info('lapsed the open cards of a kept thread', { threadId: st.rec.id, cards: titles.length });
+    // Stopped only when it was the turn's own card the turn waited on: a
+    // subagent's card lapsing leaves a working turn alone.
+    if (rt.turn && pending.some((p) => p.main)) this.interrupt(rec.id);
+    // Sent as it goes across (checkHandovers), so it starts on the new
+    // runner: sent now, background work holding the thread would start it
+    // here (kickQueue), where it could ask and lapse again.
+    d.lapsed.set(rec.id, titles);
+    this.log.info('lapsed the open cards of a kept thread', { threadId: rec.id, cards: titles.length });
     return true;
   },
 

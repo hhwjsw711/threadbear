@@ -414,6 +414,29 @@ test('a card nobody answers lapses after cardMs on a draining runner: the turn s
   assert.throws(() => b.runner.respondApproval({ threadId: t.id, approvalId, decision: 'allow' }), /no longer pending/);
 });
 
+test("a subagent's card nobody answers lapses too, and frees a thread held by nothing else", async () => {
+  const h = makeHarness();
+  const t = h.runner.create({ text: 'look around', accountId: 'claude-3', permissionMode: 'ask' }).thread;
+  const s = h.adapter.last;
+  s.init();
+  s.text('a1', 'Starting a helper.');
+  s.out({ kind: 'tasks', tasks: [{ id: 'g1', type: 'local_agent', kind: 'agent', description: 'Explore' }] });
+  s.result('completed');
+  await tick();
+  // The subagent's card, with no turn of the agent's open.
+  const decision = s.sink.requestApproval({ name: 'Bash', title: 'cat notes', input: { command: 'cat notes' }, canAlwaysAllow: false, signal: new AbortController().signal });
+  const handed: string[] = [];
+  await h.runner.beginDrain([t.id], { onHandedOver: (id) => handed.push(id), checkMs: MIN, agentMs: 60 * MIN });
+  h.clock.advance(31 * MIN);
+  await tick();
+  assert.equal((await decision).decision, 'expired');
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(MIN);
+  await tick();
+  assert.deepEqual(handed, [t.id]);
+});
+
 test('a thread left by a draining runner that died is adopted as after a crash', async () => {
   const h = makeHarness();
   const t = create(h).thread;
