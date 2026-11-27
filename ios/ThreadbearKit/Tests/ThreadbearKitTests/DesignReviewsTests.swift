@@ -191,4 +191,33 @@ struct DesignReviewsTests {
         draft.takeMacMarks(from: fresh)
         #expect(draft == before)
     }
+
+    @Test func anAnsweredReviewReopensAsTheRunnerKeepsIt() throws {
+        var review = try review()
+        var mine = DesignReviewDraft()
+        mine.marks = [.init(n: 1, optionId: "A", shot: 0, box: [0, 0, 0.5, 0.5])]
+        mine.reply = "[Mark 1]"
+        review.draft.nextMark = 3
+        review.draft.markCount = 3
+        review.draft.reply = "answered"
+        review.status = "answered"
+        #expect(DesignReviewDraft.reopening(review, kept: mine) == review.draft)
+        review.status = "pending"
+        let pending = DesignReviewDraft.reopening(review, kept: mine)
+        #expect(pending.marks?.map(\.n) == [4])
+        #expect(pending.reply == "[Mark 4]")
+        #expect(DesignReviewDraft.reopening(review, kept: nil) == review.draft)
+    }
+
+    @Test func marksOverTheCapAfterTheMacAddsSomeAreCounted() {
+        var draft = DesignReviewDraft()
+        draft.marks = [.init(n: 1, optionId: "A", shot: 0, box: [0, 0, 0.5, 0.5]),
+                       .init(n: 2, optionId: "A", shot: 0, box: [0.5, 0.5, 1, 1])]
+        #expect(draft.marksOver == 0)
+        var fresh = DesignReviewDraft()
+        fresh.nextMark = 19
+        fresh.markCount = 19
+        draft.takeMacMarks(from: fresh)
+        #expect(draft.marksOver == 1)
+    }
 }

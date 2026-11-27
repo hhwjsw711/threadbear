@@ -257,4 +257,6 @@ test("the phone's marks join the Mac's saved ones; a clash or too many is refuse
   // for theirs, no clash, and reviews.respond decides.
   const answered: DesignReview = { ...r, status: 'answered', draft: { notes: {}, marks: [saved, phone(3)] } };
   assert.deepEqual(mergePhoneMarks(answered, { notes: {}, marks: [phone(3)] }).marks, [saved, phone(3)]);
+  // Never an error once it isn't pending, even past 20: reviews.respond says what's so.
+  assert.equal(mergePhoneMarks({ ...answered, status: 'cancelled' }, { notes: {}, marks: Array.from({ length: 25 }, (_, i) => phone(i + 2)) }).marks!.length, 25);
 });

@@ -74,6 +74,9 @@ test("a review answer's marks go to the runner, cut-outs as the command's photos
   await assert.rejects(one({ box: [0, 0, 1.5, 1] }));
   await assert.rejects(one({ box: [0, 0, 1] }));
   await assert.rejects(one({ n: 0 }));
+  await assert.rejects(one({ shot: 8 }));
+  // Any positive whole number: a Mac mark numbered 1000 leaves the phone 1001.
+  await call(b.ctx, phone.respondReview, { token: TOKEN, threadId: 'B', reviewId: 'r1', revision: 0, draft: { notes: [], marks: [{ n: 1001, kind: 'pin', optionId: 'A', shot: 7, box: [0, 0, 0, 0] }] } });
   await assert.rejects(call(b.ctx, phone.respondReview, { token: TOKEN, threadId: 'B', reviewId: 'r1', revision: 0, draft: { notes: [], marks: Array.from({ length: 21 }, (_, i) => ({ n: i + 1, kind: 'pin', optionId: 'A', shot: 0, box: [0, 0, 0, 0] })) } }));
   const other = await b.ctx.db.insert('tokens', { hash: await sha256('other'), name: 'ipad', kind: 'phone', expiresAt: Date.now() + 1e9, createdAt: Date.now() });
   assert.equal(await outcome(one({ storageId: await upload('theirs', other) })), 'notFound');

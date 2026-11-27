@@ -45,7 +45,11 @@ struct DesignReviewsView: View {
                         },
                         reload: { Task { await load(review.id, preserveDraft: true) } },
                         send: { Task { await send(review) } })
-                .onChange(of: draft) { _, value in drafts[review.id] = value }
+                .onChange(of: draft) { _, value in
+                    drafts[review.id] = value
+                    // Gone once enough marks are removed.
+                    if let problem, problem.hasPrefix(Self.overPrefix), Self.overNote(value) != problem { self.problem = Self.overNote(value) }
+                }
                 .task(id: "\(review.id):\(model.connection):\(imageReload)") { await followPictures() }
     }
 
@@ -134,10 +138,10 @@ struct DesignReviewsView: View {
                 let kept = preserveDraft && review?.id == loaded.id
                 review = loaded
                 imageReload += 1
-                if !kept { draft = drafts[loaded.id] ?? loaded.draft }
                 // The Mac's marks as they are now, whichever draft is kept:
                 // the Mac may have added some since.
-                draft.takeMacMarks(from: loaded.draft)
+                draft = DesignReviewDraft.reopening(loaded, kept: kept ? draft : drafts[loaded.id])
+                if loaded.pending, let note = Self.overNote(draft) { problem = note }
             } else if let list = result.reviews {
                 entries = list
                 truncated = result.truncated == true
@@ -190,7 +194,9 @@ struct DesignReviewsView: View {
                 return
             }
             switch state {
-            case .done: dismiss()
+            case .done:
+                drafts[review.id] = nil
+                dismiss()
             case .idle: return
             case .sending, .queued, .taken, .timedOut, .failed:
                 throw TransportError.server(state.failure("The answer wasn't accepted.") ?? "The answer wasn't accepted.")
@@ -222,5 +228,15 @@ struct DesignReviewsView: View {
             marks[i].storageId = id
         }
         return marks
+    }
+
+    private static let overPrefix = "The Mac added marks"
+
+    /// Says how many of the phone's marks to remove when the Mac's leave too
+    /// little room, rather than Send just staying off.
+    private static func overNote(_ draft: DesignReviewDraft) -> String? {
+        let over = draft.marksOver
+        guard over > 0 else { return nil }
+        return "\(overPrefix), so remove \(over) of yours to send."
     }
 }

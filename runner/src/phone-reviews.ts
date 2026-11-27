@@ -159,8 +159,11 @@ export function draftFromPhone(raw: unknown, images: readonly ImageRef[] = []): 
 export function mergePhoneMarks(review: DesignReview, draft: ReviewDraft): ReviewDraft {
   if (!draft.marks?.length) return draft;
   const phone = draft.marks;
-  let saved = review.draft.marks ?? [];
-  if (review.status !== 'pending') saved = saved.filter((s) => !phone.some((m) => m.n === s.n));
+  const saved = review.draft.marks ?? [];
+  // Not pending: never an error from here, only the answer as a retry of it
+  // would be, so reviews.respond reports what's so (the same answer, or
+  // answered, cancelled or superseded).
+  if (review.status !== 'pending') return { ...draft, marks: [...saved.filter((s) => !phone.some((m) => m.n === s.n)), ...phone] };
   const clash = phone.find((m) => saved.some((s) => s.n === m.n));
   if (clash) throw new Error(`Mark ${clash.n} is already on this review from the Mac. Reload the review and mark again.`);
   const marks = [...saved, ...phone];

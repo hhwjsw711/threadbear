@@ -921,6 +921,9 @@ export const designReviews = mutation({
 // downloads them as it does a send's. The runner's reviews.respond checks the
 // rest (an option and shot that exist, at most 20 marks, numbers unique).
 const MAX_REVIEW_MARKS = MAX_FILES_PER_COMMAND;
+// An option's shots, as the runner's reviews.ts maxReviewShots; a mark's
+// number is any positive whole number, as there (numbers need only be unique).
+const MAX_REVIEW_SHOTS = 8;
 const reviewMark = v.object({
   n: v.number(),
   kind: v.union(v.literal('circle'), v.literal('highlight'), v.literal('pin')),
@@ -952,7 +955,7 @@ export const respondReview = mutation({
         draft.notes.some((n) => n.text.length > 4000 || n.id.length > 200) || (draft.pickedId?.length ?? 0) > 200 ||
         (draft.pickedIds ?? []).some((id) => id.length > 200)) throw new ConvexError('The review answer is too long.');
     if (marks && (marks.length > MAX_REVIEW_MARKS || marks.some((m) =>
-      !Number.isSafeInteger(m.n) || m.n < 1 || m.n > 1000 || !Number.isSafeInteger(m.shot) || m.shot < 0 || m.shot > 1000 || m.optionId.length > 200 ||
+      !Number.isSafeInteger(m.n) || m.n < 1 || !Number.isSafeInteger(m.shot) || m.shot < 0 || m.shot >= MAX_REVIEW_SHOTS || m.optionId.length > 200 ||
       m.box.length !== 4 || m.box.some((x) => !Number.isFinite(x) || x < 0 || x > 1)))) throw new ConvexError('Invalid marks in the review answer.');
     const cutOuts = (marks ?? []).flatMap((m) => (m.storageId ? [m.storageId] : []));
     const images = await commandImages(ctx, me.id, cutOuts, MAX_REVIEW_MARKS);

@@ -147,6 +147,19 @@ public struct DesignReviewDraft: Codable, Sendable, Hashable {
         return (firstMarkNumber...).first { !used.contains($0) }
     }
 
+    /// What a freshly loaded review shows: an answered one exactly as the
+    /// runner keeps it; a pending one the phone's own draft if there is one
+    /// (`kept`), brought up to date with the Mac's marks.
+    public static func reopening(_ loaded: PhoneDesignReview, kept: DesignReviewDraft?) -> DesignReviewDraft {
+        guard loaded.pending else { return loaded.draft }
+        var draft = kept ?? loaded.draft
+        draft.takeMacMarks(from: loaded.draft)
+        return draft
+    }
+
+    /// How many of the phone's marks are over the cap, after the Mac added some.
+    public var marksOver: Int { max(0, (marks ?? []).count - markCapacity) }
+
     /// Takes the Mac's marks as a freshly loaded review has them. A phone
     /// mark whose number the Mac has since used is numbered on from the Mac's,
     /// and the reply's "[Mark n]" follow it.
