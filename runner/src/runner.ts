@@ -614,6 +614,9 @@ export type Drain = {
   checkQueued: boolean;
   ready: () => boolean;
   timer?: TimerHandle;
+  // When this drain first saw each open card on a kept thread (lapseCards).
+  cardsSince: Map<string, number>;
+  cardMs: number;
 };
 
 export type RunnerDeps = {

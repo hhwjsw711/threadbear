@@ -382,6 +382,38 @@ test('an approval holds a kept thread until it is answered', async () => {
   assert.deepEqual(handed, [t.id]);
 });
 
+test('a card nobody answers lapses after cardMs on a draining runner: the turn stops, the thread goes across and is told to ask again', async () => {
+  const h = makeHarness();
+  const t = h.runner.create({ text: 'look at the logs', accountId: 'claude-3', permissionMode: 'ask' }).thread;
+  const s = h.adapter.last;
+  s.init();
+  s.text('a1', 'Listing the logs.');
+  const decision = s.sink.requestApproval({ toolUseId: 'tu1', name: 'Bash', title: 'ls -la logs', input: { command: 'ls -la logs' }, canAlwaysAllow: true, signal: new AbortController().signal });
+  const approvalId = h.events(t.id).find((e) => e.type === 'approval.requested').approvalId as string;
+  const handed: string[] = [];
+  await h.runner.beginDrain([t.id], { onHandedOver: (id) => handed.push(id), checkMs: MIN });
+  const b = primary(h, [t.id]);
+  h.clock.advance(29 * MIN);
+  await tick();
+  assert.deepEqual(handed, [], 'still answerable under the limit');
+  h.clock.advance(2 * MIN);
+  await tick();
+  const answer = await decision;
+  assert.equal(answer.decision, 'expired');
+  assert.ok(h.events(t.id).some((e) => e.type === 'approval.resolved' && e.approvalId === approvalId && e.decision === 'expired'));
+  assert.ok(h.events(t.id).some((e) => e.type === 'system.note' && /lapsed/.test(e.text) && /ls -la logs/.test(e.text)));
+  // Mike's late answer is refused, not acted on: the old runner has let go
+  // (the stopped turn ended at once here), and the new one has no such card.
+  assert.deepEqual(handed, [t.id]);
+  assert.throws(() => h.runner.respondApproval({ threadId: t.id, approvalId, decision: 'allow' }), /handing over/);
+  assert.equal(h.adapter.sessions.length, 1, 'nothing more started on the old runner');
+  b.runner.adopt(t.id);
+  const sent = b.adapter.last.sent;
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /lapsed unanswered[\s\S]*ls -la logs[\s\S]*ask again/);
+  assert.throws(() => b.runner.respondApproval({ threadId: t.id, approvalId, decision: 'allow' }), /no longer pending/);
+});
+
 test('a thread left by a draining runner that died is adopted as after a crash', async () => {
   const h = makeHarness();
   const t = create(h).thread;

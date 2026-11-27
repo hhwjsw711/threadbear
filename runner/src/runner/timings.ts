@@ -21,6 +21,13 @@ export const DRAIN_SETTLE_MS = 30 * 60_000;
 // How long subagents hold a kept thread after its last turn. Long, since
 // they end by themselves; only a stuck one should ever reach it.
 export const DRAIN_AGENT_MS = 4 * 60 * 60_000;
+// How long a kept thread may sit on an open card (approval, question,
+// secret) with nothing else going before the card lapses and the thread
+// goes across, told to ask again there. Without it a card nobody answered
+// held an old runner open for good (26 Nov 2026: two Sentry triage threads
+// kept two for 9 and 11 hours). Long enough for Mike to come back from a
+// break and answer it where it is.
+export const DRAIN_CARD_WAIT_MS = 30 * 60_000;
 // How soon a thread.json that failed to save is tried again. Until it's
 // saved, a crash or a handover would lose what changed (THREADBEAR-9).
 export const SAVE_RETRY_MS = 5000;

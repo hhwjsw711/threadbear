@@ -2628,7 +2628,9 @@ on until an hour goes by without another.
 A runner update lets a job a thread left running in the background finish, for
 up to about 4 hours after the thread's last turn. If one goes on longer it's
 stopped, and the thread gets told and wakes by itself to check on it, so you'll
-see it pick back up rather than go quiet.
+see it pick back up rather than go quiet. A card nobody answers holds a thread
+on the old runner for 30 minutes; then it lapses, the thread moves to the new
+runner, and its agent asks again there.
 
 The new desktop app follows `main` too, from the
 checkout you installed it from. Its build takes every core of a Mac for

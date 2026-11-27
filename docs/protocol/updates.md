@@ -552,6 +552,16 @@ restart wait for busy threads. It hands over instead:
   thread is told when it comes across (Stopped background work). A thread
   in use could stay on the old release for as long as its work runs, so
   once it has been there 12 hours, 30 minutes without a turn is enough.
+  A card (approval, question, secret) holds it only so long: once a kept
+  thread has had nothing else going for 30 minutes
+  (`DRAIN_CARD_WAIT_MS`) with its cards still open, counted from when the
+  draining runner first saw each, they lapse (`approval.resolved` with
+  `expired`, so no app offers them and a late `approvals.respond` is
+  refused as no longer pending), a `system.note` says so, its turn is
+  stopped, and a message from the runner queued behind it goes across with
+  it, so the new runner starts a turn telling the agent to ask again.
+  Before this an unanswered card held an old runner open for good (26 Nov
+  2026: two for 9 and 11 hours).
   The stuck-job check (Stuck background jobs) goes on running on the
   draining runner, for the threads it keeps. Subagents
   hold it until they finish, up to 4 hours: they end by themselves, and

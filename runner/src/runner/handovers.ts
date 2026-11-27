@@ -10,7 +10,7 @@ import type { PersistedEvent, ThreadSummary } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import type { ThreadRecord } from '../store.ts';
 import type { Drain, ThreadState } from '../runner.ts';
-import { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS } from './timings.ts';
+import { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CARD_WAIT_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS } from './timings.ts';
 import { newRuntime } from './runtime.ts';
 import { runningSession } from '../cli-session.ts';
 
@@ -27,6 +27,18 @@ export const OPEN_CARDS_SCAN_MS = 6_000;
 // stops the next one), so this is long: past it, git has hung.
 const CLEANUP_WAIT_MS = 10 * 60_000;
 
+// What the agent is told on the new runner when its cards lapsed (lapseCards).
+export function lapsedCardsMessage(titles: string[]): string {
+  const one = titles.length === 1;
+  return [
+    `Threadbear updated while ${one ? 'this request of yours' : 'these requests of yours'} waited for an answer, so ${one ? 'it' : 'they'} lapsed unanswered and your turn was stopped:`,
+    '',
+    ...titles.map((t) => `- ${t}`),
+    '',
+    `Carry on where you left off, and ask again if you still need ${one ? 'it' : 'them'}.`,
+  ].join('\n');
+}
+
 export const handoversPart = {
   // This runner is handing over to a new release. `keep` are the busy
   // threads it goes on running; every other thread is let go now (an idle
@@ -38,7 +50,7 @@ export const handoversPart = {
   // `ready` says whether the new runner is there to hear about one (it has
   // connected); until it is, threads stay here, and recheckHandovers() looks
   // again once it does.
-  async beginDrain(this: Runner, keep: Iterable<string>, opts: { onHandedOver: (threadId: string) => void; backgroundMs?: number; agentMs?: number; checkMs?: number; ready?: () => boolean }): Promise<void> {
+  async beginDrain(this: Runner, keep: Iterable<string>, opts: { onHandedOver: (threadId: string) => void; backgroundMs?: number; agentMs?: number; checkMs?: number; cardMs?: number; ready?: () => boolean }): Promise<void> {
     if (this.draining) throw new Error('already draining');
     const d: Drain = {
       // A thread whose worktree cleanup is running stays until it's done
@@ -60,6 +72,8 @@ export const handoversPart = {
       checkMs: opts.checkMs ?? DRAIN_CHECK_MS,
       checkQueued: false,
       ready: opts.ready ?? (() => true),
+      cardsSince: new Map(),
+      cardMs: opts.cardMs ?? DRAIN_CARD_WAIT_MS,
     };
     this.draining = d;
     // New threads start on the new runner, so a CLI started ahead of one here
@@ -138,7 +152,7 @@ export const handoversPart = {
         d.keep.delete(id);
         continue;
       }
-      if (d.going.has(id) || !this.readyToHandOver(st, d)) continue;
+      if (d.going.has(id) || this.lapseCards(st, d) || !this.readyToHandOver(st, d)) continue;
       d.going.add(id);
       void this.letGo(st).then(
         () => {
@@ -153,8 +167,34 @@ export const handoversPart = {
         },
       );
     }
-    // Background work's limit passes without anything else happening.
+    // Background work's limit, or a card's, passes without anything else happening.
     if (d.keep.size > d.going.size) d.timer = this.clock.setTimeout(() => this.checkHandovers(), d.checkMs);
+  },
+
+  // A kept thread that has waited only on open cards for cardMs: the cards
+  // lapse (closed as expired, so no app offers them and a late answer is
+  // refused as no longer pending), its turn is stopped, and a message from
+  // the runner queued behind it goes across with it and starts there, so
+  // the agent asks again on the new release. True when it lapsed them; the
+  // thread goes across once the turn has ended. Anything else running
+  // (background work, a hook, an action) holds it as before.
+  lapseCards(this: Runner, st: ThreadState, d: Drain): boolean {
+    const { rt } = st;
+    if (rt.approvals.size === 0) return false;
+    const now = this.clock.now();
+    for (const id of rt.approvals.keys()) if (!d.cardsSince.has(id)) d.cardsSince.set(id, now);
+    if (rt.tasks.length || rt.hooksRunning || rt.runningActions?.size || rt.editing || rt.preparing || rt.wakeTimer) return false;
+    if ([...rt.approvals.keys()].some((id) => now - d.cardsSince.get(id)! < d.cardMs)) return false;
+    const titles = [...rt.approvals.values()].map((p) => ('title' in p ? p.title : undefined) ?? (p.kind === 'secret' ? 'a secret' : p.kind === 'request' ? 'a request' : 'an approval'));
+    for (const id of rt.approvals.keys()) d.cardsSince.delete(id);
+    const minutes = Math.round(d.cardMs / 60_000);
+    this.emit(st, { type: 'system.note', text: `Threadbear updated while this waited ${minutes} minutes for an answer, so ${titles.length === 1 ? 'the request' : 'its requests'} lapsed and the agent will ask again on the new release: ${titles.join('; ')}.` }, rt.turn?.turnId);
+    this.expireApprovals(st, 'It lapsed while Threadbear updated.');
+    if (rt.turn) this.interrupt(st.rec.id);
+    // Queued (the runner is draining): it goes across with the thread.
+    this.sendTo(st, lapsedCardsMessage(titles), [], { origin: 'runner', queue: true, wakeReason: 'A request lapsed during an update' });
+    this.log.info('lapsed the open cards of a kept thread', { threadId: st.rec.id, cards: titles.length });
+    return true;
   },
 
   // Nothing would be cut short by letting it go now: no turn, approval or
