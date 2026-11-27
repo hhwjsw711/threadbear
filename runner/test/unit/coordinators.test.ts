@@ -2913,6 +2913,68 @@ test('legacy task actions explain how to edit a loop-backed Tasks board entry', 
   assert.equal(answered?.state, 'ready_to_close');
 });
 
+test('a new named helper through the coordinator tool leaves an unrelated to-do alone', async (t) => {
+  const { c, h, project } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id });
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { coordinators: () => c })
+    .find((item) => item.name === 'coordinator')!;
+  c.addTask(project.id, 'Check audio timing', 'Pauses match the sample');
+  const previous = c.addTask(project.id, 'Check backup health', 'Yesterday’s backup verified').tasks[1]!;
+  c.completeTask(project.id, previous.id);
+  const before = c.get(project.id).tasks;
+  const result = await tool.handler({ action: 'startHelper', title: 'Check backup health', brief: 'Inspect the daily backup report', doneWhen: 'Latest backup verified' } as never, {});
+  assert.equal(result.isError, undefined, said(result));
+  const [timing, priorHealth, health] = c.get(project.id).tasks;
+  assert.deepEqual([timing, priorHealth], before);
+  assert.equal(health?.title, 'Check backup health');
+  assert.equal(health?.doneWhen, 'Latest backup verified');
+  assert.equal(health?.run?.status, 'running');
+  assert.equal(c.forThread(coordinator.threadId)?.tasks[2]?.run?.brief, 'Inspect the daily backup report');
+});
+
+test('a named helper uses the unique matching task and respects its wake', async (t) => {
+  const { c, h, project } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id });
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { coordinators: () => c })
+    .find((item) => item.name === 'coordinator')!;
+  const timing = c.addTask(project.id, 'Check audio timing', 'Pauses match the sample').tasks[0]!;
+  c.selectTask(project.id, timing.id);
+  const backup = c.addTask(project.id, 'Check backup health', 'Latest backup verified').tasks[1]!;
+  c.postponeTask(project.id, backup.id, { type: 'at', at: new Date(h.clock.now() + 1000).toISOString() });
+  const input = { action: 'startHelper', title: ' Check  BACKUP health ', brief: 'Inspect the backup report' };
+  const wait = await tool.handler(input as never, {});
+  assert.equal(wait.isError, true);
+  assert.match(said(wait), /postponed.*wait for its wake/i);
+  assert.equal(h.runner.threadRecords().length, 1);
+  h.clock.advance(1000);
+  const same = c.addTask(project.id, 'Check backup health', 'Other backup tested').tasks[2]!;
+  const ambiguous = await tool.handler(input as never, {});
+  assert.equal(ambiguous.isError, true);
+  assert.match(said(ambiguous), /more than one open task.*taskId/i);
+  assert.equal(h.runner.threadRecords().length, 1);
+  c.completeTask(project.id, same.id);
+  const different = await tool.handler({ ...input, doneWhen: 'Full restore tested' } as never, {});
+  assert.equal(different.isError, true);
+  assert.match(said(different), /different completion criteria.*updateWorkTask/);
+  assert.equal(h.runner.threadRecords().length, 1);
+  const start = await tool.handler({ ...input, doneWhen: 'Latest backup verified' } as never, {});
+  assert.equal(start.isError, undefined, said(start));
+  const [unchanged, started, completed] = c.get(project.id).tasks;
+  assert.equal(c.get(project.id).selectedTaskId, timing.id);
+  assert.deepEqual(unchanged, timing);
+  assert.equal(started?.id, backup.id);
+  assert.equal(started?.run?.status, 'running');
+  assert.equal(completed?.state, 'done');
+  assert.equal(completed?.run, undefined);
+  c.onHelperTurn(started!.run!.helperThreadId!, 'completed', 'Backup verified', started!.run!.id);
+  const retry = await tool.handler(input as never, {});
+  assert.equal(retry.isError, true);
+  assert.match(said(retry), /resumeHelper/);
+  assert.equal(h.runner.threadRecords().length, 2);
+});
+
 test('coordinator task creation names the invalid field', async (t) => {
   const { c, h, project } = setup();
   t.after(() => c.stop());

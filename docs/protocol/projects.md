@@ -735,17 +735,16 @@ updatedAt, closedAt? }`. Older coordinators without `loops` default to `[]`.
   reply postpones it until tomorrow at 9 a.m. local time. For `user_question`
   (`close: false`, follow-up) it moves the loop back to `open`.
 
-The runner stores the registry outside the model's context, including briefs,
-helper session identities and checkpoints. Each execution has its own run
-generation; late results from earlier executions cannot finish resumed work.
-Helper completion puts the task in review and wakes the coordinator. The
-coordinator checks its result against `doneWhen` before `completeTask` marks it
-done; `archiveTask` retains the full finished record in `coordinator-history.jsonl`
-and frees its active-list space. A to-do no longer needed (the user took it to a
-thread of their own, or it's moot) goes with `dropTask` and a `summary` of why
-(required): into the same history with `droppedAt` and `reason`, never marked
-done, and refused while a helper is working on it or once it's done. A session
-whose tool list predates `dropTask` drops it with `archiveTask` and a `summary`.
+The runner stores briefs, helper sessions and checkpoints outside model context.
+`startHelper` uses an explicit `taskId` first. With a title it uses the unique
+open task of that name if any supplied `doneWhen` agrees, or creates a separate
+task if unmatched. With neither it uses the selected or sole ready to-do.
+Each run's generation keeps late results from finishing resumed work. Helper
+completion wakes the coordinator to check `doneWhen` before `completeTask`.
+`archiveTask` frees an active slot and keeps the record in `coordinator-history.jsonl`.
+Use `dropTask` with a `summary` of why a to-do is no longer needed. History records
+`droppedAt` and `reason`. Dropping is refused while a helper is working or once the
+to-do is done. Older sessions use `archiveTask` with a `summary` to drop a to-do.
 `read_thread` reaches a coordinator's own hidden helpers by short id too;
 `send_message` refuses hidden helpers. Its owning coordinator can use the
 `resumeHelper` action with the exact `taskId` or `helperId` and a new `brief`

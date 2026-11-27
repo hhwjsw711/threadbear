@@ -1332,7 +1332,13 @@ export class Coordinators {
     const cwd = this.resolveHelperCwd(project, row, opts.cwd);
     const unstarted = row.tasks.filter((t) => !t.run && t.state === 'todo' && isAgentAction(t));
     const pending = unstarted.filter((t) => t.work?.state !== 'postponed');
-    const requestedId = opts.taskId || row.selectedTaskId;
+    const title = !opts.taskId && opts.title ? text(opts.title, 200, 'title') : undefined;
+    const titleKey = title && taskTitleKey(title);
+    const matches = titleKey ? boardRecords(row).filter((t) => !isTaskDone(t) && taskTitleKey(t.title) === titleKey) : [];
+    if (matches.length > 1) throw bad('More than one open task has this title. Choose the intended to-do with taskId.');
+    const taskId = opts.taskId || matches[0]?.id;
+    const selectedId = title ? undefined : row.selectedTaskId;
+    const requestedId = taskId ?? selectedId;
     const requested = row.tasks.find((t) => t.id === requestedId);
     if (requested) {
       requireTaskAwake(requested);
@@ -1340,28 +1346,31 @@ export class Coordinators {
     }
     let task: Coordinator['tasks'][number] | undefined;
     let createdTask = false;
-    if (opts.taskId) {
-      task = pending.find((t) => t.id === opts.taskId);
+    if (taskId) {
+      task = pending.find((t) => t.id === taskId);
       if (!task) {
-        this.refuseTaskActionOnLoop(row, opts.taskId);
+        this.refuseTaskActionOnLoop(row, taskId);
         throw bad('Choose an unstarted to-do for startHelper, or use resumeHelper for existing work.');
       }
-    } else if (row.selectedTaskId) {
-      task = pending.find((t) => t.id === row.selectedTaskId);
+    } else if (selectedId) {
+      task = pending.find((t) => t.id === selectedId);
       if (!task && pending.length) throw bad('Choose the intended to-do with taskId or coordinator action selectTask before starting a helper.');
-    } else if (pending.length === 1) {
+    } else if (!title && pending.length === 1) {
       task = pending[0];
-    } else if (pending.length > 1) {
+    } else if (!title && pending.length > 1) {
       throw bad('Choose the intended to-do with taskId or coordinator action selectTask before starting a helper.');
     }
+    if (task && title && opts.doneWhen && text(opts.doneWhen, 1000, 'doneWhen') !== (getTaskDetails(task).doneWhen ?? task.doneWhen)) {
+      throw bad('The open task with this title has different completion criteria. Use updateWorkTask to change its doneWhen, or give the new work a different title.');
+    }
     if (!task) {
-      if (!pending.length && unstarted.length) requireTaskAwake(unstarted[0]!);
+      if (!title && !pending.length && unstarted.length) requireTaskAwake(unstarted[0]!);
       if (row.tasks.length >= 100) throw bad('The project task list is full.');
       const fallbackTitle = brief.split(/\r?\n/, 1)[0]!.trim().slice(0, 200) || 'Project work';
       task = {
         id: crypto.randomUUID(),
-        title: opts.title ? text(opts.title, 200) : fallbackTitle,
-        doneWhen: opts.doneWhen ? text(opts.doneWhen, 1000) : 'The helper reports its verified result.',
+        title: title ?? fallbackTitle,
+        doneWhen: opts.doneWhen ? text(opts.doneWhen, 1000, 'doneWhen') : 'The helper reports its verified result.',
         state: 'todo',
       };
       createdTask = true;
@@ -1389,7 +1398,7 @@ export class Coordinators {
     const helperId = helperSt.rec.id;
     task.run = { id: dispatchId, agentId: helperId, helperThreadId: helperId, nativeRunId: dispatchId, status: 'running', brief, updatedAt: this.now() };
     taskMove(task, 'working');
-    delete row.selectedTaskId;
+    if (!title || row.selectedTaskId === task.id) delete row.selectedTaskId;
     this.changed(row);
     if (coordSt) {
       this.deps.host.updateSubagent(coordSt, {
