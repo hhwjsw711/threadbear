@@ -28,6 +28,24 @@ Feature: Projects: the list, the page of cards and a project's own page
     And the sidebar's project "Threadbear" lists "Why is the build slow on CI?"
     And the sidebar's project "Not in a project" lists "Ship the beta to TestFlight"
 
+  # The Swift app is frozen; projects start collapsed in the GPUI sidebar.
+  @projects.list @swift-pending
+  Scenario: Projects in the sidebar start collapsed and expand from their thread toggle
+    When I show the Projects page
+    Then the sidebar's project "Threadbear" is collapsed
+    And the sidebar's project "Photo sync" is collapsed
+    And the sidebar's project "Not in a project" is collapsed
+    When I press the control "Show Threadbear's threads"
+    Then the sidebar's project "Threadbear" is expanded
+    And no project page is open
+    When I press the control "Hide Threadbear's threads"
+    Then the sidebar's project "Threadbear" is collapsed
+    When I press the control "Open Threadbear"
+    Then the project page "Threadbear" is open
+    And the sidebar's project "Threadbear" is collapsed
+    When I press the control "Show Not in a project"
+    Then the sidebar's project "Not in a project" is expanded
+
   @projects.page
   Scenario: A project's page has its folders and threads
     When I open the project "Walkies"

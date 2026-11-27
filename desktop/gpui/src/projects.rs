@@ -44,6 +44,10 @@ pub(crate) struct ProjectsState {
     pub(crate) busy: HashSet<String>,
     /// The sidebar's Archived projects, unfolded.
     pub(crate) archived_open: bool,
+    /// Projects whose threads are expanded in the sidebar. Projects start
+    /// collapsed so the list stays compact; clicking a project's count or
+    /// chevron unfolds its threads.
+    pub(crate) expanded: HashSet<String>,
     /// How many archived threads each project shows in the sidebar.
     pub(crate) archived_shown: HashMap<String, usize>,
     /// What's under the pointer in the project views (a heading, a card, a
@@ -118,6 +122,9 @@ impl Threadbear {
                 self.projects.open = None;
             }
         }
+        self.projects
+            .expanded
+            .retain(|id| id == rules::UNFILED_ID || self.projects.list.iter().any(|p| &p.id == id));
     }
 
     pub(crate) fn project(&self, id: &str) -> Option<&Project> {

@@ -1219,7 +1219,8 @@ in: an app you're building, a trip, a house move. Each has goals, a few
 lines on where it's up to, notes for later threads (decisions and
 gotchas), links (its live site, an admin page) and folders, the repos its
 work lives in. The Projects view lists them, with New project at the top;
-click one for its page, with its threads, state and notes. The search at
+click one for its page, with its threads, state and notes, or click its
+thread count to expand its threads in the sidebar. The search at
 the top of the Projects page looks through their names, state, goals, notes
 and folders: Return opens the top result and Escape clears it.
 

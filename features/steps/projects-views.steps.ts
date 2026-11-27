@@ -23,6 +23,14 @@ Then('the sidebar\'s project {string} lists {string}', async function (this: Thr
   await this.until(`"${thread}" under "${title}"`, (d) => d.sidebar.sections.some((s) => s.name === title && s.threads.some((t) => t.title === thread)));
 });
 
+Then('the sidebar\'s project {string} is collapsed', async function (this: ThreadbearWorld, title: string) {
+  await this.until(`"${title}" collapsed`, (d) => d.sidebar.sections.some((s) => s.name === title && s.collapsed === true));
+});
+
+Then('the sidebar\'s project {string} is expanded', async function (this: ThreadbearWorld, title: string) {
+  await this.until(`"${title}" expanded`, (d) => d.sidebar.sections.some((s) => s.name === title && s.collapsed === false));
+});
+
 Then('the project page {string} is open', async function (this: ThreadbearWorld, title: string) {
   await this.until(`the page for "${title}"`, (d) => page(d)?.title === title);
 });
