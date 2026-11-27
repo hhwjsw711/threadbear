@@ -36,7 +36,11 @@ struct DesignReviewsView: View {
     }
 
     private func board(_ review: PhoneDesignReview) -> some View {
-        ReviewBoard(review: review, draft: $draft, pictures: loadable, canMark: model.hasReviewMarks && review.canMark == true,
+        // Worked out first: inline, this call took Xcode 26's type checker
+        // past its time limit.
+        let runnerMarks: Bool = review.canMark ?? false
+        let canMark: Bool = model.hasReviewMarks && runnerMarks
+        return ReviewBoard(review: review, draft: $draft, pictures: loadable, canMark: canMark,
                         sending: sending, loading: loading, problem: problem, demo: model.isFake,
                         close: { dismiss() },
                         allReviews: {

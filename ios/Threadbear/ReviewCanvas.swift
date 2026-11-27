@@ -356,6 +356,16 @@ nonisolated struct CanvasWobble {
 }
 
 nonisolated enum CanvasDoodle {
+    /// The Mac's seed for a mark's wobble: option × 97 + shot × 13 + mark + 7.
+    /// Its own function, typed step by step: inline in the view builder it
+    /// took Xcode 26's type checker past its time limit.
+    static func seed(option: Int, shot: Int, mark: Int) -> UInt32 {
+        let base: Int = option * 97
+        let withShot: Int = base + shot * 13
+        let total: Int = withShot + mark + 7
+        return UInt32(truncatingIfNeeded: total)
+    }
+
     /// A loop round a box, a little more than once round, the ends crossing.
     static func circle(_ part: CGRect, seed: UInt32) -> CanvasStroke {
         var w = CanvasWobble(state: seed)

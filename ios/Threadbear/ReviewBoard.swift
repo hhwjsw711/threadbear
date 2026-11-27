@@ -456,7 +456,7 @@ struct ReviewBoard: View {
                 ForEach(marks.indices, id: \.self) { m in
                     let mark = marks[m]
                     let ink = BoardInk.of(mark.ink)
-                    let seed = UInt32(laid.option * 97 + laid.shot * 13 + m) + 7
+                    let seed = CanvasDoodle.seed(option: laid.option, shot: laid.shot, mark: m)
                     let strokes = CanvasDoodle.strokes(laid.picture, mark, seed: seed)
                     if mark.kind == "highlight" {
                         StrokesShape(strokes: strokes)
