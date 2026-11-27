@@ -97,6 +97,17 @@ as it holds Tinker Desk's build lock meanwhile.
   filmed window, so use dev-app commands: a panel cramped under the threads goes full height
   with `{"cmd":"dock-move","panel":"usage","edge":"right"}`; the model picker's `search` also
   presses Return, so it picks the first match.
+- `--fixtures DIR` replaces the demo threads rather than adding to them: for a made-up thread of
+  your own (a done card, a returned review), copy `mock-runner/fixtures/` to a scratch folder
+  with yours beside it and pass that. Settle the fixtures and `--mock-env` before the first
+  `start`: each `stop` frees Tinker Desk's build lock, and the next `start` can wait behind
+  another thread's build.
+- The review window is a window of its own: find its id by listing windows there
+  (CGWindowListCopyWindowInfo through `~/.local/bin/desk`) and record it with
+  `record-window.swift <id> <out> <secs> --window-only`. The mock's demo reviews use the
+  account picker pictures, with real email addresses, so add a review of your own with
+  `{"cmd":"mock","method":"review","params":{"threadId":...,"review":...}}` and pictures copied to
+  the host (absolute paths there).
 - A recording starts about three seconds after `film.sh record` returns to the background, so
   wait six or seven seconds before the first command.
 - Settings opens in a window of its own, which `film.sh record` doesn't record and scripted
