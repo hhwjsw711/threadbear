@@ -135,12 +135,15 @@ back says why in `tb status` and the Updates panel, and goes out on the next hou
 once the checks are green. When main's newest commit is red, the newest older one since
 the last release that GitHub checked and passed on every workflow goes out instead (an
 hour old at least, and the head of a push, so its changes were checked on their own), so
-one red push doesn't hold releases for days. The tag is signed with Mike's SSH signing key and pushed to GitHub. The tag's message
-starts with plain-words notes ("What's new:", a few lines Opus writes from the commits
+one red push doesn't hold releases for days. The tag is signed with Mike's SSH signing key and pushed to GitHub. The tag's message starts with plain-words notes ("What's new:", a few lines Opus writes from the commits
 on Mike's runner, for people who use Threadbear rather than work on it), then lists
 every commit since the last tag. The app's Updates panel shows the notes, and the
 commit subjects only for a release from before there were notes. If the model call
-fails, the release goes out without notes.
+fails, the release goes out without notes. On GitHub, each `release/YYYY-MM-DD` tag also
+builds and attaches `threadbear-android.apk` (`.github/workflows/android.yml`) and an
+Apple Silicon `threadbear-mac-arm64.zip` bundle (`.github/workflows/mac-release.yml`,
+ad-hoc signed with `build.json` `checkout` and `origin` cleared so downloaded copies stay
+off Mike's Sentry).
 
 **Signed, because it's code that runs as you.** Setup pins Mike's public key
 (`scripts/release-signers`) into the data folder. The runner ignores any release tag that

@@ -341,3 +341,33 @@ test("an older updater's binaries from a check host are never made into a bundle
   r = make({ THREADBEAR_BUILT_ON: 'builder' });
   assert.notEqual(r.status, 6, r.stderr);
 });
+
+test('make-bundle.sh public release clears checkout/origin and writes the tag version', () => {
+  if (process.platform !== 'darwin') return;
+  const dir = tmpDir();
+  const bins = path.join(dir, 'bins');
+  const bundle = path.join(dir, 'Threadbear GPUI.app');
+  for (const bin of ['threadbear-gpui', 'threadbear-web-helper']) write(path.join(bins, bin), '#!/bin/sh\nexit 0\n', 0o755);
+  const r = spawnSync('bash', [MAKE_BUNDLE, bins, bundle], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      THREADBEAR_BUILT_ON: 'github-macos',
+      THREADBEAR_PUBLIC_RELEASE: '1',
+      THREADBEAR_BUNDLE_VERSION: '2026.11.27',
+      THREADBEAR_BUNDLE_BUILD: '20261127',
+    },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const plist = fs.readFileSync(path.join(bundle, 'Contents', 'Info.plist'), 'utf8');
+  assert.match(plist, /<key>CFBundleShortVersionString<\/key>\s*<string>2026\.11\.27<\/string>/);
+  assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>20261127<\/string>/);
+  const build = JSON.parse(fs.readFileSync(path.join(bundle, 'Contents', 'Resources', 'build.json'), 'utf8')) as {
+    checkout: string;
+    origin: string;
+    builtOn?: string;
+  };
+  assert.equal(build.checkout, '');
+  assert.equal(build.origin, '');
+  assert.equal(build.builtOn, 'github-macos');
+});

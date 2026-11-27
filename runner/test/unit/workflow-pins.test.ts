@@ -119,3 +119,18 @@ test("the Gradle wrapper's download is pinned by its digest", () => {
   const props = fs.readFileSync(path.join(repoRoot, 'android-native/gradle/wrapper/gradle-wrapper.properties'), 'utf8');
   assert.match(props, /^distributionSha256Sum=[0-9a-f]{64}$/m);
 });
+
+test('the Mac release publish job runs no actions, checks nothing out, and verifies the archive digest', () => {
+  const jobs = jobsOf(fs.readFileSync(path.join(workflowsDir, 'mac-release.yml'), 'utf8'));
+  const build = jobs.get('mac')!;
+  const publish = jobs.get('publish')!;
+  assert.ok(build && publish, 'mac-release.yml has mac and publish jobs');
+  assert.match(build, /contents: read/);
+  assert.doesNotMatch(build, /contents: write/);
+  assert.match(build, /persist-credentials: false/);
+  assert.deepEqual(usesOf(publish), [], 'the publish job runs no actions at all');
+  assert.doesNotMatch(publish, /checkout|cargo|rustup/, 'the publish job runs no repo code or build tools');
+  assert.match(publish, /github\.repository == 'mikecann\/threadbear'/);
+  assert.match(publish, /WANT: \$\{\{ needs\.mac\.outputs\.sha256 \}\}/);
+  assert.match(publish, /\[ "\$got" = "\$WANT" \]/);
+});

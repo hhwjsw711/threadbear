@@ -51,6 +51,10 @@ cp "$bins/threadbear-gpui" "$bundle/Contents/MacOS/threadbear-gpui"
 # signature takes it in as signed code.
 cp "$bins/threadbear-web-helper" "$bundle/Contents/MacOS/threadbear-web-helper"
 codesign --force --sign - "$bundle/Contents/MacOS/threadbear-web-helper" 2>/dev/null
+bundle_version="${THREADBEAR_BUNDLE_VERSION:-0.1}"
+bundle_build="${THREADBEAR_BUNDLE_BUILD:-1}"
+[[ "$bundle_version" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "Invalid THREADBEAR_BUNDLE_VERSION: $bundle_version" >&2; exit 2; }
+[[ "$bundle_build" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "Invalid THREADBEAR_BUNDLE_BUILD: $bundle_build" >&2; exit 2; }
 cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,8 +65,8 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>Threadbear GPUI</string>
     <key>CFBundleDisplayName</key><string>Threadbear GPUI</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$bundle_version</string>
+    <key>CFBundleVersion</key><string>$bundle_build</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <!-- threadbear://thread/<id> opens a thread (desktop/gpui/src/deep_links.rs),
@@ -96,13 +100,22 @@ rm -rf "$(dirname "$iconset")"
 # What this bundle was built from: the commit, desktop/'s tree at it (only a
 # change under desktop/ changes what runs, so the updater compares that), the
 # checkout whose main to follow, and that checkout's origin.
+# Public GitHub release archives (THREADBEAR_PUBLIC_RELEASE=1) clear checkout
+# and origin so a downloaded copy never tries to rebuild from CI's checkout
+# path and never reports crashes to Mike's Sentry (BuildInfo::is_mikes_repo).
 commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
 short="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
 tree="$(git -C "$root" rev-parse HEAD:desktop 2>/dev/null || true)"
-origin="$(git -C "$checkout" remote get-url origin 2>/dev/null || true)"
+if [ "${THREADBEAR_PUBLIC_RELEASE:-}" = "1" ]; then
+  build_checkout=""
+  origin=""
+else
+  build_checkout="$checkout"
+  origin="$(git -C "$checkout" remote get-url origin 2>/dev/null || true)"
+fi
 # builtOn: the host the binaries came from ("" for this Mac), when the caller
 # says (stage-update.sh does), so the log can tell which Mac made what runs.
-/usr/bin/python3 -I - "$bundle/Contents/Resources/build.json" "$commit" "$short" "$tree" "$checkout" "$origin" "${THREADBEAR_BUILT_ON-}" "${THREADBEAR_BUILT_ON+set}" <<'PY'
+/usr/bin/python3 -I - "$bundle/Contents/Resources/build.json" "$commit" "$short" "$tree" "$build_checkout" "$origin" "${THREADBEAR_BUILT_ON-}" "${THREADBEAR_BUILT_ON+set}" <<'PY'
 import datetime, json, sys
 path, commit, short, tree, checkout, origin, built_on, said = sys.argv[1:]
 info = {
@@ -123,11 +136,19 @@ chmod +x "$bundle/Contents/Resources/stage-update.sh"
 
 # Signed with the first Apple Development identity, as the Swift app is, so
 # the app keeps the same identity from one build to the next and macOS's
-# privacy permissions stick. Ad hoc otherwise, with the designated
-# requirement pinned to the bundle id, as an ad hoc one is the binary's hash
-# and changes on every build. A revoked certificate is still listed, marked
-# CSSMERR_TP_CERT_REVOKED, and codesign fails with it, so it's passed over.
-identity="${THREADBEAR_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development:/ && !/CSSMERR_/ { print $2; exit }' || true)}"
+# privacy permissions stick. Public release archives (unless given an explicit
+# THREADBEAR_SIGN_IDENTITY) and machines without a dev cert sign ad hoc with
+# the designated requirement pinned to the bundle id, as a plain ad hoc one is
+# the binary's hash and changes on every build. A revoked certificate is still
+# listed, marked CSSMERR_TP_CERT_REVOKED, and codesign fails with it, so it's
+# passed over.
+if [ -n "${THREADBEAR_SIGN_IDENTITY:-}" ]; then
+  identity="$THREADBEAR_SIGN_IDENTITY"
+elif [ "${THREADBEAR_PUBLIC_RELEASE:-}" = "1" ]; then
+  identity=""
+else
+  identity="$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development:/ && !/CSSMERR_/ { print $2; exit }' || true)"
+fi
 requirements=()
 if [ -z "$identity" ]; then
   identity="-"
