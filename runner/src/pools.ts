@@ -24,11 +24,16 @@ export const WAIT_SLACK_MS = 60_000;
 // Work, Codex.
 export function defaultPools(accounts: Account[], notes: Record<string, string>, folders: Record<string, string[]>): Pool[] {
   const out: Pool[] = [];
+  const own = new Set<Pool>();
   const noteOf = (a: Account): string | undefined => (notes[a.id] ?? a.note)?.trim() || undefined;
   for (const provider of PROVIDERS) {
     const mine = accounts.filter((a) => a.provider === provider);
     const plain = mine.filter((a) => !noteOf(a));
-    if (plain.length) out.push(withFolders({ id: provider, title: providerName(provider), accountIds: plain.map((a) => a.id), builtIn: true }, plain, folders));
+    if (plain.length) {
+      const pool = withFolders({ id: provider, title: providerName(provider), accountIds: plain.map((a) => a.id), builtIn: true }, plain, folders);
+      own.add(pool);
+      out.push(pool);
+    }
     for (const a of mine.filter((x) => noteOf(x))) {
       const word = noteOf(a)!.split(/\s+/)[0].replace(/[^\p{L}\p{N}_-]/gu, '');
       let id = word.toLowerCase();
@@ -36,7 +41,31 @@ export function defaultPools(accounts: Account[], notes: Record<string, string>,
       out.push(withFolders({ id, title: word || a.title, accountIds: [a.id], builtIn: true }, [a], folders));
     }
   }
-  return out;
+  return uniqueIds(out, own);
+}
+
+// A login's own id can clash with another pool's (a claudeLogins one named
+// `work` after another's "Work only", or `codex`), and a lookup by id takes
+// the first. A provider's own pool keeps its name and so does the first of the
+// rest; a later one is numbered on (`work-2`) past every id there is, so no
+// pool whose id was its own changes, nor a saved choice of it.
+function uniqueIds(pools: Pool[], providerPools: Set<Pool>): Pool[] {
+  const providers = PROVIDERS as readonly string[];
+  const taken = new Set(pools.map((p) => p.id));
+  const seen = new Set<string>();
+  return pools.map((p) => {
+    const clash = seen.has(p.id) || (providers.includes(p.id) && !providerPools.has(p));
+    if (!clash) {
+      seen.add(p.id);
+      return p;
+    }
+    let n = 2;
+    while (taken.has(`${p.id}-${n}`)) n++;
+    const id = `${p.id}-${n}`;
+    taken.add(id);
+    seen.add(id);
+    return { ...p, id };
+  });
 }
 
 function withFolders(pool: Pool, members: Account[], folders: Record<string, string[]>): Pool {

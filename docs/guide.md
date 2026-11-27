@@ -1596,6 +1596,16 @@ shows up in the account menu within a few seconds. A Codex login's threads
 get the same instructions, hooks, skills and settings as `~/.codex`: the
 runner links them in before its first thread starts.
 
+Already have a Claude folder you sign in to by hand, such as
+`~/.claude-personal`? With the Existing Claude folders experiment on
+(`claudeLogins`), list it in `runner.json` rather than moving it:
+`"claudeLogins": [{ "id": "claude-personal", "dir": "~/.claude-personal" }]`.
+The id is optional (it defaults to the folder's name without the dot).
+Write the path exactly as you do when you sign in (`~` is fine), trailing
+slash or not: Claude names its Keychain item from that exact string, so
+another spelling reads as signed out. Restart the runner after turning the
+experiment on or editing the list.
+
 To drop a login you no longer use, such as one whose plan has lapsed, add
 its id to `hiddenLogins` in `runner.json` (`"hiddenLogins": ["claude-main"]`)
 and restart the runner. It goes from the Usage panel and the account menu,

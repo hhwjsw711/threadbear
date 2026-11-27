@@ -7,6 +7,8 @@ import type { UsageStore } from './usage.ts';
 import { resetHint } from './reset-hint.ts';
 import type { Config } from './config.ts';
 import { isDirectory } from './fsutil.ts';
+import { experimentOn } from './experiments.ts';
+import { claudeLoginsToAdd } from './claude-logins.ts';
 
 // What a .claude.json says about its login: oauthAccount's emailAddress,
 // organizationType and billingType. Tokens live in the Keychain and are never read; this
@@ -105,7 +107,7 @@ export function isCodexLogin(dir: string): boolean {
 }
 
 export type DiscoveryConfig = Pick<Config, 'claudeMainDir' | 'claudeMainJson' | 'tokenStatsAccountsDir' | 'userHome' | 'pathEnv'> &
-  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'hiddenLogins' | 'accountsDir' | 'home' | 'cursorPath' | 'opencodePath' | 'grokPath' | 'antigravityPath' | 'claudeMainEmail'>>;
+  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'hiddenLogins' | 'claudeLogins' | 'accountsDir' | 'home' | 'cursorPath' | 'opencodePath' | 'grokPath' | 'antigravityPath' | 'claudeMainEmail'>>;
 
 // claude-main is ~/.claude (its .claude.json sits at ~/.claude.json);
 // codex-main is ~/.codex. Token Stats' Accounts folder holds claude-N and
@@ -144,7 +146,23 @@ export function discoverAccounts(cfg: DiscoveryConfig): Account[] {
   for (const { id, dir } of [...codex, ...numbered('codex')]) {
     if (isCodexLogin(dir)) out.push(codexAccount(id, dir));
   }
-  out.push(...acpAccounts({ home: cfg.userHome, pathEnv: cfg.pathEnv, paths: { cursor: cfg.cursorPath, opencode: cfg.opencodePath, grok: cfg.grokPath, antigravity: cfg.antigravityPath } }));
+  const acp = acpAccounts({ home: cfg.userHome, pathEnv: cfg.pathEnv, paths: { cursor: cfg.cursorPath, opencode: cfg.opencodePath, grok: cfg.grokPath, antigravity: cfg.antigravityPath } });
+  // Folders runner.json lists (claudeLogins experiment), after the Claude
+  // logins found here, so one of those always wins a clash.
+  if (cfg.home && cfg.claudeLogins?.length && experimentOn(cfg.home, 'claudeLogins')) {
+    const all = [...out, ...acp];
+    const claudeCount = out.filter((a) => a.provider === 'claude').length;
+    const added = claudeLoginsToAdd(
+      cfg.claudeLogins,
+      { ids: all.map((a) => a.id), dirs: all.map((a) => a.configDir) },
+      {
+        never: [cfg.userHome, cfg.claudeMainDir, path.join(cfg.userHome, '.claude'), path.join(cfg.userHome, '.codex'), ...(cfg.codexMainDir ? [cfg.codexMainDir] : [])],
+        notIn: [cfg.tokenStatsAccountsDir, ...(cfg.accountsDir ? [cfg.accountsDir] : [])],
+      },
+    );
+    out.splice(claudeCount, 0, ...added.map(({ id, dir }) => claudeAccount(id, dir, readLoginProfile(path.join(dir, '.claude.json')))));
+  }
+  out.push(...acp);
   for (const a of out) {
     const note = cfg.accountNotes?.[a.id];
     if (note) a.note = note;

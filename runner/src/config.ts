@@ -4,6 +4,7 @@ import path from 'node:path';
 import { extraUpdatesFrom, type ExtraUpdate } from './updates/extra.ts';
 import crypto from 'node:crypto';
 import { atomicWriteFileSync } from './fsutil.ts';
+import { parseClaudeLogins, type ClaudeLogin } from './claude-logins.ts';
 import { RELEASE } from './release.ts';
 import { gatewayBase, gatewayUrlFrom } from './connectors.ts';
 import type { MailWatchSettings } from './mail-watch.ts';
@@ -123,6 +124,9 @@ export type Config = {
   // the only way to drop it once its plan has lapsed, rather than have its
   // Usage row (and its sign-in warning dot) sit there for good.
   hiddenLogins?: string[];
+  // Claude config folders runner.json lists as logins of their own
+  // (claudeLogins experiment, claude-logins.ts), each dir as written.
+  claudeLogins?: ClaudeLogin[];
   poolFolders?: Record<string, string[]>;
   // The folders runner.json's `sandbox` named, from the sandboxed-threads
   // experiment Threadbear no longer has (taken out 16 Nov 2026). A thread
@@ -223,6 +227,7 @@ export type RunnerJson = {
   cliUpdates?: Partial<CliUpdatesConfig>;
   accountNotes?: Record<string, string>;
   hiddenLogins?: string[];
+  claudeLogins?: unknown;
   poolFolders?: Record<string, string[]>;
   sandbox?: unknown;
   pools?: unknown[];
@@ -529,6 +534,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, opts: { readOnl
     ...((h) => (h.length ? { hiddenLogins: h } : {}))(
       Array.isArray(json.hiddenLogins) ? json.hiddenLogins.filter((x): x is string => typeof x === 'string' && x !== '') : [],
     ),
+    // Read only with the claudeLogins experiment on (it starts off), so with
+    // it off the key does nothing at all; discovery checks it again each scan.
+    ...((c) => {
+      if (!opts.readOnly) for (const e of c.errors) console.warn('runner.json claudeLogins: ' + e);
+      return c.logins.length ? { claudeLogins: c.logins } : {};
+    })(json.experiments?.claudeLogins === true ? parseClaudeLogins(json.claudeLogins, userHome) : { logins: [], errors: [] }),
     poolFolders: folderMap(json.poolFolders) ?? { ...DEFAULT_POOL_FOLDERS },
     ...((f) => (f.length ? { retiredSandboxFolders: f } : {}))(retiredSandboxFolders(json.sandbox, expand)),
     ...(Array.isArray(json.pools) && json.pools.length ? { pools: json.pools } : {}),

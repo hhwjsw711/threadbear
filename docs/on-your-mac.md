@@ -997,7 +997,12 @@ the owning runner.
   It keeps the main Mac's copy in `memory-cache/` and what it last synced in `memory-sync.json` there
   (`runner/src/memory-sync.ts`).
 - Token Stats' files, if you have that app, and any logins you've added
-  under `accounts` in its data folder (`claude-1`, `codex-1`...).
+  under `accounts` in its data folder (`claude-1`, `codex-1`...). With the
+  claudeLogins experiment on, also each folder listed in runner.json's
+  `claudeLogins`, as for those: its `.claude.json` (for the email),
+  `settings.json` (the model) and `threadbear-token.json` if there is one,
+  and Claude runs with `CLAUDE_CONFIG_DIR` set to it
+  (`runner/src/claude-logins.ts`, `runner/src/accounts.ts`).
 - The GPUI app's setup cards, the first time it opens (or from Help > Set
   Up Threadbear): which account GitHub's CLI is signed in as, by running
   `gh auth status` once, and nothing else of `gh`'s. Add on its Your agents
