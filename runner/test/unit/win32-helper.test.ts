@@ -73,6 +73,27 @@ test("a helper that can't start fails the question rather than hanging it", asyn
   await assert.rejects(h.ask('ping'), /couldn't start|exited/);
 });
 
+// PowerShell dying leaves a question's write with nowhere to go (EPIPE).
+// That has to be caught on the pipe: an uncaught EPIPE restarts the runner.
+// The pad is bigger than a pipe buffer, so the write is still in flight
+// when the process exits.
+test('a question written to a helper that has already gone is not an uncaught EPIPE', async () => {
+  const crashes: string[] = [];
+  const trap = (e: NodeJS.ErrnoException) => {
+    crashes.push(e?.code ?? String(e));
+  };
+  process.on('uncaughtException', trap);
+  const h = new Win32Helper({ command: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMs: 5000 });
+  try {
+    await assert.rejects(h.ask('ping', { pad: 'x'.repeat(1_000_000) }), /exited|couldn't start/);
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(crashes, []);
+  } finally {
+    process.off('uncaughtException', trap);
+    h.stop();
+  }
+});
+
 test('its text answers parse, and odd lines are dropped', () => {
   assert.deepEqual(parseProcesses('4 0 0\r\n1200 800 133761234567890123\nnot a row\n'), [
     { pid: 4, ppid: 0, created: 0n },

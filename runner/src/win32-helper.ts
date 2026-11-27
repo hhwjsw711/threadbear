@@ -84,6 +84,9 @@ export class Win32Helper {
     const args = this.deps.args ?? helperArgs();
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     this.child = child;
+    child.stdin?.on('error', () => {
+      // EPIPE when PowerShell has already gone; the exit handler reports it.
+    });
     // The real helper's script, ahead of any question (a stand-in has its own).
     if (!this.deps.args) {
       try {
