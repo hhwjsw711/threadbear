@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -30,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.minimumInteractiveComponentSize
 import com.mikerosoft.threadbear.kit.PhoneLink
 
 /**
@@ -56,8 +58,10 @@ fun LinkChipButtons(links: List<PhoneLink>, open: (String) -> Unit) {
     val colors = MaterialTheme.colorScheme
     for ((title, page) in pages) {
         Row(
-            Modifier.clip(CircleShape).background(colors.surfaceContainerHigh).clickable(onClickLabel = "Opens it in the browser") { open(page) }
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+            Modifier.minimumInteractiveComponentSize().heightIn(min = 36.dp)
+                .clip(CircleShape).background(colors.surfaceContainerHigh)
+                .clickable(onClickLabel = "Opens it in the browser") { open(page) }
+                .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Line.External, null, Modifier.size(13.dp), tint = colors.onSurfaceVariant)

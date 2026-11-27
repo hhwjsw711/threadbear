@@ -232,19 +232,21 @@ struct NewThreadView: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "laptopcomputer")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
                 Text(chosenRunner?.name ?? "Automatic")
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(.subheadline.weight(.medium))
                     .lineLimit(1)
                     .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.86) : .primary)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 28)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 34)
             .background(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.07), in: Capsule())
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Runner: \(chosenRunner?.name ?? "Automatic")")

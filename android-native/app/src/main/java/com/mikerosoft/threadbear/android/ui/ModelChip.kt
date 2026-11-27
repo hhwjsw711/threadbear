@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -43,14 +45,17 @@ fun ModelChip(
     val stroke = if (interactive) signals.accent.copy(alpha = 0.30f) else colors.outlineVariant
     val fg = if (interactive) signals.accent else colors.onSurfaceVariant
 
+    // Material's 48dp touch target around a 36dp capsule, so it sits with the link chips.
     val chipMod = modifier
+        .minimumInteractiveComponentSize()
+        .heightIn(min = 36.dp)
         .clip(CircleShape)
         .background(fill)
         .border(1.dp, stroke, CircleShape)
         .let { m ->
             if (interactive) m.clickable(role = Role.Button, onClickLabel = "Change model", onClick = onClick) else m
         }
-        .padding(horizontal = 10.dp, vertical = 6.dp)
+        .padding(horizontal = 12.dp)
 
     Row(
         modifier = chipMod,
@@ -59,17 +64,17 @@ fun ModelChip(
     ) {
         if (pending) {
             CircularProgressIndicator(
-                modifier = Modifier.size(12.dp),
-                strokeWidth = 1.6.dp,
+                modifier = Modifier.size(15.dp),
+                strokeWidth = 1.8.dp,
                 color = fg,
             )
         } else {
-            ProviderMark(provider = context.provider, tint = fg, size = 13.dp)
+            ProviderMark(provider = context.provider, tint = fg, size = 16.dp)
         }
         Text(
             text = context.chipTitle,
             color = fg,
-            fontSize = 12.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -82,7 +87,7 @@ fun ModelChip(
                 imageVector = Line.ChevronDown,
                 contentDescription = null,
                 tint = fg.copy(alpha = 0.72f),
-                modifier = Modifier.size(12.dp),
+                modifier = Modifier.size(15.dp),
             )
         }
     }
@@ -96,12 +101,12 @@ private fun UsageChipBadge(badge: ModelPicker.ChipBadge) {
     Text(
         text = label,
         color = color,
-        fontSize = 10.sp,
+        fontSize = 12.sp,
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
         modifier = Modifier
             .clip(CircleShape)
             .background(color.copy(alpha = 0.18f))
-            .padding(horizontal = 5.dp, vertical = 1.dp),
+            .padding(horizontal = 6.dp, vertical = 1.dp),
     )
 }

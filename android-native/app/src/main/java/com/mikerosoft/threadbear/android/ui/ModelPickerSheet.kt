@@ -150,7 +150,7 @@ fun ModelPickerSheet(
                         ) {
                             Text(
                                 text = if (isSearching) "No matching models" else "No models available",
-                                fontSize = 13.5.sp,
+                                fontSize = 16.sp,
                                 color = signals.faint,
                             )
                         }
@@ -241,8 +241,8 @@ private fun PoolStrip(
         modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         for (tab in tabs) {
@@ -251,7 +251,7 @@ private fun PoolStrip(
                     modifier = Modifier
                         .padding(horizontal = 2.dp)
                         .width(1.dp)
-                        .height(16.dp)
+                        .height(22.dp)
                         .background(colors.outlineVariant),
                 )
             }
@@ -267,17 +267,19 @@ private fun PoolStrip(
             }
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .heightIn(min = 48.dp)
+                    .padding(vertical = 4.dp)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(if (isOn) colors.surfaceContainerHighest else Color.Transparent)
                     .clickable(role = Role.Tab) { onSelect(tab.id) }
                     .semantics { selected = isOn }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = tab.title,
-                    fontSize = 12.5.sp,
+                    fontSize = 15.sp,
                     fontWeight = if (isOn) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (isOn) colors.onSurface else colors.onSurfaceVariant,
                     maxLines = 1,
@@ -285,7 +287,7 @@ private fun PoolStrip(
                 if (meta != null) {
                     Text(
                         text = meta,
-                        fontSize = 11.5.sp,
+                        fontSize = 13.sp,
                         color = metaColor,
                         maxLines = 1,
                     )
@@ -307,8 +309,8 @@ private fun ProviderBar(
         modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         for (provider in providers) {
@@ -316,18 +318,20 @@ private fun ProviderBar(
             val fg = if (isOn) colors.onSurface else colors.onSurfaceVariant
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(9.dp))
+                    .heightIn(min = 48.dp)
+                    .padding(vertical = 4.dp)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(if (isOn) colors.surfaceContainerHighest else Color.Transparent)
                     .clickable(role = Role.Tab) { onSelect(provider) }
                     .semantics { selected = isOn }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ProviderMark(provider = provider, tint = fg, size = 14.dp)
+                ProviderMark(provider = provider, tint = fg, size = 17.dp)
                 Text(
                     text = ModelPicker.providerTitle(provider),
-                    fontSize = 12.5.sp,
+                    fontSize = 15.sp,
                     fontWeight = if (isOn) FontWeight.SemiBold else FontWeight.Normal,
                     color = fg,
                     maxLines = 1,
@@ -344,37 +348,42 @@ private fun SearchBox(query: String, onQueryChange: (String) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 10.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(colors.surfaceContainerHigh)
-            .height(36.dp)
-            .padding(horizontal = 10.dp),
+            .height(48.dp)
+            .padding(start = 14.dp, end = if (query.isEmpty()) 14.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(Line.Search, contentDescription = null, modifier = Modifier.size(15.dp), tint = signals.faint)
+        Icon(Line.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = signals.faint)
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
             if (query.isEmpty()) {
-                Text("Search models", fontSize = 13.5.sp, color = signals.faint)
+                Text("Search models", fontSize = 16.sp, color = signals.faint)
             }
             BasicTextField(
                 value = query,
                 onValueChange = onQueryChange,
                 singleLine = true,
-                textStyle = TextStyle(color = colors.onSurface, fontSize = 13.5.sp),
+                textStyle = TextStyle(color = colors.onSurface, fontSize = 16.sp),
                 cursorBrush = SolidColor(signals.accent),
                 modifier = Modifier.fillMaxWidth(),
             )
         }
         if (query.isNotEmpty()) {
-            Icon(
-                imageVector = Line.Close,
-                contentDescription = "Clear search",
-                tint = signals.faint,
+            Box(
                 modifier = Modifier
-                    .size(16.dp)
-                    .clickable { onQueryChange("") },
-            )
+                    .size(48.dp)
+                    .clickable(role = Role.Button) { onQueryChange("") },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Line.Close,
+                    contentDescription = "Clear search",
+                    tint = signals.faint,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
     }
 }
@@ -383,10 +392,10 @@ private fun SearchBox(query: String, onQueryChange: (String) -> Unit) {
 private fun SectionHeader(title: String) {
     Text(
         text = title,
-        fontSize = 11.5.sp,
+        fontSize = 13.sp,
         fontWeight = FontWeight.Medium,
         color = LocalSignals.current.faint,
-        modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 3.dp),
+        modifier = Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 4.dp),
     )
 }
 
@@ -402,27 +411,28 @@ private fun ModelRow(row: PickerModelRow, provider: String, onClick: () -> Unit)
             .background(if (row.isSelected) colors.surfaceContainerHigh else Color.Transparent)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { selected = row.isSelected }
-            .padding(horizontal = 8.dp, vertical = 9.dp),
+            .heightIn(min = 60.dp)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(30.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .size(38.dp)
+                .clip(RoundedCornerShape(10.dp))
                 .background(if (row.isSelected) colors.surfaceContainerHighest else colors.surfaceContainerHigh),
             contentAlignment = Alignment.Center,
         ) {
             ProviderMark(
                 provider = provider,
                 tint = if (row.isSelected) colors.onSurface else colors.onSurfaceVariant,
-                size = 14.dp,
+                size = 18.dp,
             )
         }
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 text = row.title,
-                fontSize = 14.sp,
+                fontSize = 16.sp,
                 fontWeight = if (row.isSelected) FontWeight.SemiBold else FontWeight.Medium,
                 color = if (row.isOlder && !row.isSelected) colors.onSurfaceVariant else colors.onSurface,
                 maxLines = 1,
@@ -431,7 +441,7 @@ private fun ModelRow(row: PickerModelRow, provider: String, onClick: () -> Unit)
             row.subtitle?.takeIf { it.isNotEmpty() }?.let { desc ->
                 Text(
                     text = desc,
-                    fontSize = 12.sp,
+                    fontSize = 14.sp,
                     color = colors.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -443,7 +453,7 @@ private fun ModelRow(row: PickerModelRow, provider: String, onClick: () -> Unit)
                 imageVector = Line.StarFilled,
                 contentDescription = "Default",
                 tint = signals.faint,
-                modifier = Modifier.size(12.dp),
+                modifier = Modifier.size(15.dp),
             )
         }
         if (row.isSelected) {
@@ -451,7 +461,7 @@ private fun ModelRow(row: PickerModelRow, provider: String, onClick: () -> Unit)
                 imageVector = Line.Check,
                 contentDescription = "Selected",
                 tint = signals.accent,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -468,8 +478,8 @@ private fun EffortBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 9.dp)
-            .clip(RoundedCornerShape(9.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(colors.surfaceContainerHigh)
             .padding(3.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -479,16 +489,17 @@ private fun EffortBar(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(7.dp))
+                    .heightIn(min = 42.dp)
+                    .clip(RoundedCornerShape(9.dp))
                     .background(if (isOn) colors.surfaceContainerHighest else Color.Transparent)
                     .clickable(role = Role.Tab) { onPick(level) }
                     .semantics { this.selected = isOn }
-                    .padding(vertical = 7.dp, horizontal = 2.dp),
+                    .padding(horizontal = 2.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = effortSegmentLabel(level, levels.size),
-                    fontSize = 12.sp,
+                    fontSize = 14.sp,
                     fontWeight = if (isOn) FontWeight.SemiBold else FontWeight.Medium,
                     color = if (isOn) colors.onSurface else signals.faint,
                     maxLines = 1,
@@ -528,20 +539,21 @@ private fun LoginFooter(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(role = Role.Button, onClick = onToggle)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .heightIn(min = 52.dp)
+                .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
                 text = primary,
-                fontSize = 12.5.sp,
+                fontSize = 15.sp,
                 color = colors.onSurfaceVariant,
                 maxLines = 1,
             )
             detail?.let { d ->
                 Text(
                     text = d,
-                    fontSize = 12.5.sp,
+                    fontSize = 15.sp,
                     color = signals.faint,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -552,7 +564,7 @@ private fun LoginFooter(
                 imageVector = if (expanded) Line.ChevronDown else Line.ChevronRight,
                 contentDescription = if (expanded) "Collapse logins" else "Expand logins",
                 tint = signals.faint,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(18.dp),
             )
         }
 
@@ -560,7 +572,7 @@ private fun LoginFooter(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 220.dp)
+                    .heightIn(max = 280.dp)
                     .verticalScroll(rememberScrollState())
                     .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -590,23 +602,24 @@ private fun LoginRow(row: PickerLoginRow, provider: String?, onClick: () -> Unit
             .background(if (row.isSelected) colors.surfaceContainerHigh else Color.Transparent)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { selected = row.isSelected }
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            .heightIn(min = 56.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(modifier = Modifier.width(18.dp), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.width(24.dp), contentAlignment = Alignment.Center) {
             if (provider != null) {
                 ProviderMark(
                     provider = provider,
                     tint = if (row.isSelected) colors.onSurface else colors.onSurfaceVariant,
-                    size = 13.dp,
+                    size = 17.dp,
                 )
             } else {
                 Icon(
                     imageVector = Line.Zap,
                     contentDescription = null,
                     tint = if (row.isSelected) colors.onSurface else colors.onSurfaceVariant,
-                    modifier = Modifier.size(13.dp),
+                    modifier = Modifier.size(17.dp),
                 )
             }
         }
@@ -614,7 +627,7 @@ private fun LoginRow(row: PickerLoginRow, provider: String?, onClick: () -> Unit
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(
                 text = row.title,
-                fontSize = 13.5.sp,
+                fontSize = 16.sp,
                 fontWeight = if (row.isSelected) FontWeight.SemiBold else FontWeight.Medium,
                 color = colors.onSurface,
                 maxLines = 1,
@@ -623,7 +636,7 @@ private fun LoginRow(row: PickerLoginRow, provider: String?, onClick: () -> Unit
             row.subtitle?.let { sub ->
                 Text(
                     text = sub,
-                    fontSize = 11.5.sp,
+                    fontSize = 13.sp,
                     color = colors.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -635,8 +648,8 @@ private fun LoginRow(row: PickerLoginRow, provider: String?, onClick: () -> Unit
             val fraction = (pct / 100.0).coerceIn(0.0, 1.0).toFloat()
             Box(
                 modifier = Modifier
-                    .width(34.dp)
-                    .height(4.dp)
+                    .width(40.dp)
+                    .height(5.dp)
                     .clip(RoundedCornerShape(2.dp))
                     .background(colors.surfaceContainerHighest),
             ) {
@@ -652,7 +665,7 @@ private fun LoginRow(row: PickerLoginRow, provider: String?, onClick: () -> Unit
         row.roomWords?.let { words ->
             Text(
                 text = words,
-                fontSize = 11.5.sp,
+                fontSize = 13.sp,
                 fontWeight = if (row.badge != null) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (row.badge != null) meterColor else colors.onSurfaceVariant,
                 maxLines = 1,
@@ -664,7 +677,7 @@ private fun LoginRow(row: PickerLoginRow, provider: String?, onClick: () -> Unit
                 imageVector = Line.Check,
                 contentDescription = "Selected",
                 tint = signals.accent,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(18.dp),
             )
         }
     }

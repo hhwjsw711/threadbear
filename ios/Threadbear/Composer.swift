@@ -225,11 +225,13 @@ struct LinkChipButtons: View {
             if let page = link.page {
                 Link(destination: page) {
                     Label(link.title, systemImage: UIImage(systemName: link.icon ?? "") == nil ? "arrow.up.right.square" : link.icon!)
-                        .font(.footnote)
+                        .font(.subheadline)
                         .lineLimit(1)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 34)
                         .background(Color(.secondarySystemBackground), in: Capsule())
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
                 }
                 .tint(.primary)
                 .accessibilityHint("Opens \(page.host() ?? "the page") in the browser")

@@ -29,37 +29,39 @@ struct ModelChip: View {
 
     private var chipLabel: some View {
         HStack(spacing: 5) {
-            ProviderMark(provider: context.provider, size: 13)
+            ProviderMark(provider: context.provider, size: 15)
                 .foregroundStyle(foregroundColor)
             Text(context.chipTitle)
-                .font(.system(size: 12.5, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .lineLimit(1)
                 .foregroundStyle(foregroundColor)
             if let badge = context.chipBadge {
                 Text("· \(badge.label)")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .monospacedDigit()
                     .lineLimit(1)
                     .foregroundStyle(badge.isStop ? Color.red : Color.orange)
             }
             if pending {
                 ProgressView()
-                    .controlSize(.mini)
+                    .controlSize(.small)
                     .tint(foregroundColor)
             } else if interactive {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(chevronColor)
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 28)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 34)
         .background(backgroundColor, in: Capsule())
         .overlay(
             Capsule()
                 .strokeBorder(borderColor, lineWidth: 1)
         )
-        .contentShape(Capsule())
+        // Apple's 44pt touch target, without making the capsule itself taller.
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
     }
 
     private var foregroundColor: Color {
