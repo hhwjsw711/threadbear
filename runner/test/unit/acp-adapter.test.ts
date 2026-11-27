@@ -11,7 +11,10 @@ import { ACP_AGENTS, acpAccounts, antigravityInput, folderPlugins, isCursorBinar
 import type { AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
 import { commandRule } from '../../src/adapters/codex/approvals.ts';
+import type { ToolDefinition } from '../../src/adapters/codex/tools.ts';
 import { remoteCardShowsAll } from '../../src/tools.ts';
+import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
+import { FakeAccounts, makeHarness } from '../helpers/fakes.ts';
 import type { AdapterOutput, QuestionAnswer, QuestionRequest, SessionSink, StartSessionOptions, ToolApprovalAnswer, ToolApprovalRequest } from '../../src/adapters/types.ts';
 import type { Account, PermissionMode } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
@@ -44,7 +47,7 @@ afterEach(async () => {
   for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; mcpServers?: () => Record<string, { command: string; args: string[] }>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer>; question?: (r: QuestionRequest) => QuestionAnswer | Promise<QuestionAnswer>; onOutput?: (output: AdapterOutput) => void } = {}) {
+function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; toolsFor?: (threadId: string) => ToolDefinition[]; mcpServers?: () => Record<string, { command: string; args: string[] }>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer>; question?: (r: QuestionRequest) => QuestionAnswer | Promise<QuestionAnswer>; onOutput?: (output: AdapterOutput) => void } = {}) {
   const root = tmp();
   made.push(root);
   const cwd = path.join(root, 'work');
@@ -84,6 +87,7 @@ function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, 
     log: nullLogger,
     env: { PATH: process.env.PATH, FAKE_ACP_LOG: logFile, ...o.env },
     timings: { closeWaitMs: 300 },
+    ...(o.toolsFor ? { toolsFor: o.toolsFor } : {}),
     ...(o.mcpServers ? { mcpServers: o.mcpServers } : {}),
   });
   const start = (): AcpSession => {
@@ -2256,4 +2260,196 @@ test('Antigravity: answering a question that predates the quota notice does not 
   s['proc'].notify('_test/finish_prompt', { sessionId: s['sessionId'] });
   await Promise.race([done, exit]);
   assert.equal(results(r.outputs)[0]?.outcome, 'completed');
+});
+
+test('OpenCode Code Mode: end_turn called inside execute still emits mcp__threadbear__end_turn call and result', async () => {
+  const endTurnTool: ToolDefinition = {
+    name: 'end_turn',
+    description: 'end turn',
+    inputSchema: {
+      headline: z.string().optional(),
+      needs: z.enum(['you', 'nothing']).optional(),
+      asks: z.array(z.object({ question: z.string(), options: z.array(z.object({ label: z.string(), does: z.string().optional() })).optional() })).optional(),
+    },
+    handler: async () => ({ content: [{ type: 'text', text: 'Noted: this thread will wait in Needs you. Now write your reply.' }] }),
+  };
+  const r = rig({ mode: 'full', toolsFor: () => [endTurnTool] });
+  const s = r.start();
+  const payload = {
+    headline: 'Pick how Publish handles big pages',
+    needs: 'you',
+    asks: [{ question: 'Which Publish direction do you want?', options: [{ label: '10 MB + scripts', does: 'Allow 10 MB with offline scripts' }] }],
+  };
+  await turn(r, s, `codemode_end_turn ${JSON.stringify(payload)}`);
+  const evs = r.outputs.filter((o): o is Extract<AdapterOutput, { kind: 'event' }> => o.kind === 'event').map((o) => o.event);
+  const endCalls = evs.filter((e) => e.type === 'tool.call' && e.name === 'mcp__threadbear__end_turn');
+  assert.equal(endCalls.length, 1);
+  assert.deepEqual((endCalls[0] as { input: unknown }).input, payload);
+  const itemId = (endCalls[0] as { itemId: string }).itemId;
+  const endResults = evs.filter((e) => e.type === 'tool.result' && e.itemId === itemId);
+  assert.equal(endResults.length, 1);
+  assert.equal((endResults[0] as { ok: boolean }).ok, true);
+  assert.match((endResults[0] as { text: string }).text, /^Noted: this thread will wait in Needs you\./);
+  const endResIdx = evs.findIndex((e) => e.type === 'tool.result' && e.itemId === itemId);
+  const replyIdx = evs.findIndex((e) => e.type === 'assistant.text');
+  assert.ok(endResIdx >= 0 && replyIdx > endResIdx, 'end_turn call and result land before the reply text');
+
+  // A second session on the same thread must not reuse itemIds from the first.
+  const r2 = rig({ mode: 'full', toolsFor: () => [endTurnTool] });
+  const s2 = r2.start();
+  await turn(r2, s2, `codemode_end_turn ${JSON.stringify(payload)}`);
+  const evs2 = r2.outputs.filter((o): o is Extract<AdapterOutput, { kind: 'event' }> => o.kind === 'event').map((o) => o.event);
+  const itemId2 = (evs2.find((e) => e.type === 'tool.call' && e.name === 'mcp__threadbear__end_turn') as { itemId: string } | undefined)?.itemId;
+  assert.ok(itemId2 && itemId2 !== itemId, 'synthetic end_turn itemIds are unique across sessions');
+});
+
+test('ACP direct end_turn: suppresses duplicate ACP rows and keeps unwrapped MCP input and exact handler error status', async () => {
+  let calls = 0;
+  const endTurnTool: ToolDefinition = {
+    name: 'end_turn',
+    description: 'end turn',
+    inputSchema: {
+      needs: z.enum(['you', 'nothing']).optional(),
+      asks: z.array(z.object({ question: z.string() })).optional(),
+    },
+    handler: async () => {
+      calls++;
+      return { content: [{ type: 'text', text: 'Not ended: check plain words.' }], isError: true };
+    },
+  };
+  const r = rig({ mode: 'full', toolsFor: () => [endTurnTool] });
+  const s = r.start();
+  await turn(r, s, `direct_end_turn ${JSON.stringify({ needs: 'you', asks: JSON.stringify([{ question: 'Ship it?' }]) })}`);
+  assert.equal(calls, 1);
+  const evs = r.outputs.filter((o): o is Extract<AdapterOutput, { kind: 'event' }> => o.kind === 'event').map((o) => o.event);
+  const endCalls = evs.filter((e) => e.type === 'tool.call' && e.name === 'mcp__threadbear__end_turn');
+  assert.equal(endCalls.length, 1, 'ACP row is suppressed so runner sees only one end_turn call');
+  assert.deepEqual((endCalls[0] as { input: unknown }).input, { needs: 'you', asks: [{ question: 'Ship it?' }] });
+  const itemId = (endCalls[0] as { itemId: string }).itemId;
+  const endResults = evs.filter((e) => e.type === 'tool.result' && e.itemId === itemId);
+  assert.equal(endResults.length, 1);
+  assert.equal((endResults[0] as { ok: boolean }).ok, false, 'keeps isError: true even when ACP reports status completed');
+});
+
+test('Runner + OpenCode Code Mode: end_turn inside execute produces Needs you card, headline preview and final reply', async () => {
+  const root = tmp();
+  made.push(root);
+  const logFile = path.join(root, 'agent.log');
+  let runnerRef: ReturnType<typeof makeHarness>['runner'] | undefined;
+  const registry = new ProcessRegistry(path.join(root, 'run'), nullLogger);
+  const acp = new AcpAdapter({
+    agent: ACP_AGENTS.opencode,
+    binary: () => FAKE,
+    registry,
+    log: nullLogger,
+    env: { PATH: process.env.PATH, FAKE_ACP_LOG: logFile },
+    timings: { closeWaitMs: 300 },
+    toolsFor: (threadId) =>
+      buildThreadbearTools(runnerRef!, threadId, Date.now, undefined, undefined, undefined, {
+        provider: 'codex',
+        oneReply: () => true,
+      }),
+  });
+  const startAcp = acp.start.bind(acp);
+  acp.start = (opts, sink) => {
+    const s = startAcp(opts, sink);
+    sessions.push(s);
+    return s;
+  };
+  const opencodeAccount: Account = { id: 'opencode-main', provider: 'opencode', title: 'OpenCode', configDir: root };
+  const h = makeHarness(
+    path.join(root, 'home'),
+    { oneReply: true },
+    {
+      adapters: { opencode: acp },
+      accounts: new FakeAccounts([opencodeAccount]),
+    },
+  );
+  runnerRef = h.runner;
+  try {
+    const first = {
+      headline: 'Publish fails at 64 KiB and blocks scripts',
+      needs: 'you',
+      asks: [{ question: 'How should Publish handle large and interactive HTML files?', suggested: 0, options: [{ label: '10 MB + scripts', does: 'Allow 10 MB with offline scripts' }, { label: '10 MB static', does: 'Allow 10 MB without scripts' }] }],
+    };
+    const second = {
+      headline: 'Publish fails at 64 KiB and blocks scripts',
+      needs: 'you',
+      asks: [{ question: 'How should Publish handle large and interactive HTML pages?', suggested: 0, options: [{ label: '10 MB + scripts', does: 'Allow 10 MB with offline scripts' }, { label: '10 MB static', does: 'Allow 10 MB without scripts' }] }],
+    };
+    const { thread } = h.runner.create({
+      text: `codemode_end_turn_retry ${JSON.stringify(first)} || ${JSON.stringify(second)}`,
+      accountId: 'opencode-main',
+      permissionMode: 'full',
+    });
+    await until(() => h.runner.get(thread.id).status === 'idle', 5000);
+    const updated = h.runner.get(thread.id);
+    const evs = h.events(thread.id);
+    assert.equal(updated.needs, 'you');
+    assert.equal(updated.asks?.length, 1);
+    assert.equal(updated.asks?.[0].action, 'How should Publish handle large and interactive HTML pages?');
+    assert.deepEqual(updated.asks?.[0].options, ['10 MB + scripts', '10 MB static']);
+    assert.equal(updated.preview, 'Publish fails at 64 KiB and blocks scripts');
+    const completed = evs.findLast((e) => e.type === 'turn.completed');
+    assert.equal(completed?.needs, 'you');
+    assert.equal(completed?.needsFrom, 'tool');
+    assert.equal(completed?.asks?.length, 1);
+    const reply = evs.findLast((e) => e.type === 'assistant.text');
+    assert.equal(reply?.final, true);
+  } finally {
+    await h.runner.shutdown();
+    await registry.killAll(200);
+  }
+});
+
+test('MCP end_turn hooks skip invalid arguments, coordinator denials and out-of-turn calls', async () => {
+  const started: string[] = [];
+  const resultsSeen: { itemId: string; ok: boolean; text: string }[] = [];
+  const endTurnTool: ToolDefinition = {
+    name: 'end_turn',
+    description: 'end turn',
+    inputSchema: { needs: z.enum(['you', 'nothing']) },
+    handler: async () => ({ content: [{ type: 'text', text: 'Noted.' }] }),
+  };
+  const server = new AcpMcpServer([endTurnTool], {
+    log: nullLogger,
+    label: 't',
+    requestApproval: async () => ({ decision: 'allow' }),
+    cwd: () => '/tmp',
+    mode: () => 'full',
+    rules: () => new Set(),
+    addRules: () => {},
+    checkCoordinator: () => 'helpers do not call end_turn',
+    onToolStart: (name) => (started.push(name), 'id-1'),
+    onToolResult: (itemId, ok, text) => resultsSeen.push({ itemId, ok, text }),
+  });
+  const url = await server.listen();
+  try {
+    const post = async (args: Record<string, unknown>) =>
+      (await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${server.token}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'end_turn', arguments: args } }),
+      })).json();
+    await post({ needs: 'invalid' });
+    await post({ needs: 'nothing' });
+    assert.deepEqual(started, []);
+    assert.deepEqual(resultsSeen, []);
+  } finally {
+    server.close();
+  }
+
+  // Out-of-turn HTTP call on an idle AcpSession emits no events.
+  const r = rig({ mode: 'full', toolsFor: () => [endTurnTool] });
+  const s = r.start();
+  await turn(r, s, 'hello');
+  const before = r.outputs.length;
+  const mcpSrv = (s as unknown as { mcp?: AcpMcpServer }).mcp!;
+  const port = (mcpSrv as unknown as { port: number }).port;
+  await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${mcpSrv.token}` },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'end_turn', arguments: { needs: 'nothing' } } }),
+  });
+  assert.equal(r.outputs.length, before, 'out-of-turn MCP end_turn emits nothing');
 });

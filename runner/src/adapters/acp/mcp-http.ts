@@ -90,7 +90,23 @@ function droppedNestedNullHint(raw: Record<string, unknown>, issues: readonly z.
   return `\nIf your tool wrapper dropped nested objects to null, pass ${[...topFields].join(', ')} as a JSON-encoded string instead.`;
 }
 
-export type AcpMcpDeps = ToolGateDeps & { log: Logger; label: string };
+export type AcpMcpDeps = ToolGateDeps & {
+  log: Logger;
+  label: string;
+  onToolStart?: (name: string, args: Record<string, unknown>) => string | undefined;
+  onToolResult?: (itemId: string, ok: boolean, text: string) => void;
+};
+
+function contentText(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text' && typeof (block as { text?: unknown }).text === 'string') {
+      parts.push((block as { text: string }).text);
+    }
+  }
+  return parts.join('\n');
+}
 
 type JsonRpcRequest = { jsonrpc?: string; id?: number | string | null; method?: unknown; params?: unknown };
 
@@ -265,11 +281,17 @@ export class AcpMcpServer {
     const args = parsed.data as Record<string, unknown>;
     const gate = await gateThreadbearTool(this.deps, { fullName: `mcp__${NAMESPACE}__${name}`, readOnlyHint: tool.annotations?.readOnlyHint, args, signal });
     if (!gate.allowed) return this.text(gate.message, true);
+    if (signal.aborted) return this.text('Cancelled.', true);
+    const trace = this.deps.onToolStart?.(name, args);
     try {
       const result = await tool.handler(args, { signal });
+      const text = contentText(result.content);
+      if (trace !== undefined) this.deps.onToolResult?.(trace, !result.isError, text);
       return { content: result.content ?? [], ...(result.isError ? { isError: true } : {}) };
     } catch (e) {
-      return this.text((e as Error)?.message ?? String(e), true);
+      const msg = (e as Error)?.message ?? String(e);
+      if (trace !== undefined) this.deps.onToolResult?.(trace, false, msg);
+      return this.text(msg, true);
     }
   }
 }

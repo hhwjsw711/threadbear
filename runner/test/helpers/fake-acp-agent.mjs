@@ -295,6 +295,17 @@ async function runTool(sessionId, cwd, kind, input, locations, run) {
   update(sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', kind, content: [{ type: 'content', content: { type: 'text', text: 'done' } }] });
 }
 
+async function callHttpMcp(server, name, args) {
+  const headers = { 'content-type': 'application/json' };
+  for (const h of server.headers ?? []) headers[h.name] = h.value;
+  const res = await fetch(server.url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ jsonrpc: '2.0', id: Math.floor(Math.random() * 1e6), method: 'tools/call', params: { name, arguments: args } }),
+  });
+  return res.json();
+}
+
 async function prompt(id, p) {
   const s = sessions.get(p.sessionId);
   const text = p.prompt.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
@@ -306,6 +317,27 @@ async function prompt(id, p) {
   if (AGY) return agyPrompt(id, p, s, word, rest);
   if (word === 'write') await runTool(p.sessionId, s.cwd, 'edit', { filePath: rest[0], content: rest.slice(1).join(' ') }, [{ path: rest[0] }], () => fs.writeFileSync(rest[0], rest.slice(1).join(' ')));
   else if (word === 'exec') await runTool(p.sessionId, s.cwd, 'execute', { command: rest.join(' ') }, [], () => log({ ran: rest.join(' ') }));
+  else if (word === 'codemode_end_turn' || word === 'codemode_end_turn_retry' || word === 'direct_end_turn') {
+    const server = (s.mcpServers ?? []).find((m) => m.name === 'threadbear' && m.type === 'http');
+    const calls = word === 'codemode_end_turn_retry' ? rest.join(' ').split(' || ').map((x) => JSON.parse(x)) : [JSON.parse(rest.join(' '))];
+    for (const args of calls) {
+      const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
+      if (word === 'direct_end_turn') {
+        update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'threadbear_end_turn', kind: 'other', status: 'in_progress', rawInput: args });
+        const mcpRes = await callHttpMcp(server, 'end_turn', args);
+        const outText = mcpRes.result?.content?.[0]?.text ?? '';
+        log({ mcpRes });
+        update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', kind: 'other', content: [{ type: 'content', content: { type: 'text', text: outText } }] });
+      } else {
+        update(p.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: 'execute', name: 'execute', kind: 'other', status: 'in_progress', rawInput: { code: `return await tools.threadbear.end_turn(${JSON.stringify(args)});` } });
+        const mcpRes = await callHttpMcp(server, 'end_turn', args);
+        const outText = mcpRes.result?.content?.[0]?.text ?? '';
+        log({ mcpRes });
+        // OpenCode 2 reports execute as status: completed even when the inner MCP tool returned isError.
+        update(p.sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', kind: 'other', content: [{ type: 'content', content: { type: 'text', text: outText } }] });
+      }
+    }
+  }
   // OpenCode 2's question tool, as a form (when the client offered forms).
   else if (word === 'form') {
     if (!clientForms) log({ form: 'not offered' });
@@ -546,7 +578,7 @@ const handlers = {
   'session/new': (p) => {
     if (env.FAKE_ACP_NEEDS_LOGIN) throw Object.assign(new Error('Authentication required'), { code: -32000 });
     const sessionId = `ses-${Math.random().toString(36).slice(2)}`;
-    sessions.set(sessionId, { cwd: p.cwd, dirs: p.additionalDirectories, steps: 0 });
+    sessions.set(sessionId, { cwd: p.cwd, dirs: p.additionalDirectories, mcpServers: p.mcpServers ?? [], steps: 0 });
     openedSession(p.cwd);
     log({ newSession: { cwd: p.cwd, mcpServers: p.mcpServers, ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories } : {}) } });
     if (AGY) {

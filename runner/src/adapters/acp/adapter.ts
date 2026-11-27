@@ -12,8 +12,9 @@ import path from 'node:path';
 import { EFFORT_LEVELS, isEffortLevel, type Account, type EffortLevel, type ImageRef, type ModelChoice, type PermissionMode, type Question } from '../../protocol.ts';
 import type { Logger } from '../../log.ts';
 import type { ProcessRegistry } from '../../proc.ts';
-import { cardInput, displayPath, tooLongForCard } from '../../tools.ts';
+import { cardInput, displayPath, tooLongForCard, truncateInput } from '../../tools.ts';
 import { codeWriteNote, runsAsCodeByName, type CodeWrite } from '../../code-writes.ts';
+import { END_TURN_FULL_NAME, END_TURN_TOOL } from '../../needs.ts';
 import { placePictures } from '../../pictures.ts';
 import { providerInfo, providerName } from '../../providers.ts';
 import { firstLineSafely } from '../../safe-cut.ts';
@@ -21,7 +22,7 @@ import type { SlashCommand } from '../../slash-commands.ts';
 import { cliEnv } from '../claude/adapter.ts';
 import { commandRule, ruleMayCover, shellWords } from '../codex/approvals.ts';
 import { toolGuidance, type ToolDefinition } from '../codex/tools.ts';
-import { fileContext, type NormalizerContext } from '../context.ts';
+import { fileContext, truncateResultText, type NormalizerContext } from '../context.ts';
 import { formContent, formQuestions, type FormSchema } from '../elicitation.ts';
 import { acpCoordinatorTool, archiveReadTool, isHelperQuestionTool } from '../../coordinator-policy.ts';
 import type { AdapterOutput, AgentAdapter, AgentSession, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
@@ -486,6 +487,15 @@ export class AcpSession implements AgentSession {
   // The empty folder the agent's session opens in (AcpAgent.ownSessionFolder).
   private ownFolder?: string;
   private chunkBuffer = '';
+  // When our HTTP MCP server serves end_turn, it is the authoritative source
+  // of mcp__threadbear__end_turn events: OpenCode 2's Code Mode calls it from
+  // inside `execute` without emitting a direct ACP tool_call for it, and direct
+  // ACP callers can drop error text or send wrapped JSON strings that
+  // AcpMcpServer unwraps. Direct ACP end_turn rows are suppressed so the runner
+  // sees each call once, with its parsed input and exact handler result.
+  private mcpOwnsEndTurn = false;
+  private openMcpCalls = new Map<string, Turn>();
+  private suppressedToolIds = new Set<string>();
   private exitPromise: Promise<void>;
   private resolveExit!: () => void;
 
@@ -546,6 +556,7 @@ export class AcpSession implements AgentSession {
     const defs = deps.toolsFor?.(opts.threadId) ?? [];
     let mcpServers: unknown[] = [];
     if (defs.length && this.init.agentCapabilities?.mcpCapabilities?.http) {
+      this.mcpOwnsEndTurn = defs.some((d) => d.name === END_TURN_TOOL);
       this.mcp = new AcpMcpServer(defs, {
         log: deps.log,
         label: opts.threadId,
@@ -554,6 +565,8 @@ export class AcpSession implements AgentSession {
         mode: () => this.mode,
         rules: () => this.rules,
         addRules: (rules) => this.addRules(rules),
+        onToolStart: (toolName, args) => this.mcpToolStart(toolName, args),
+        onToolResult: (itemId, ok, text) => this.mcpToolResult(itemId, ok, text),
         ...(opts.coordinator
           ? {
               checkCoordinator: (fullName: string, args: Record<string, unknown>) =>
@@ -1025,7 +1038,55 @@ export class AcpSession implements AgentSession {
   }
 
   private emit(outs: AdapterOutput[]): void {
-    for (const o of outs) this.sink.output(o);
+    for (const o of outs) {
+      if (this.mcpOwnsEndTurn && o.kind === 'event') {
+        if (o.event.type === 'tool.call' && o.event.name === END_TURN_FULL_NAME) {
+          this.suppressedToolIds.add(o.event.itemId);
+          continue;
+        }
+        if (o.event.type === 'tool.result' && this.suppressedToolIds.delete(o.event.itemId)) {
+          continue;
+        }
+      }
+      this.sink.output(o);
+    }
+  }
+
+  private mcpToolStart(toolName: string, args: Record<string, unknown>): string | undefined {
+    if (!this.mcpOwnsEndTurn || toolName !== END_TURN_TOOL) return undefined;
+    const turn = this.turn;
+    if (!turn || this.state !== 'turn') return undefined;
+    this.emit(this.normalizer.flush());
+    const itemId = `mcp-end-turn-${crypto.randomUUID()}`;
+    this.openMcpCalls.set(itemId, turn);
+    this.sink.output({
+      kind: 'event',
+      event: { type: 'tool.call', itemId, name: END_TURN_FULL_NAME, kind: 'mcp', title: END_TURN_TOOL, input: truncateInput(args) },
+    });
+    return itemId;
+  }
+
+  private mcpToolResult(itemId: string, ok: boolean, text: string): void {
+    const turn = this.openMcpCalls.get(itemId);
+    if (!turn || this.turn !== turn) {
+      this.openMcpCalls.delete(itemId);
+      return;
+    }
+    this.openMcpCalls.delete(itemId);
+    this.sink.output({
+      kind: 'event',
+      event: { type: 'tool.result', itemId, ok, ...truncateResultText(text, itemId, this.ctx), images: [] },
+    });
+  }
+
+  private closeOpenMcpCalls(reason: string): void {
+    for (const itemId of [...this.openMcpCalls.keys()]) {
+      this.openMcpCalls.delete(itemId);
+      this.sink.output({
+        kind: 'event',
+        event: { type: 'tool.result', itemId, ok: false, text: reason, truncated: false, images: [] },
+      });
+    }
   }
 
   private request(id: RequestId, method: string, params: unknown): void {
@@ -1509,13 +1570,17 @@ export class AcpSession implements AgentSession {
       this.guardSeen = false;
       dispatched = true;
       const r = await this.proc.request<{ stopReason?: string }>('session/prompt', { sessionId: this.sessionId, prompt: this.promptBlocks(input) }, null);
+      this.closeOpenMcpCalls('Stopped');
       this.emit(this.normalizer.closeOpen('Stopped'));
+      this.suppressedToolIds.clear();
       result = this.resultFor(turn, r?.stopReason);
       const effort = this.effortNow();
       if (effort) this.sink.output({ kind: 'effort', level: effort });
     } catch (e) {
       if (e instanceof AcpExitedError) return; // the exit handler reports it
+      this.closeOpenMcpCalls('Failed');
       this.emit(this.normalizer.closeOpen('Failed'));
+      this.suppressedToolIds.clear();
       const auth = e instanceof AcpRpcError && e.code === AUTH_REQUIRED;
       result = { outcome: turn.interrupted ? 'interrupted' : 'failed', durationMs: Math.max(0, this.now() - turn.startedAt), ...(auth ? { errorKind: 'auth' as const } : {}) };
       if (!turn.interrupted) Object.assign(result, auth ? { error: (e as Error).message } : this.failureFor(turn, e));
@@ -1699,7 +1764,9 @@ export class AcpSession implements AgentSession {
     this.cancelPending(false);
     this.proc.onRequest = null;
     this.mcp?.close();
+    this.closeOpenMcpCalls('Interrupted');
     this.emit(this.normalizer.closeOpen('Interrupted'));
+    this.suppressedToolIds.clear();
     clearTimeout(this.turn?.quota?.deadline?.timer);
     this.turn = undefined;
     if (this.ownFolder) removeQuietly(this.ownFolder);
