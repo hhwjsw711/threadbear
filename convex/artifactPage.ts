@@ -20,8 +20,9 @@ const reportLink = `(() => {
   const externalUrl = ${externalUrl};
   document.addEventListener('click', (event) => {
     if (!event.isTrusted || event.defaultPrevented || event.button !== 0) return;
-    const anchor = event.composedPath().find((element) => element instanceof HTMLAnchorElement);
-    const href = externalUrl(anchor?.getAttribute('href'));
+    const anchor = event.composedPath().find((element) =>
+      element instanceof HTMLAnchorElement || element instanceof HTMLAreaElement || element instanceof SVGAElement);
+    const href = externalUrl(anchor?.getAttribute('href') ?? anchor?.getAttributeNS('http://www.w3.org/1999/xlink', 'href'));
     if (!href || anchor.hasAttribute('download')) return;
     event.preventDefault();
     window.parent.postMessage({ artifactLink: href }, '*');
@@ -42,10 +43,6 @@ const followLink = `(() => {
     }
   });
 })();`;
-
-// CSP allows these exact scripts. artifact-page.test.ts checks the hashes
-// against the rendered bytes, so editing either script also needs a new hash.
-const trustedScripts = "'sha256-Wa4QGtl5Tq939B0CxiRnDKvkX6DKmr7roDMzjwqDiIo=' 'sha256-rh6DVz79FMvCvaA3jNC09IBJFY6Vqb5YmSdEt0A3JmY='";
 
 export function artifactSlug(path: string): string | null {
   const slug = path.slice(ARTIFACT_PATH.length);
@@ -77,13 +74,16 @@ export function artifactPage(artifact: { title: string; html: string } | null): 
   // first base to its own URL so anchors scroll without loading the wrapper.
   // Keep the document's opening tags first so their attributes still apply.
   const html = artifact.html.replace(/^\uFEFF/, '');
-  const srcdoc = escapeHtml(html.replace(documentOpening, (opening) => `${opening}<base href="about:srcdoc"><script>${reportLink}</script>`));
+  // The authored file cannot know this value. Unlike a fixed script hash,
+  // the nonce authorizes only the two script tags made for this response.
+  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+  const srcdoc = escapeHtml(html.replace(documentOpening, (opening) => `${opening}<base href="about:srcdoc"><script nonce="${nonce}">${reportLink}</script>`));
   // Only the trusted wrapper may open a tab. The frame's stricter sandbox
   // still forbids the artifact from opening one itself.
   const policy = [
     contentPolicy,
     'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox',
-    `script-src ${trustedScripts}`,
+    `script-src 'nonce-${nonce}'`,
     "script-src-attr 'none'",
   ].join('; ');
   return new Response(`<!doctype html>
@@ -94,6 +94,6 @@ export function artifactPage(artifact: { title: string; html: string } | null): 
 <title>${title}</title>
 <style>html,body { margin: 0; height: 100%; } iframe { display: block; width: 100%; height: 100%; border: 0; }</style>
 </head>
-<body><iframe sandbox="allow-scripts" title="${title}" srcdoc="${srcdoc}"></iframe><script>${followLink}</script></body>
+<body><iframe sandbox="allow-scripts" title="${title}" srcdoc="${srcdoc}"></iframe><script nonce="${nonce}">${followLink}</script></body>
 </html>`, { headers: { ...headers, 'Content-Security-Policy': policy, 'Content-Type': 'text/html; charset=utf-8' } });
 }
