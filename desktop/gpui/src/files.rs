@@ -735,7 +735,11 @@ impl SidePane {
                 this.confirm_publish(publish_thread.clone(), opened, window, cx)
             }),
         );
-        let mut row = h_flex().gap(px(6.)).items_center().child(publish);
+        let mut row = h_flex()
+            .flex_wrap()
+            .gap(px(6.))
+            .items_center()
+            .child(publish);
         if has_url {
             let copy_thread = thread_id.to_owned();
             row = row
@@ -748,6 +752,13 @@ impl SidePane {
                     .render(
                         cx,
                         cx.listener(move |this, _, _, cx| {
+                            if !this
+                                .previews
+                                .get(&copy_thread)
+                                .is_some_and(|preview| preview.opened == opened)
+                            {
+                                return;
+                            }
                             let Some(open) = this
                                 .files
                                 .open
