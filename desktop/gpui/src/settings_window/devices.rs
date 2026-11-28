@@ -209,9 +209,13 @@ impl SettingsWindow {
         let before = self.devices.list.devices.clone();
         self.devices.list.devices.retain(|d| d.id != id);
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "devices.revoke",
+            json!({ "deviceId": id }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "devices.revoke", json!({ "deviceId": id })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.devices.revoking.remove(&id);
                 match res {

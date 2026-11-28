@@ -218,7 +218,7 @@ impl Threadbear {
         if self.new_thread.creating {
             return;
         }
-        if !self.connected() {
+        if !self.can_act() {
             self.new_thread.error = Some(
                 "Not connected to the runner, so that wasn't sent. It's still in the box."
                     .to_owned(),
@@ -276,13 +276,13 @@ impl Threadbear {
         self.new_thread.error = None;
         crate::activity::sent(None, images.len(), 0, false);
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "threads.create", params);
         let runner_name = runner
             .as_deref()
             .map(|id| self.runner_name_of(id))
             .or_else(|| service.as_deref().map(|id| self.service_name_of(id)));
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, "threads.create", params).await;
+            let res = going.await;
             // On a virtual runner, the thread is its box's runner's.
             let runner = runner.or_else(|| {
                 service.and_then(|_| {

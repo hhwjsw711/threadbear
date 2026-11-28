@@ -68,7 +68,7 @@ impl Threadbear {
         cx: &mut Context<Self>,
     ) {
         let before = self.threads.get(&request.thread_id).cloned();
-        if !self.connected() {
+        if !self.can_act() {
             // The sheet opens too, and waits for a connection.
             self.show_move_sheet(request, None, window, cx);
             return;
@@ -87,12 +87,12 @@ impl Threadbear {
             t.moving = Some(guess);
         }
         cx.notify();
-        let client = self.client.clone();
         let params = json!({ "threadId": request.thread_id, "runnerId": request.runner_id });
+        let going = crate::call_action(self.client.clone(), "threads.movePreview", params);
         let put_back = before;
         let thread_id = request.thread_id.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let answer = call(client, "threads.movePreview", params).await;
+            let answer = going.await;
             this.update_in(cx, |this, window, cx| {
                 // Cancelled while it looked: nothing more to do.
                 if this.starting_moves.take_cancelled(token) {
@@ -203,7 +203,6 @@ impl Threadbear {
         before: Option<std::sync::Arc<ThreadSummary>>,
         cx: &mut Context<Self>,
     ) {
-        let client = self.client.clone();
         let mut params = json!({ "threadId": request.thread_id, "runnerId": request.runner_id });
         if let Some(cwd) = cwd {
             params["cwd"] = json!(cwd);
@@ -215,8 +214,9 @@ impl Threadbear {
             params["previewId"] = json!(preview_id);
         }
         let thread_id = request.thread_id;
+        let going = crate::call_action(self.client.clone(), "threads.move", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "threads.move", params).await;
+            let res = going.await;
             let started = this
                 .update(cx, |this, cx| {
                     let cancelled = this.starting_moves.take_cancelled(token);

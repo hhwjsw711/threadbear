@@ -250,6 +250,35 @@ pub async fn call(
         })
 }
 
+/// A user action (a button press, card answer, toggle, create, save or edit)
+/// that waits for the runner when a restart is under way instead of failing at
+/// once with "Not connected to the runner". Its place in restart order is taken
+/// synchronously where the click is handled, so call this before `cx.spawn`
+/// and await the returned future inside the task.
+pub fn call_action(
+    client: Arc<Client>,
+    method: impl Into<String>,
+    params: Value,
+) -> impl std::future::Future<Output = Result<Value, RpcError>> + 'static {
+    let method = method.into();
+    let place = client.place_for(&method, &params);
+    async move {
+        RT.spawn(async move {
+            client
+                .call_in_restart_order_at(place, &method, params, Arc::new(|_| {}))
+                .await
+        })
+        .await
+        .unwrap_or_else(|e| {
+            Err(RpcError {
+                code: -1,
+                message: e.to_string(),
+                data: None,
+            })
+        })
+    }
+}
+
 /// `threads.update` (a rename, a pick, an archive) for a thread: one of this
 /// runner's goes in restart order while it's connected (`inRestartOrder`),
 /// so a pick the restarting runner turns away goes again on the new one,

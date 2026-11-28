@@ -1735,7 +1735,7 @@ impl ReviewWindow {
                 .spawn(async move { cut_out(&path, part) })
                 .await;
             let Some(file) = made else { return };
-            let result = crate::call(
+            let result = crate::call_action(
                 client,
                 "media.import",
                 serde_json::json!({ "path": file.to_string_lossy() }),

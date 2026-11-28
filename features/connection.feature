@@ -64,6 +64,15 @@ Feature: Staying connected to the runner
     And the transcript shows my message "Check the backups once you're back" just once
     And the reply streams in and the thread goes back to idle
 
+  @transcript.pending @swift-pending
+  Scenario: A new thread sent while the runner restarts waits for it and opens once it's back
+    When I start a new thread
+    And the runner restarts and is gone for 5 seconds
+    And the app has lost the runner
+    And I send "Check deploy logs"
+    Then there's no error bar
+    And a thread called "Check deploy logs" opens
+
   @transcript.pending
   Scenario: With no restart under way, a message the runner can't take stays in the box
     When I open the thread "Morning brief"

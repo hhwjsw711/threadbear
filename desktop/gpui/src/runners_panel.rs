@@ -460,9 +460,13 @@ impl Threadbear {
         self.runners_panel.pending_order = Some(ids.clone());
         self.runners_panel.order = Some(ids.clone());
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "runners.setOrder",
+            json!({ "runnerIds": ids }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "runners.setOrder", json!({ "runnerIds": ids })).await;
+            let res = going.await;
             if res.is_ok() {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
             }

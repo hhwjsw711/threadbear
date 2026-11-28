@@ -398,9 +398,13 @@ impl SidePane {
             PanelItem::set_switch(items, &toggle_id, on);
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "panels.toggle",
+            json!({ "threadId": thread_id, "panelId": panel_id, "toggleId": toggle_id, "on": on }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "panels.toggle", json!({ "threadId": thread_id, "panelId": panel_id, "toggleId": toggle_id, "on": on })).await;
+            let res = going.await;
             this.update(cx, |t, cx| {
                 t.panels.switching.remove(&pending);
                 match res {
@@ -410,7 +414,12 @@ impl SidePane {
                         t.panels.renders.insert(key, render);
                     }
                     Err(e) => {
-                        if let Some(items) = t.panels.renders.get_mut(&key).and_then(|r| r.items.as_mut()) {
+                        if let Some(items) = t
+                            .panels
+                            .renders
+                            .get_mut(&key)
+                            .and_then(|r| r.items.as_mut())
+                        {
                             PanelItem::set_switch(items, &toggle_id, !on);
                         }
                         t.note_error(e.message, cx);
@@ -1060,18 +1069,17 @@ impl SidePane {
         let keys: Vec<String> = files.iter().map(|(f, h)| trust_key(f, h)).collect();
         self.panels.trusting.extend(keys.iter().cloned());
         cx.notify();
-        let client = self.client.clone();
         let list: Vec<Value> = files
             .iter()
             .map(|(f, h)| json!({ "file": f, "hash": h }))
             .collect();
+        let going = crate::call_action(
+            self.client.clone(),
+            "patches.trust",
+            json!({ "threadId": thread_id, "files": list }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(
-                client,
-                "patches.trust",
-                json!({ "threadId": thread_id, "files": list }),
-            )
-            .await;
+            let res = going.await;
             let failed = res.err().map(|e| e.message);
             if failed.is_none() {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
@@ -1110,15 +1118,14 @@ impl SidePane {
             return;
         }
         cx.notify();
-        let (client, action_id, title) =
-            (self.client.clone(), action.id.clone(), action.title.clone());
+        let title = action.title.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "actions.run",
+            json!({ "threadId": thread_id, "actionId": action.id }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(
-                client,
-                "actions.run",
-                json!({ "threadId": thread_id, "actionId": action_id }),
-            )
-            .await;
+            let res = going.await;
             this.update(cx, |t, cx| {
                 t.panels.running.remove(&key);
                 if let Err(e) = res {

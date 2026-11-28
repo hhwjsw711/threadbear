@@ -819,7 +819,7 @@ impl SidePane {
                     "expected": previous_url,
                 }),
             };
-            let result = call(client, "artifacts.manage", params)
+            let result = crate::call_action(client, "artifacts.manage", params)
                 .await
                 .map_err(|error| error.message);
             this.update(cx, |this, cx| {

@@ -96,9 +96,13 @@ impl Threadbear {
         self.librarian.status = Some(guess.clone());
         self.librarian.busy.insert("pause");
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "librarian.update",
+            json!({ "paused": paused }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "librarian.update", json!({ "paused": paused })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.librarian.busy.remove("pause");
                 match res {
@@ -124,9 +128,9 @@ impl Threadbear {
             return;
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "librarian.run", json!({}));
         cx.spawn(async move |this, cx| {
-            let res = call(client, "librarian.run", json!({})).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.librarian.busy.remove("run");
                 match res {

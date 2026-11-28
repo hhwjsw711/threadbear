@@ -190,7 +190,7 @@ impl Threadbear {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.connected() {
+        if !self.can_act() {
             return;
         }
         let Some(before) = self.coordinator_for_project(project).cloned() else {
@@ -207,10 +207,10 @@ impl Threadbear {
         if target == Target::Add {
             ui.added = false;
         }
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), method, params);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = call(client, method, params).await;
+            let result = going.await;
             this.update_in(cx, |this, window, cx| {
                 if let Ok(value) = &result {
                     this.apply_task_board(&before, value, cx);
@@ -867,7 +867,7 @@ impl Threadbear {
         added: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let connected = self.connected();
+        let connected = self.can_act();
         let blank = input.read(cx).value().trim().is_empty();
         let send_project = project.to_owned();
         let close_project = project.to_owned();
@@ -1072,7 +1072,7 @@ impl Threadbear {
     ) -> Div {
         let mut list = v_flex().w_full().pb(px(28.));
         let ui = &self.coordinators.task_boards[project];
-        let connected = self.connected();
+        let connected = self.can_act();
         let mut any = false;
         for group in groups {
             let visible_roots: Vec<_> = group
@@ -1997,7 +1997,7 @@ impl Threadbear {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let project = &coordinator.project_id;
-        let connected = self.connected();
+        let connected = self.can_act();
         let mut body = v_flex().w_full().gap(px(8.));
         match mode {
             EditMode::Reply { input, .. } => {
@@ -2204,7 +2204,7 @@ impl Threadbear {
         action: TaskAction,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let enabled = self.connected();
+        let enabled = self.can_act();
         let (project, task) = (project.to_owned(), task.to_owned());
         let mut pill = cards::pill(id, label, prominent, enabled, None, cx)
             .h(px(27.))

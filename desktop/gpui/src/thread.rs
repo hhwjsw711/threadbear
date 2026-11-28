@@ -1728,9 +1728,9 @@ impl ThreadPane {
     }
 
     pub(crate) fn request(&mut self, method: &'static str, params: Value, cx: &mut Context<Self>) {
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), method, params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, method, params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.error = res.err().map(|e| e.message);
                 this.scroller.update(cx, |s, cx| s.scroll_to_end(cx));
@@ -1750,9 +1750,9 @@ impl ThreadPane {
         done: impl FnOnce(&mut Self, bool, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) {
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), method, params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, method, params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 let failed = res.is_err();
                 this.error = res.err().map(|e| e.message);

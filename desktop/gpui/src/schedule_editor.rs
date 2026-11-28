@@ -786,9 +786,9 @@ impl ScheduleEditor {
         self.saving = true;
         self.save_error = None;
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), method, params);
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, method, params).await;
+            let res = going.await;
             this.update_in(cx, |this, window, cx| {
                 this.saving = false;
                 match res {

@@ -932,12 +932,12 @@ impl Threadbear {
         if self.share_busy {
             return;
         }
-        let client = self.client.clone();
         let params = json!({ "threadId": id, "access": access, "newLink": new_link });
+        let going = crate::call_action(self.client.clone(), "threads.share", params);
         self.share_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "threads.share", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.share_busy = false;
                 match res {
@@ -1691,8 +1691,9 @@ impl Threadbear {
         if let Some(runner) = &runner {
             params["runnerId"] = json!(runner);
         }
+        let going = crate::call_action(client, "accounts.useReset", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "accounts.useReset", params).await;
+            let res = going.await;
             this.update(cx, |t, cx| {
                 t.resetting.remove(&key);
                 let logins = match runner.as_deref() {
@@ -1760,9 +1761,13 @@ impl Threadbear {
             return;
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "accounts.findWork",
+            json!({ "accountId": account }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "accounts.findWork", json!({ "accountId": account })).await;
+            let res = going.await;
             this.update(cx, |t, cx| {
                 t.usage.finding_work.remove(&account);
                 match res {
@@ -2288,10 +2293,11 @@ impl Threadbear {
         // The runner it's shown on, as every send says it (thread.rs, Daybreak 113).
         let runner_id = self.threads.get(&thread).and_then(|t| t.runner_id.clone());
         let params = json!({ "threadId": thread, "accountId": account, "model": REFUSAL_MODEL });
+        let going = crate::call_action(client.clone(), "threads.update", params);
         cx.spawn(async move |this, cx| {
-            let moved = call(client.clone(), "threads.update", params).await;
+            let moved = going.await;
             let sent = match &moved {
-                Ok(v) if v["thread"]["provider"] == "codex" => call(client, "threads.send", json!({ "threadId": thread, "text": REFUSAL_CONTINUATION, "runnerId": runner_id })).await.map(|_| ()),
+                Ok(v) if v["thread"]["provider"] == "codex" => crate::call_action(client, "threads.send", json!({ "threadId": thread, "text": REFUSAL_CONTINUATION, "runnerId": runner_id })).await.map(|_| ()),
                 Ok(_) => Err(threadbear_client::runner::RpcError { code: -1, message: "Codex Sol is no longer available. Choose a model to carry on.".into(), data: None }),
                 Err(e) => Err(e.clone()),
             };
@@ -2413,8 +2419,9 @@ impl Threadbear {
         };
         let params = json!({ "cwd": checkout, "text": threadbear_core::investigate::prompt(&report), "title": threadbear_core::investigate::title(&report), "permissionMode": "full" });
         let reported = report.message;
+        let going = crate::call_action(client, "threads.create", params);
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, "threads.create", params).await;
+            let res = going.await;
             this.update_in(cx, |this, window, cx| {
                 this.creating_investigation = false;
                 match res {

@@ -530,8 +530,9 @@ impl SettingsWindow {
         let Some(client) = self.client(cx) else {
             return;
         };
+        let going = crate::call_action(client, "instructions.set", json!({ "text": wanted }));
         cx.spawn(async move |this, cx| {
-            let res = call(client, "instructions.set", json!({ "text": wanted })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 match res {
                     Ok(v) => {
@@ -570,8 +571,9 @@ impl SettingsWindow {
         self.resolving = true;
         self.resolve_error = None;
         cx.notify();
+        let going = crate::call_action(client, "instructions.set", json!({ "text": text }));
         cx.spawn(async move |this, cx| {
-            let res = call(client, "instructions.set", json!({ "text": text })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.resolving = false;
                 match res {

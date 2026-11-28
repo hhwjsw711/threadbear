@@ -189,9 +189,9 @@ impl Threadbear {
             params["habit"] = json!(h.text);
             params["name"] = json!(before.name);
         }
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "recipes.setOn", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "recipes.setOn", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.recipes.busy.remove(&key);
                 match res {
@@ -228,9 +228,9 @@ impl Threadbear {
             return;
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), method, params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, method, params).await;
+            let res = going.await;
             this.update(cx, |t, cx| {
                 t.recipes.busy.remove(&key);
                 match res {
@@ -328,9 +328,9 @@ impl Threadbear {
             return;
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "recipes.remove", json!({ "id": id }));
         cx.spawn(async move |this, cx| {
-            let res = call(client, "recipes.remove", json!({ "id": id })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.recipes.busy.remove(&key);
                 match res {

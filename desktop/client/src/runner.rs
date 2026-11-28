@@ -34,6 +34,8 @@ impl<T> Locked<T> for Mutex<T> {
 const CLIENT_NAME: &str = "threadbear-desktop";
 /// The longest wait between tries to reach the runner.
 pub const MAX_RETRY_MS: u64 = 2_000;
+/// Wait between reconnect tries while a planned runner restart is under way.
+pub const RESTART_RETRY_MS: u64 = 150;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a request waits for its answer (`RunnerAPI`'s timeouts). Two
@@ -489,6 +491,61 @@ impl Client {
         }
     }
 
+    /// A place in restart order for any user action.
+    ///
+    /// Fast thread-record mutations (`threads.send`, `threads.update`,
+    /// `threads.setProjects`, `threads.delete`) share the thread's lane so
+    /// picking a model before sending stays strictly ordered. Long-running or
+    /// urgent per-thread operations (`actions.run`, `threads.interrupt`,
+    /// `approvals.respond`, `secrets.answer`, `requests.answer`,
+    /// `threads.hibernateWhen`, moves, edits, toggles, etc.) get their own
+    /// lane so a 60-minute `worktree.land` or slow command chip can never
+    /// block Stop, approval answers or messages in the same thread.
+    pub fn place_for(&self, method: &str, params: &Value) -> Place {
+        let thread = params["threadId"].as_str().filter(|s| !s.is_empty());
+        let key = match (method, thread) {
+            (
+                "threads.send" | "threads.update" | "threads.setProjects" | "threads.delete",
+                Some(id),
+            ) => id.to_owned(),
+            ("actions.run", Some(id)) => {
+                let action = params["actionId"].as_str().unwrap_or("");
+                format!("action:{id}:{action}")
+            }
+            ("threads.interrupt", Some(id)) => format!("interrupt:{id}"),
+            ("approvals.respond" | "secrets.answer" | "requests.answer", Some(id)) => {
+                let approval = params["approvalId"].as_str().unwrap_or("");
+                format!("card:{id}:{approval}")
+            }
+            (_, Some(id)) => format!("thread-action:{method}:{id}"),
+            (_, None) => params["projectId"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|id| format!("project:{id}"))
+                .or_else(|| {
+                    params["scheduleId"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(|id| format!("schedule:{id}"))
+                })
+                .unwrap_or_else(|| format!("action:{method}")),
+        };
+        self.place(&key)
+    }
+
+    /// Runs a user action through the restart queue: waits for the new runner
+    /// when a restart is under way and replays if the old runner turned it
+    /// away while handing over, preserving click order within its lane.
+    pub async fn call_through_restart(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RpcError> {
+        let place = self.place_for(method, &params);
+        self.call_in_restart_order_at(place, method, params, Arc::new(|_| {}))
+            .await
+    }
+
     /// As the app quits: requests still held for a restarting runner stay
     /// held, as their words go in the drafts file. One that has already said
     /// it's going (`Progress::Sending`) goes.
@@ -833,11 +890,10 @@ impl Client {
                 let _ = tx.send(Err(RpcError::closed()));
             }
             self.update_restart(|r| r.disconnected(Instant::now()));
-            // A restart is over in a few seconds; backing off to 4 s and more
-            // left the window saying "Reconnecting" well after the runner
-            // was back (`connectLoop`).
+            // A restart is over in a second or two; poll quickly on loopback
+            // instead of sitting idle after the runner is already listening.
             let wait_ms = if self.restart.locked().is_restarting(Instant::now()) {
-                backoff_ms.min(500)
+                backoff_ms.min(RESTART_RETRY_MS)
             } else {
                 backoff_ms
             };

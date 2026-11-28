@@ -1122,7 +1122,7 @@ impl Composer {
                 if !images_json.is_empty() {
                     params["images"] = json!(images_json);
                 }
-                match crate::call(client.clone(), "threads.edit", params).await {
+                match crate::call_action(client.clone(), "threads.edit", params).await {
                     Ok(_) => {
                         this.update(cx, |this, cx| {
                             // Done with: the box gets back what was in it before,
@@ -1591,7 +1591,7 @@ impl Composer {
                             }
                         }
                     }
-                    crate::call(
+                    crate::call_action(
                         client,
                         "media.import",
                         json!({ "path": imported.to_string_lossy() }),

@@ -232,9 +232,10 @@ impl Threadbear {
             self.replace_project(guess);
         }
         cx.notify();
-        let (client, params, id) = (self.client.clone(), update.params(id), id.to_owned());
+        let id = id.to_owned();
+        let going = crate::call_action(self.client.clone(), "projects.update", update.params(&id));
         cx.spawn(async move |this, cx| {
-            let res = call(client, "projects.update", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 match res {
                     Ok(v) => {
@@ -291,9 +292,14 @@ impl Threadbear {
             self.projects.open = None;
         }
         cx.notify();
-        let (client, id) = (self.client.clone(), id.to_owned());
+        let id = id.to_owned();
+        let going = crate::call_action(
+            self.client.clone(),
+            "projects.delete",
+            json!({ "projectId": id }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "projects.delete", json!({ "projectId": id })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 if let Err(e) = res {
                     if this.project(&id).is_none() {
@@ -494,9 +500,9 @@ impl Threadbear {
             }
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "projects.create", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "projects.create", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.projects.busy.remove("new");
                 match res {
@@ -630,9 +636,9 @@ impl Threadbear {
         if let Some(path) = path {
             params["path"] = json!(path);
         }
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "projects.setIcon", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "projects.setIcon", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.projects.busy.remove(&key);
                 match res {
@@ -664,10 +670,22 @@ impl Threadbear {
             self.projects.busy.insert(key.clone());
             cx.notify();
         }
-        let client = self.client.clone();
         let params = json!({ "projectId": id, "force": force });
+        let going = if force {
+            Some(crate::call_action(
+                self.client.clone(),
+                "projects.refreshTasks",
+                params.clone(),
+            ))
+        } else {
+            None
+        };
+        let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "projects.refreshTasks", params).await;
+            let res = match going {
+                Some(going) => going.await,
+                None => call(client, "projects.refreshTasks", params).await,
+            };
             this.update(cx, |this, cx| {
                 this.projects.busy.remove(&key);
                 match res {
@@ -752,11 +770,11 @@ impl Threadbear {
             t.projects = (!guess.is_empty()).then(|| guess.clone());
         }
         cx.notify();
-        let client = self.client.clone();
         let thread = thread.to_owned();
         let params = json!({ "threadId": thread, "add": add, "remove": remove });
+        let going = crate::call_action(self.client.clone(), "threads.setProjects", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "threads.setProjects", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 match res {
                     Ok(v) => {
@@ -797,10 +815,10 @@ impl Threadbear {
         }
         window.push_notification("Asking the librarian to look…", cx);
         cx.notify();
-        let client = self.client.clone();
         let params = json!({ "threadId": thread });
+        let going = crate::call_action(self.client.clone(), "librarian.run", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "librarian.run", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.projects.busy.remove(&key);
                 match res {
@@ -1249,9 +1267,10 @@ impl Threadbear {
             editing.saving = true;
         }
         let client = self.client.clone();
+        let going = crate::call_action(client.clone(), "projects.update", params);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = call(client.clone(), "projects.update", params).await;
+            let result = going.await;
             // The update notification can race the failed save. Read the
             // current version so the editor can show exactly what changed.
             let current = if result.is_err() {

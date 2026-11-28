@@ -1516,9 +1516,9 @@ impl ThreadPane {
             None => params["decline"] = Value::Bool(true),
         }
         let id = approval_id.to_owned();
-        let client = self.client_handle();
+        let going = crate::call_action(self.client_handle(), "secrets.answer", params);
         cx.spawn(async move |this, cx| {
-            let result = crate::call(client, "secrets.answer", params).await;
+            let result = going.await;
             this.update(cx, |this, cx| {
                 // It went; the card closes when approval.resolved comes.
                 this.rows.secret_states.insert(

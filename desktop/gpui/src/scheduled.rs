@@ -233,9 +233,13 @@ impl Threadbear {
             return;
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "schedules.run",
+            json!({ "scheduleId": id }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "schedules.run", json!({ "scheduleId": id })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.scheduled.busy.remove(&key);
                 match res {
@@ -266,14 +270,13 @@ impl Threadbear {
         self.replace_schedule(guess.clone(), false);
         self.scheduled.busy.insert(key.clone());
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "schedules.update",
+            json!({ "scheduleId": id, "paused": paused }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(
-                client,
-                "schedules.update",
-                json!({ "scheduleId": id, "paused": paused }),
-            )
-            .await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 this.scheduled.busy.remove(&key);
                 match res {
@@ -343,9 +346,13 @@ impl Threadbear {
         };
         let schedule = self.scheduled.list.remove(index);
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "schedules.delete",
+            json!({ "scheduleId": id }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "schedules.delete", json!({ "scheduleId": id })).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 match res {
                     Ok(_) => this.scheduled.list.retain(|s| s.id != id),

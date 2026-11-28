@@ -585,10 +585,11 @@ impl SidePane {
         let comment = ui.comment.clone();
         let mut params = params;
         params["url"] = json!(url);
-        let (client, url) = (self.client.clone(), url.to_owned());
+        let url = url.to_owned();
+        let going = crate::call_action(self.client.clone(), "github.prAct", params);
         crate::activity::menu_chosen(Some(format!("PR > {key}")), None);
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, "github.prAct", params).await;
+            let res = going.await;
             this.update_in(cx, |this, window, cx| {
                 // Highlights' status asks again on its next draw.
                 this.prs.status.remove(&url);
@@ -1603,10 +1604,10 @@ impl SidePane {
         let pr_url = pr.url.clone();
         self.prs.starting = Some(pr_url.clone());
         let params = json!({ "cwd": cwd, "text": rules::review_prompt(pr), "title": format!("Review #{}: {}", pr.number, pr.title) });
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "threads.create", params);
         let app = self.app.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, "threads.create", params).await;
+            let res = going.await;
             this.update_in(cx, |this, window, cx| {
                 this.prs.starting = None;
                 match res {

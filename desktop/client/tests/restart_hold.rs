@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use threadbear_client::auth::{self, Role};
 use threadbear_client::config::RunnerConfig;
 use threadbear_client::runner::{
-    Client, Progress, ProgressFn, Resend, Sink, Status, CLOSED, NOT_CONNECTED, TIMED_OUT,
+    Client, Progress, ProgressFn, Resend, Sink, Status, CLOSED, NOT_CONNECTED, RESTART_RETRY_MS,
+    TIMED_OUT,
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -202,7 +203,7 @@ async fn serve(stream: tokio::net::TcpStream, state: Arc<Mutex<Runner>>, port: u
                     Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": "hello broke" } }).to_string())
                 }
                 "hello" => Some(answer(json!({ "protocol": 1, "runnerVersion": format!("fake-{connection}") }))),
-                "threads.send" | "threads.update" => match if s.replies.is_empty() { Reply::Ok } else { s.replies.remove(0) } {
+                "threads.send" | "threads.update" | "actions.run" => match if s.replies.is_empty() { Reply::Ok } else { s.replies.remove(0) } {
                     Reply::Ok => {
                         // A send lands as its user.message, as the runner's does.
                         if method == "threads.send" {
@@ -1152,4 +1153,178 @@ async fn a_send_with_no_answer_in_time_isnt_confirmed_by_another_with_the_same_w
         .await
         .unwrap_err();
     assert_eq!(err.code, TIMED_OUT);
+}
+
+#[tokio::test]
+async fn user_actions_wait_for_a_restarting_runner_and_replay_in_order() {
+    let fake = Fake::start().await;
+    let (client, mut rx) = connect(&fake).await;
+    fake.notice("The runner is restarting now.");
+    settle().await;
+    fake.go_down();
+    until_disconnected(&mut rx).await;
+
+    let first_place = client.place_for("projects.update", &json!({ "projectId": "p1" }));
+    let second_place = client.place_for("coordinators.addTask", &json!({ "projectId": "p1" }));
+    let approval_place = client.place_for("approvals.respond", &json!({ "threadId": "t1" }));
+
+    let second = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .call_in_restart_order_at(
+                    second_place,
+                    "coordinators.addTask",
+                    json!({ "projectId": "p1", "title": "Check logs" }),
+                    progress().0,
+                )
+                .await
+        }
+    });
+    settle().await;
+    let first = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .call_in_restart_order_at(
+                    first_place,
+                    "projects.update",
+                    json!({ "projectId": "p1", "title": "Renamed" }),
+                    progress().0,
+                )
+                .await
+        }
+    });
+    let approval = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .call_in_restart_order_at(
+                    approval_place,
+                    "approvals.respond",
+                    json!({ "threadId": "t1", "approvalId": "a1", "decision": "allow" }),
+                    progress().0,
+                )
+                .await
+        }
+    });
+    let create = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .call_through_restart("threads.create", json!({ "text": "hello" }))
+                .await
+        }
+    });
+    settle().await;
+
+    fake.up();
+    for task in [first, second, approval, create] {
+        assert!(tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok());
+    }
+
+    let seen: Vec<(String, u64)> = fake
+        .state
+        .lock()
+        .unwrap()
+        .seen
+        .iter()
+        .filter(|(m, _, _)| m != "hello")
+        .map(|(m, _, c)| (m.clone(), *c))
+        .collect();
+    assert!(
+        seen.iter().all(|(_, c)| *c == 2),
+        "all ran on the new runner: {seen:?}"
+    );
+    let p1_order: Vec<&str> = seen
+        .iter()
+        .filter_map(|(m, _)| {
+            matches!(m.as_str(), "projects.update" | "coordinators.addTask").then_some(m.as_str())
+        })
+        .collect();
+    assert_eq!(p1_order, vec!["projects.update", "coordinators.addTask"]);
+    assert!(seen.iter().any(|(m, _)| m == "approvals.respond"));
+    assert!(seen.iter().any(|(m, _)| m == "threads.create"));
+}
+
+#[tokio::test]
+async fn user_action_while_disconnected_without_restart_fails_at_once() {
+    let fake = Fake::start().await;
+    let (client, mut rx) = connect(&fake).await;
+    fake.go_down();
+    until_disconnected(&mut rx).await;
+    let err = client
+        .call_through_restart("threads.create", json!({ "text": "hello" }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, NOT_CONNECTED);
+}
+
+#[tokio::test]
+async fn restart_reconnect_polls_at_restart_retry_interval() {
+    let fake = Fake::start().await;
+    let (_client, mut rx) = connect(&fake).await;
+    fake.notice("The runner is restarting now.");
+    settle().await;
+    fake.go_down();
+    let mut waits = vec![];
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while waits.len() < 3 {
+            if let Some(Status::Disconnected { retry_in_ms, .. }) = rx.recv().await {
+                waits.push(retry_in_ms);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(waits, vec![RESTART_RETRY_MS; 3]);
+}
+
+#[tokio::test]
+async fn a_slow_command_action_does_not_block_stop_approvals_or_sends_on_the_same_thread() {
+    let fake = Fake::start().await;
+    let (client, _rx) = connect(&fake).await;
+    // Make `actions.run` stall indefinitely on the runner (like a long Land check).
+    fake.reply_with(&[Reply::Stall { lands: false }]);
+    let action_place = client.place_for(
+        "actions.run",
+        &json!({ "threadId": "t1", "actionId": "worktree.land" }),
+    );
+    let _running = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .call_in_restart_order_at(
+                    action_place,
+                    "actions.run",
+                    json!({ "threadId": "t1", "actionId": "worktree.land" }),
+                    progress().0,
+                )
+                .await
+        }
+    });
+    settle().await;
+
+    // Stop, approval answers, and messages on the same thread must go straight
+    // through without waiting behind the running command action.
+    for (method, params) in [
+        ("threads.interrupt", json!({ "threadId": "t1" })),
+        (
+            "approvals.respond",
+            json!({ "threadId": "t1", "approvalId": "a1", "decision": "allow" }),
+        ),
+        ("threads.send", send("carry on")),
+    ] {
+        let res = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.call_through_restart(method, params),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{method} blocked behind actions.run"));
+        assert!(res.is_ok(), "{method} failed: {res:?}");
+    }
 }

@@ -354,9 +354,9 @@ impl Threadbear {
         params["title"] = json!(rules::bring_in_title(&release, discuss));
         self.updates_panel.bringing_in = true;
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "threads.create", params);
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, "threads.create", params).await;
+            let res = going.await;
             this.update_in(cx, |t, window, cx| {
                 t.updates_panel.bringing_in = false;
                 match res.map(|v| serde_json::from_value::<ThreadSummary>(v["thread"].clone())) {
@@ -387,9 +387,9 @@ impl Threadbear {
         }
         self.updates_panel.reinstalling = true;
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "runner.reinstall", json!({}));
         cx.spawn(async move |this, cx| {
-            let res = call(client, "runner.reinstall", json!({})).await;
+            let res = going.await;
             this.update(cx, |t, cx| {
                 t.updates_panel.reinstalling = false;
                 match res {
@@ -418,9 +418,13 @@ impl Threadbear {
             return;
         }
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "swiftChanges.port",
+            json!({ "commit": commit }),
+        );
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, "swiftChanges.port", json!({ "commit": commit })).await;
+            let res = going.await;
             this.update_in(cx, |t, window, cx| {
                 t.updates_panel.porting.remove(&commit);
                 match res {
@@ -463,9 +467,13 @@ impl Threadbear {
         let before = runner.swift_changes.clone();
         runner.swift_changes.retain(|c| c.commit != commit);
         cx.notify();
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "swiftChanges.dismiss",
+            json!({ "commit": commit }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(client, "swiftChanges.dismiss", json!({ "commit": commit })).await;
+            let res = going.await;
             this.update(cx, |t, cx| {
                 match res {
                     Ok(v) => t.take_swift_changes(&v["swiftChanges"]),

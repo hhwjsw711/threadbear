@@ -762,14 +762,13 @@ impl Threadbear {
             return;
         }
         self.redraw_pane(cx);
-        let client = self.client.clone();
+        let going = crate::call_action(
+            self.client.clone(),
+            "buttons.press",
+            json!({ "threadId": thread_id, "buttonId": id }),
+        );
         cx.spawn(async move |this, cx| {
-            let res = call(
-                client,
-                "buttons.press",
-                json!({ "threadId": thread_id, "buttonId": id }),
-            )
-            .await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 match res {
                     Ok(v) => {
@@ -1580,9 +1579,9 @@ impl Threadbear {
     fn send_runner_settings_update(&mut self, seq: u64, change: Value, cx: &mut Context<Self>) {
         use threadbear_core::runner_settings::{UpdateErrorKind, UpdateOutcome};
 
-        let client = self.client.clone();
+        let going = crate::call_action(self.client.clone(), "settings.update", change);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "settings.update", change).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 let outcome = match res {
                     Ok(v) => this
@@ -2471,6 +2470,13 @@ impl Threadbear {
     /// Connected and signed in, as far as the app has heard.
     pub(crate) fn connected(&self) -> bool {
         self.connection.is_connected()
+    }
+
+    /// Connected, or waiting on a planned runner restart that will accept
+    /// queued clicks as soon as the new runner is listening. Controls wired
+    /// through `call_action` stay interactive while this holds.
+    pub(crate) fn can_act(&self) -> bool {
+        self.connected() || self.client.restart_under_way()
     }
 
     /// What a status from the client means for the phase, with the

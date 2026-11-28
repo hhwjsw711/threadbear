@@ -1213,10 +1213,10 @@ impl Threadbear {
         }
         let guess = self.threads.get(&id).cloned();
         self.leave_selection(&id, next, window, cx);
-        let client = self.client.clone();
         let params = json!({ "threadId": id, "said": said });
+        let going = crate::call_action(self.client.clone(), "threads.hibernateWhen", params);
         cx.spawn(async move |this, cx| {
-            let res = call(client, "threads.hibernateWhen", params).await;
+            let res = going.await;
             this.update(cx, |this, cx| {
                 if let Err(e) = res {
                     this.show_error(e.message, cx);
@@ -1275,10 +1275,11 @@ impl Threadbear {
                             }
                             this.sidebar.busy.insert(busy_key.clone());
                             cx.notify();
-                            let client = this.client.clone();
                             let params = json!({ "threadId": id });
+                            let going =
+                                crate::call_action(this.client.clone(), "threads.delete", params);
                             cx.spawn(async move |this, cx| {
-                                let res = call(client, "threads.delete", params).await;
+                                let res = going.await;
                                 this.update(cx, |this, cx| {
                                     this.sidebar.busy.remove(&busy_key);
                                     this.end_note(&busy_key, cx);
