@@ -245,6 +245,8 @@ export type PeersDeps = {
   connectWaitMs?: number;
   // Whether a pid is certainly a runner (main.ts), not just some node.
   identified?: (pid: number) => boolean;
+  // The least time one startup attempt gets (MIN_ATTEMPT_MS).
+  minAttemptMs?: number;
 };
 
 // The primary's side: one connection per draining runner.
@@ -266,7 +268,11 @@ export function openCardsAnswer(r: unknown, threadId: string): PersistedEvent[] 
   return undefined;
 }
 
-type Failure = { msg: string; extra: Record<string, unknown> };
+type Failure = { msg: string; extra: Record<string, unknown>; refused?: boolean };
+
+// The least time one startup attempt at a draining runner gets: more than
+// its auth wait (client.ts AUTH_TIMEOUT_MS).
+const MIN_ATTEMPT_MS = 6_000;
 
 export class Peers {
   private deps: PeersDeps;
@@ -275,8 +281,10 @@ export class Peers {
   // taken in here (lost): not on any runner for those few seconds.
   private arriving = new Set<string>();
   private closing = false;
-  // Set while connectAll runs: adoptions waiting for it to finish.
+  // From connectAll until startAdopting: adoptions waiting for Runner.start,
+  // and the threads they're for.
   private deferring?: (() => void)[];
+  private cameAcross = new Map<string, Peer>();
 
   constructor(deps: PeersDeps) {
     this.deps = deps;
@@ -296,10 +304,13 @@ export class Peers {
     // One deadline for every draining runner, each whole attempt included,
     // so startup gives up well inside the launcher's 90 s (launch.mjs).
     const until = Date.now() + (this.deps.connectWaitMs ?? 30_000);
-    // A thread that comes across meanwhile is taken in only once every
-    // draining runner is reached: waiting on one may end in giving up, and a
-    // turn started here then would die with this process.
+    // A thread that comes across meanwhile is taken in only once startup
+    // goes ahead (startAdopting, after Runner.start): waiting on one runner
+    // may end in giving up, and a turn started here then would die with this
+    // process; and before start, schedule ceilings and coordinators aren't
+    // set up. It's kept, so start leaves it to adopt.
     this.deferring = [];
+    this.cameAcross.clear();
     try {
       for (const info of listDrainInfos(this.deps.home)) {
         if (info.pid === process.pid) continue;
@@ -315,8 +326,9 @@ export class Peers {
           if (!this.alive(info.pid)) break;
           // Windows names only the program, so a pid some other node took
           // over looks alive (runnerAlive) and would hold startup every
-          // time: only a process seen to be a runner is waited on.
-          if (Date.now() >= until && !this.identified(info.pid)) break;
+          // time. A runner, however busy, still has its port open, so one
+          // nobody is listening on is taken as gone.
+          if (Date.now() >= until && !this.identified(info.pid) && failed.refused) break;
           if (Date.now() >= until) {
             this.deps.log.error(failed.msg, failed.extra);
             throw new Error(`Draining runner ${info.pid} is still alive but could not be reached; leaving its threads and process groups untouched.`);
@@ -339,14 +351,21 @@ export class Peers {
       this.close();
       throw e;
     }
-    const later = this.deferring;
-    this.deferring = undefined;
-    for (const run of later) run();
+    // One handed to an attempt that then failed is on disk, let go: start loads it.
+    for (const [id, from] of this.cameAcross) if (!from.abandoned) kept.add(id);
     return kept;
   }
 
-  // Adoptions wait while connectAll is still reaching draining runners.
+  // Runner.start has run: threads handed over since connectAll began are
+  // taken in now, and any later ones as they come.
+  startAdopting(): void {
+    const later = this.deferring ?? [];
+    this.deferring = undefined;
+    for (const run of later) run();
+  }
+
   private adoptWhenStarted(run: () => void): void {
+    if (this.closing) return;
     if (this.deferring) this.deferring.push(run);
     else run();
   }
@@ -357,7 +376,10 @@ export class Peers {
 
   private async connect(info: DrainInfo, until: number): Promise<{ peer: Peer } | Failure> {
     const connect = this.deps.connect ?? ((port: number, token: string, legacy: boolean, pid: number) => connectDrain(port, token, legacy, pid));
-    const left = () => Math.max(1, until - Date.now());
+    // Each attempt gets a fair go even when the deadline is all but used
+    // (another draining runner took it), so what fails is the real failure.
+    const attemptUntil = Math.max(until, Date.now() + (this.deps.minAttemptMs ?? MIN_ATTEMPT_MS));
+    const left = () => Math.max(1, attemptUntil - Date.now());
     let client: PeerClient;
     // The one place a new client may still send the token (docs/
     // protocol/connection.md, "Before the challenge"): a draining runner from before
@@ -370,7 +392,8 @@ export class Peers {
     } catch (e) {
       // One that connects after giving up on it is closed, not leaked.
       connecting.then((c) => c.close(), () => {});
-      return { msg: 'could not reach a draining runner', extra: { pid: info.pid, port: info.port, error: String(e) } };
+      const refused = (e as { code?: unknown })?.code === 'ECONNREFUSED' || /ECONNREFUSED/.test(String(e));
+      return { msg: 'could not reach a draining runner', extra: { pid: info.pid, port: info.port, error: String(e) }, refused };
     }
     const peer: Peer = { info, client, threads: new Map(), gone: false };
     // Before any call, so nothing it says in between is missed.
@@ -409,6 +432,7 @@ export class Peers {
         if (peer.abandoned || !peer.threads.delete(threadId)) return;
         this.deps.log.info('a thread came across from the draining runner', { threadId, pid: peer.info.pid });
         // Loads it from disk; its thread.updated goes out from here.
+        if (this.deferring) this.cameAcross.set(threadId, peer);
         this.adoptWhenStarted(() => {
           if (!peer.abandoned) this.deps.runner.adopt(threadId);
         });

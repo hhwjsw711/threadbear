@@ -548,6 +548,7 @@ test('Peers: once closed (this runner is draining), a thread coming across is no
   const adopted: string[] = [];
   const peers = new Peers({ home: h.home, token: 't', log: nullLogger, runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} }, sweep: async () => {}, connect: async () => client as any, alive: () => true });
   await peers.connectAll();
+  peers.startAdopting();
   peers.close();
   notify('drain.handedOver', { threadId: 't-old' });
   assert.deepEqual(adopted, []);
@@ -636,6 +637,7 @@ test('Peers: the bearer header goes only to a draining runner whose own drain fi
     connect: async (port, _token, legacy) => (asked.push([port, legacy]), client(port === 1 ? ['t-old'] : ['t-new']) as any),
   });
   await peers.connectAll();
+  peers.startAdopting();
   assert.deepEqual(asked, [[1, true], [2, false]]);
   peers.close();
 });
@@ -788,7 +790,7 @@ test('Peers: a retry that then works reports nothing to Sentry; giving up report
     const { lines, log } = recordingLog();
     let attempts = 0;
     const peers = new Peers({
-      home: h.home, token: 't', log, alive: () => true, identified: () => true, connectWaitMs: works ? 30_000 : 450,
+      home: h.home, token: 't', log, alive: () => true, identified: () => true, connectWaitMs: works ? 30_000 : 450, minAttemptMs: 50,
       runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
       sweep: async () => {},
       connect: async () => {
@@ -812,7 +814,7 @@ test('Peers: the startup deadline covers a setup call that never answers, and cl
   const stuck = fakePeer({ hello: () => new Promise(() => {}) });
   const swept: number[] = [];
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 100,
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 100, minAttemptMs: 50,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async (p) => void swept.push(p),
     connect: async () => stuck.client as unknown as PeerClient,
@@ -832,7 +834,7 @@ test('Peers: a connect that never finishes is bounded too, and closed if it fini
   const late = fakePeer();
   let finish: (c: unknown) => void = () => {};
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 50,
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 50, minAttemptMs: 50,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async () => {},
     connect: () => new Promise<PeerClient>((r) => { finish = r as (c: unknown) => void; }),
@@ -843,21 +845,82 @@ test('Peers: a connect that never finishes is bounded too, and closed if it fini
   assert.equal(late.closed(), 1);
 });
 
-test("Peers: on Windows a pid some other node reuses doesn't hold startup: past the deadline it's taken as gone", async () => {
+for (const listening of [false, true]) test(`Peers: on Windows a runner that can't be told from any node is ${listening ? 'left alone while its port answers' : 'taken as gone once nothing listens on its port'}`, async () => {
+  // A pid some other node reused would otherwise hold startup every time;
+  // a busy runner still has its port open, so it isn't swept.
   const h = makeHarness();
   const { writeDrainInfo, listDrainInfos, Peers } = await import('../../src/handover.ts');
   const pid = 424265;
   writeDrainInfo(h.home, { pid, port: 1, version: 'old', since: new Date().toISOString(), threads: ['t-old'] });
   const swept: number[] = [];
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => false, connectWaitMs: 50,
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => false, connectWaitMs: 50, minAttemptMs: 50,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async (p) => void swept.push(p),
-    connect: async () => { throw new Error('ECONNREFUSED'); },
+    connect: async () => {
+      if (listening) throw new Error("The runner didn't prove itself in time.");
+      throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' });
+    },
   });
-  assert.deepEqual([...(await peers.connectAll())], []);
-  assert.deepEqual(swept, [pid]);
-  assert.equal(listDrainInfos(h.home).length, 0);
+  if (listening) await assert.rejects(peers.connectAll(), /still alive/);
+  else assert.deepEqual([...(await peers.connectAll())], []);
+  assert.deepEqual(swept, listening ? [] : [pid]);
+  assert.equal(listDrainInfos(h.home).length, listening ? 1 : 0);
+  peers.close();
+});
+
+test('Peers: a runner that goes while startup waits on another, and startup then gives up, has nothing taken in', async () => {
+  const h = makeHarness();
+  const { writeDrainInfo, Peers } = await import('../../src/handover.ts');
+  writeDrainInfo(h.home, { pid: 424270, port: 1, version: 'old', since: new Date().toISOString(), threads: ['t-a'] });
+  writeDrainInfo(h.home, { pid: 424271, port: 2, version: 'old', since: new Date().toISOString(), threads: ['t-b'] });
+  let closeA: () => void = () => {};
+  const a = fakePeer({ threads: ['t-a'] });
+  const clientA = { ...a.client, waitClosed: () => new Promise<void>((r) => { closeA = r; }) };
+  const adopted: string[] = [];
+  let goneA = false;
+  let releaseSweep: () => void = () => {};
+  const peers = new Peers({
+    home: h.home, token: 't', log: nullLogger, identified: () => true, connectWaitMs: 200, minAttemptMs: 50, goneWaitMs: 0,
+    alive: (pid) => pid !== 424270 || !goneA,
+    runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} },
+    // A's clean-up is still going when startup gives up.
+    sweep: (pid) => (pid === 424270 ? new Promise<void>((r) => { releaseSweep = r; }) : Promise.resolve()),
+    connect: async (port) => {
+      if (port === 1) return clientA as unknown as PeerClient;
+      if (!goneA) { goneA = true; closeA(); }
+      throw new Error('no answer');
+    },
+  });
+  await assert.rejects(peers.connectAll(), /still alive/);
+  releaseSweep();
+  for (let i = 0; i < 20; i++) await tick();
+  peers.startAdopting();
+  assert.deepEqual(adopted, []);
+});
+
+test('Peers: a thread handed over during the setup of the attempt that works is kept for adopt, not loaded by start', async () => {
+  const h = makeHarness();
+  const { writeDrainInfo, Peers } = await import('../../src/handover.ts');
+  writeDrainInfo(h.home, { pid: 424272, port: 1, version: 'old', since: new Date().toISOString(), threads: ['t-1', 't-2'] });
+  let notify: (m: string, p: unknown) => void = () => {};
+  const base = fakePeer({ threads: ['t-1', 't-2'], notify: (fn) => { notify = fn; } });
+  const client = { ...base.client, call: async (m: string) => {
+    if (m === 'threads.subscribe') notify('drain.handedOver', { threadId: 't-1' });
+    return base.client.call(m);
+  } };
+  const adopted: string[] = [];
+  const peers = new Peers({
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true,
+    runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} },
+    sweep: async () => {},
+    connect: async () => client as unknown as PeerClient,
+  });
+  const kept = await peers.connectAll();
+  assert.deepEqual([...kept].sort(), ['t-1', 't-2']);
+  assert.deepEqual(adopted, []);
+  peers.startAdopting();
+  assert.deepEqual(adopted, ['t-1']);
   peers.close();
 });
 
@@ -872,7 +935,7 @@ test('Peers: a thread handed over while startup waits on another runner is taken
     const adopted: string[] = [];
     let triesB = 0;
     const peers = new Peers({
-      home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: reached ? 30_000 : 300,
+      home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: reached ? 30_000 : 300, minAttemptMs: 50,
       runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} },
       sweep: async () => {},
       connect: async (port) => {
@@ -884,8 +947,11 @@ test('Peers: a thread handed over while startup waits on another runner is taken
       },
     });
     if (reached) {
-      await peers.connectAll();
-      assert.deepEqual(adopted, ['t-a'], 'taken in once every runner is reached');
+      const kept = await peers.connectAll();
+      assert.deepEqual(adopted, [], 'not before Runner.start');
+      assert.ok(kept.has('t-a'), 'kept, so start leaves it to adopt');
+      peers.startAdopting();
+      assert.deepEqual(adopted, ['t-a'], 'taken in once startup goes ahead');
     } else {
       await assert.rejects(peers.connectAll(), /still alive/);
       assert.deepEqual(adopted, [], 'not started in a runner that is giving up');
@@ -949,6 +1015,7 @@ test('Peers: the threads of a draining runner that went are arriving until they 
     connect: async () => client as any,
   });
   await peers.connectAll();
+  peers.startAdopting();
   assert.equal(peers.owns('t-old'), true);
   gone = true;
   closed();
@@ -988,6 +1055,7 @@ test("Peers: a thread that can't be taken in stays arriving, and one being hande
     adopted.push(id);
   });
   await a.peers.connectAll();
+  a.peers.startAdopting();
   a.close();
   await new Promise((r) => setTimeout(r, 300));
   assert.deepEqual(adopted, ['good'], 'the rest are still taken in');
@@ -998,6 +1066,7 @@ test("Peers: a thread that can't be taken in stays arriving, and one being hande
   const took: string[] = [];
   const b = make(424251, ['t'], (id) => took.push(id), true);
   await b.peers.connectAll();
+  b.peers.startAdopting();
   b.close();
   await new Promise((r) => setTimeout(r, 100));
   b.peers.close();
@@ -1219,6 +1288,7 @@ test("Peers.openCards, from a release before drain.openCards: each draining thre
   };
   const peers = new Peers({ home: h.home, token: 't', log: nullLogger, runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} }, sweep: async () => {}, connect: async () => client as any, alive: () => true });
   await peers.connectAll();
+  peers.startAdopting();
   const found = await peers.openCards();
   // Every thread read, so a row still showing an answered card is written again.
   assert.deepEqual(found.map((f) => [f.thread.id, f.thread.onOldRunner, f.events.map((e) => (e as { approvalId: string }).approvalId)]), [['t-wait', true, ['start-1']], ['t-busy', true, []]]);
@@ -1251,6 +1321,7 @@ test('Peers.openCards, from a release before drain.openCards: reads the whole lo
   };
   const peers = new Peers({ home: h.home, token: 't', log: nullLogger, runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} }, sweep: async () => {}, connect: async () => client as any, alive: () => true });
   await peers.connectAll();
+  peers.startAdopting();
   const started = Date.now();
   const found = await peers.openCards({ page: 10, deadlineMs: 300 });
   assert.ok(Date.now() - started < 2_000);
@@ -1288,6 +1359,7 @@ test("Peers.openCards: each thread's open cards from its draining runner, all at
   const connect = async (_port: number, _token: string, _legacy: boolean, pid: number) => clientFor(pid, pid === 474747 ? ['t-gone'] : ['t-hung', 't-a', 't-b']) as any;
   const peers = new Peers({ home: h.home, token: 't', log: nullLogger, runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} }, sweep: async () => {}, connect, alive: () => true });
   await peers.connectAll();
+  peers.startAdopting();
   const found = await peers.openCards({ deadlineMs: 300 });
   assert.deepEqual(found.map((f) => [f.thread.id, f.thread.onOldRunner, f.events.map((e) => (e as { approvalId: string }).approvalId)]), [['t-a', true, ['q-a']], ['t-b', true, []]]);
   assert.deepEqual(asked.sort(), ['drain.openCards t-a', 'drain.openCards t-b', 'drain.openCards t-gone', 'drain.openCards t-hung']);
@@ -1346,6 +1418,7 @@ test('Peers.openCards, from a release before drain.openCards: each summary as it
   };
   const peers = new Peers({ home: h.home, token: 't', log: nullLogger, runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} }, sweep: async () => {}, connect: async () => client as any, alive: () => true });
   await peers.connectAll();
+  peers.startAdopting();
   const found = await peers.openCards();
   assert.deepEqual(found.map((f) => [f.thread.id, f.thread.status]), [['t-a', 'waiting'], ['t-b', 'idle']]);
 });
@@ -1384,6 +1457,7 @@ test("Peers.openCards: a draining runner from the morning of 13 Nov, answering e
   const connect = async (_port: number, _token: string, _legacy: boolean, pid: number) => clientFor(pid) as any;
   const peers = new Peers({ home: h.home, token: 't', log: nullLogger, runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} }, sweep: async () => {}, connect, alive: () => true });
   await peers.connectAll();
+  peers.startAdopting();
   const found = await peers.openCards({ deadlineMs: 1000 });
   const ids = (f: (typeof found)[number]) => f.events.map((e) => (e as { approvalId: string }).approvalId);
   assert.deepEqual(found.map((f) => [f.thread.id, ids(f)]).sort(), [['m1', ['q-m1']], ['m2', ['q-m2']], ['n1', ['q-n1']], ['n2', ['q-n2']]]);

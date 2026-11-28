@@ -609,14 +609,15 @@ restart wait for busy threads. It hands over instead:
   from then.
 - If a connection or setup call to a draining runner fails at startup, the
   primary retries while that process lives, for up to 30 seconds across all
-  draining runners, each attempt included. Retries log at info; giving up
-  logs the last failure as an error. If a process seen to be a runner still
-  can't be reached, startup fails with its drain file and process groups
-  untouched: a timeout alone never permits taking its threads. One that
-  can't be told from any other node (Windows) is taken as gone after that.
+  draining runners (each attempt gets at least 6). Retries log at info;
+  giving up logs the last failure as an error. If the runner still can't be
+  reached, startup fails with its drain file and process groups untouched: a
+  timeout alone never permits taking its threads. On Windows, where a pid
+  can't be told from any other node's, one whose port refuses connections
+  is taken as gone after that.
 - A thread handed over while startup is still reaching draining runners is
-  taken in once all are reached, never if startup gives up; one handed over
-  to an attempt that failed is left on disk for start to load.
+  kept from start and taken in just after it, never if startup gives up; one
+  handed over to an attempt that failed is left on disk for start to load.
 - If a draining runner dies, the primary takes its threads as after a
   crash (a turn in flight ends as `stopped`) and stops the process groups
   it left (`run/children-<pid>.json`).
