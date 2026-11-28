@@ -93,7 +93,7 @@ impl Render for RowGhost {
 }
 
 /// `line.3.horizontal` in the tertiary colour, as wide as SF's at 13 points.
-fn handle_icon(color: Hsla) -> Div {
+pub(super) fn handle_icon(color: Hsla) -> Div {
     div().flex_none().w(px(16.)).flex().justify_center().child(
         icons::symbol("line.3.horizontal")
             .with_size(px(15.))

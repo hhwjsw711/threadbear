@@ -9,7 +9,9 @@ use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::{h_flex, Disableable as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::{
+    h_flex, ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
@@ -536,7 +538,8 @@ impl SettingsWindow {
     }
 
     /// `PoolListRow`: its icon, its name (semibold while it's the one being
-    /// edited, the row tinted), and its logins and folders in grey.
+    /// edited, the row tinted), its logins and folders in grey, and a handle.
+    /// The row drags onto another's place, as a runner's row does (runners.rs).
     fn pool_row(
         &self,
         pool: &Pool,
@@ -546,13 +549,22 @@ impl SettingsWindow {
     ) -> AnyElement {
         let (accent, secondary) = (style::control_accent(cx), style::secondary_text(cx));
         let id = pool.id.clone();
-        let tip = if selected {
+        let editing = if selected {
             format!("Editing {} below", pool.title)
         } else {
             format!("Edit {}", pool.title)
         };
+        let tip = format!("{editing}. Drag it onto another pool to change the order");
         let symbol = pools::symbol(pool, accounts);
         let mark = icons::try_symbol(&symbol).unwrap_or_else(|| icons::symbol("square.stack"));
+        // A drop on a row puts the dragged pool in its place; the slot shows
+        // dashed meanwhile, as on the Runners and reviewer lists.
+        let (slot, onto) = (style::tertiary_label(cx), pool.id.clone());
+        let dragged = DraggedPool {
+            id: pool.id.clone(),
+            title: pool.title.clone().into(),
+            symbol,
+        };
         crate::highlights::tipped(
             h_flex()
                 .id(SharedString::from(format!("settings-pool-{}", pool.id)))
@@ -596,6 +608,21 @@ impl SettingsWindow {
                                 .truncate()
                                 .text_color(secondary)
                                 .child(pool_detail(pool, accounts)),
+                        )
+                        // Three bars at the end say the row can be picked up.
+                        .child(
+                            crate::highlights::tipped_as(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "settings-pool-handle-{}",
+                                        pool.id
+                                    )))
+                                    .flex_none()
+                                    .cursor_grab(),
+                                "Drag to change the order",
+                                gpui_kit::Role::GenericContainer,
+                            )
+                            .child(super::runners::handle_icon(slot)),
                         ),
                 ),
             tip,
@@ -603,7 +630,36 @@ impl SettingsWindow {
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             this.choose_pool(id.clone(), window, cx)
         }))
+        .on_drag(dragged, |d, _, _, cx| {
+            cx.new(|_| PoolGhost {
+                symbol: d.symbol.clone(),
+                title: d.title.clone(),
+            })
+        })
+        .drag_over::<DraggedPool>(move |s, _, _, _| {
+            s.border_1()
+                .border_dashed()
+                .border_color(slot)
+                .m(gpui_kit::px(-1.))
+        })
+        .on_drop(
+            cx.listener(move |this, d: &DraggedPool, _, cx| this.drop_pool_row(&d.id, &onto, cx)),
+        )
         .into_any_element()
+    }
+
+    /// A pool's row dropped on another's: it takes that place, the rest
+    /// shift along, and the whole list is saved (`pools::dropped_onto`), so
+    /// Settings and the Usage panel read the new order. A pool let go on its
+    /// own row moves nothing, and nothing is saved. The pool being edited
+    /// stays the one being edited: it's known by its id, not its place.
+    fn drop_pool_row(&mut self, dragged: &str, onto: &str, cx: &mut Context<Self>) {
+        let Some(next) = pools::dropped_onto(&self.pools.list, dragged, onto) else {
+            return;
+        };
+        self.pools.list = next;
+        self.save_pools(cx);
+        cx.notify();
     }
 
     /// The Icon row's button, which opens a grid of the choices.
@@ -846,6 +902,62 @@ impl SettingsWindow {
             controls.into_any_element(),
             cx,
         )
+    }
+}
+
+/// A pool's row being dragged, with what its lifted copy shows.
+#[derive(Clone)]
+struct DraggedPool {
+    id: String,
+    title: SharedString,
+    symbol: String,
+}
+
+/// What follows the pointer while a pool's row is dragged: the pool's icon
+/// and name, lifted, as a dragged reviewer's row is (reviewers.rs).
+struct PoolGhost {
+    symbol: String,
+    title: SharedString,
+}
+
+impl Render for PoolGhost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (bg, lift, edge) = (
+            cx.theme().background,
+            style::primary_opacity(cx, 0.1),
+            style::hairline(cx),
+        );
+        h_flex()
+            .w(px(220.))
+            .px(px(10.))
+            .py(px(8.))
+            .gap(px(10.))
+            .items_center()
+            .rounded(px(8.))
+            .bg(bg)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(8.))
+                    .bg(lift)
+                    .border_1()
+                    .border_color(edge),
+            )
+            .shadow_lg()
+            .child(
+                icons::try_symbol(&self.symbol)
+                    .unwrap_or_else(|| icons::symbol("square.stack"))
+                    .with_size(px(14.))
+                    .text_color(style::secondary_text(cx)),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(style::label_text(cx))
+                    .child(self.title.clone()),
+            )
     }
 }
 

@@ -121,6 +121,17 @@ pub fn moving_by(pool: &Pool, login: &str, step: i32) -> Pool {
     pool
 }
 
+/// What a drop on another row does to a list, be it a login's row inside a
+/// pool or a pool's row in the list of pools: the row being dragged comes
+/// out of `from` and goes in at `to`, so it takes that row's place and the
+/// ones between shift along.
+fn dropped_at<T: Clone>(items: &[T], from: usize, to: usize) -> Vec<T> {
+    let mut next = items.to_vec();
+    let moved = next.remove(from);
+    next.insert(to, moved);
+    next
+}
+
 /// A ticked login dropped on another: it takes that one's place, and the
 /// rest shift along.
 pub fn moving_onto(pool: &Pool, login: &str, target: &str) -> Pool {
@@ -134,9 +145,21 @@ pub fn moving_onto(pool: &Pool, login: &str, target: &str) -> Pool {
     if login == target {
         return pool;
     }
-    let moved = pool.account_ids.remove(from);
-    pool.account_ids.insert(to, moved);
+    pool.account_ids = dropped_at(&pool.account_ids, from, to);
     pool
+}
+
+/// A pool's row dropped on another's: the dragged pool takes that pool's
+/// place and the rest shift along, as a login dropped on another login does
+/// (`moving_onto`). None when nothing moves, so nothing is saved either: a
+/// pool let go on its own row, or a row that isn't in the list.
+pub fn dropped_onto(pools: &[Pool], dragged: &str, target: &str) -> Option<Vec<Pool>> {
+    if dragged == target {
+        return None;
+    }
+    let from = pools.iter().position(|pool| pool.id == dragged)?;
+    let to = pools.iter().position(|pool| pool.id == target)?;
+    Some(dropped_at(pools, from, to))
 }
 
 /// The pool with a new name, trimmed, or None when there's nothing to save:
@@ -304,6 +327,44 @@ mod tests {
         );
         let three = pool("p", &["a", "b", "c"]);
         assert_eq!(moving_onto(&three, "c", "a").account_ids, ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn a_pool_dropped_on_another_takes_its_place() {
+        let list = [
+            pool("claude", &["a"]),
+            pool("work", &["b"]),
+            pool("weekends", &["c"]),
+        ];
+        let order = |pools: Vec<Pool>| pools.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        let last = dropped_onto(&list, "claude", "weekends").expect("it moves");
+        assert_eq!(
+            order(last.clone()),
+            ["work", "weekends", "claude"],
+            "dropped on the last: it goes there, the ones between moving up"
+        );
+        assert_eq!(
+            (last[2].title.as_str(), last[2].account_ids.as_slice()),
+            ("CLAUDE", ["a".to_owned()].as_slice()),
+            "the pool carries its own name and logins"
+        );
+        assert_eq!(
+            order(dropped_onto(&list, "weekends", "claude").expect("it moves")),
+            ["weekends", "claude", "work"],
+            "dropped on the first: it goes there, the rest shifting down"
+        );
+        assert!(
+            dropped_onto(&list, "work", "work").is_none(),
+            "its own row: nothing moves and nothing is saved"
+        );
+        assert!(
+            dropped_onto(&list, "ghost", "work").is_none(),
+            "a pool that isn't in the list moves nothing"
+        );
+        assert!(
+            dropped_onto(&list, "work", "ghost").is_none(),
+            "nor does a drop on a row that isn't in it"
+        );
     }
 
     #[test]

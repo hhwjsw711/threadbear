@@ -39,6 +39,10 @@ use threadbear_core::runner_settings::{
 pub(crate) mod devices;
 mod keyboard;
 mod pools;
+// Pools for the specs: the list as it's drawn, and a drag of one row onto
+// another's place (features/settings-pools.feature).
+#[cfg(feature = "automation")]
+mod pools_automation;
 mod reviewers;
 mod runners;
 mod small_jobs;
@@ -2295,6 +2299,7 @@ impl SettingsWindow {
             "smallJobsProviders": settings.as_ref().and_then(|s| s.providers.clone()),
             // General's Web runtime row, as it reads.
             "webRuntime": crate::web_runtime::settings_words(cx),
+            "pools": self.pools_dump(),
             "runners": self.runners_dump(cx),
             "devices": self.devices_dump(cx),
             "keyboard": self.keyboard_dump(cx),
@@ -2311,6 +2316,9 @@ pub(crate) fn automation(
     cx: &mut App,
 ) -> Result<Option<Value>, String> {
     if let Some(done) = runners::automation(app, cmd, cx)? {
+        return Ok(Some(done));
+    }
+    if let Some(done) = pools_automation::automation(app, cmd, cx)? {
         return Ok(Some(done));
     }
     devices::automation(app, cmd, cx)
@@ -2359,8 +2367,14 @@ pub(crate) fn scroll_to(scroll: &ScrollHandle, bounds: Bounds<Pixels>) -> bool {
 #[cfg(feature = "automation")]
 pub(crate) use keyboard::automation as keyboard_automation;
 
+/// What the window draws now that its state alone can't say: the pairing code
+/// on screen (devices.rs) and the pool rows in the order they're drawn
+/// (pools_automation.rs). The automation's `dump` calls it after drawing.
 #[cfg(feature = "automation")]
-pub(crate) use devices::note_drawn;
+pub(crate) fn note_drawn(view: &Entity<SettingsWindow>, window: &mut Window, cx: &mut App) {
+    devices::note_drawn(view, window, cx);
+    pools_automation::note_drawn(view, window, cx);
+}
 
 #[cfg(test)]
 mod tests {
