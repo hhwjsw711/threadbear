@@ -130,7 +130,7 @@ pub(crate) fn init(cx: &mut App) {
         }
         cx.spawn(async move |cx| {
             while let Some((gen, kind)) = rx.next().await {
-                let _ = cx.update(|cx| handle_native_event(gen, kind, cx));
+                cx.update(|cx| handle_native_event(gen, kind, cx));
             }
         })
         .detach();
@@ -319,7 +319,7 @@ fn ensure_host(cx: &mut App) -> Option<(AnyWindowHandle, Entity<PopupHostView>)>
     };
     let (window, view) =
         gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| PopupHostView::new())).ok()?;
-    let any_window: AnyWindowHandle = window.into();
+    let any_window: AnyWindowHandle = window;
     HOST.with(|h| {
         *h.borrow_mut() = Some(ReusableHost {
             window: any_window,
@@ -481,9 +481,7 @@ pub(crate) fn open_menu(
         );
         let mut build = Some(build);
         let placed = host_window.update(cx, |_, popup_window, cx| {
-            let Some(build) = build.take() else {
-                return None;
-            };
+            let build = build.take()?;
             let menu = PopupMenu::build(popup_window, cx, build);
             menu.focus_handle(cx).focus(popup_window, cx);
             host_view.update(cx, |host, cx| {

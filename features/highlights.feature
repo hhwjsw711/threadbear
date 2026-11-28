@@ -9,7 +9,7 @@ Feature: Highlights, what a thread has made and shared
   @highlights.panel
   Scenario: A thread's highlights are grouped under their headings
     When I open the thread "Rebuild the three landing pages"
-    Then Highlights has the headings "Pinned | Files | Links | Changes"
+    Then Highlights has the headings "Pinned | Files | Pull requests | Links | Changes"
 
   @highlights.panel
   Scenario: A heading with nothing under it isn't drawn
@@ -26,7 +26,7 @@ Feature: Highlights, what a thread has made and shared
   Scenario: Folding a heading keeps its count and folds it for every thread
     Given I open the thread "Rebuild the three landing pages"
     When I fold the "links" heading in Highlights
-    Then the "Links" heading in Highlights is folded and counts 3
+    Then the "Links" heading in Highlights is folded and counts 2
     When I open the thread "Make uploads resume after a crash"
     Then the "Links" heading in Highlights is folded and counts 1
 
@@ -42,7 +42,7 @@ Feature: Highlights, what a thread has made and shared
     And the "Pinned" highlight "home.html" sits in "mockups"
     And the "Files" highlight "copy-review.md" says "Written"
     And the "Files" highlight "copy-review.md" sits in "docs"
-    And the "Links" highlight "alex-example/site#48" says "Created"
+    And the "Links" highlight "localhost:4321" says "Opened"
 
   @highlights.changes
   Scenario: Commits say where they went and the edited files fold away
