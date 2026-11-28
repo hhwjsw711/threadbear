@@ -82,7 +82,6 @@ mod hang_watch;
 mod header;
 mod hello;
 mod highlights;
-mod highlights_board;
 mod highlights_project;
 mod highlights_store;
 mod home_page;

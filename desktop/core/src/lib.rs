@@ -6,7 +6,6 @@ pub mod activity;
 pub mod app_update;
 pub mod archive_flight;
 pub mod archive_search;
-pub mod board;
 pub mod browserbear;
 pub mod chips;
 pub mod completion_sound;

@@ -172,7 +172,6 @@ Scenarios passing: Swift: 207 of 225, Mac: 214 of 225, Windows: 192 of 225, Linu
 |---|---|---|---|---|
 | `highlights.panel` Panel and folds | pass | pass | pass | pass |
 | `highlights.librarian` Librarian line | pass | pass | pass | pass |
-| `highlights.needsyou` Needs you list | pass | pass | pass | pass |
 | `highlights.projects` Project blocks | pass | pass | pass | pass |
 | `highlights.scheduled` Scheduled list | pass | pass | pass | pass |
 | `highlights.subagents` Sub-agents list | pass | pass | pass | pass |

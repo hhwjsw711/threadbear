@@ -10,12 +10,6 @@ Feature: A pane row's menu owns its right click
     Then exactly one context menu offers "Copy path | Remove"
 
   @highlights.rowmenus
-  Scenario: A board card opens its menu without the panel menu
-    When I open the thread "Pick a colour for the new Share button"
-    And I right-click the visible pane row "Board card: Pick the share button colour"
-    Then exactly one context menu offers "Mention in Message | Open in Notion | Copy Link"
-
-  @highlights.rowmenus
   Scenario: Escape closes a pinned file's menu
     When I open the thread "Rebuild the three landing pages"
     And I right-click the visible pane row "home.html"

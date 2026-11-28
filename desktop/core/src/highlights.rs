@@ -307,36 +307,6 @@ impl ProjectInfo {
             .filter_map(|p| crate::wire::read(p.clone()))
             .collect()
     }
-
-    /// `ProjectTasks.openCount`: cards in a column that isn't a Done one.
-    pub fn open_task_count(&self) -> usize {
-        let Some(tasks) = self
-            .tasks
-            .as_ref()
-            .filter(|t| t.get("loading").and_then(Value::as_bool) != Some(true))
-        else {
-            return 0;
-        };
-        let done: HashSet<&str> = tasks
-            .get("columns")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|c| c.get("kind").and_then(Value::as_str) == Some("done"))
-            .filter_map(|c| c.get("name").and_then(Value::as_str))
-            .collect();
-        tasks
-            .get("items")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|i| {
-                !i.get("status")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| done.contains(s))
-            })
-            .count()
-    }
 }
 
 /// Short relative time for PRs and workflow runs ("just now", "2h ago").
@@ -377,7 +347,6 @@ pub const PIN_LIMIT: usize = 5;
 /// for every thread, so Sub-agents stays out of the way once Mike has put it
 /// away (asked 3 Nov); a project's is its own, as only its threads show it.
 pub mod fold {
-    pub const NEEDS_YOU: &str = "needsYou";
     pub const SCHEDULED: &str = "scheduled";
     pub const SUBAGENTS: &str = "subagents";
     pub const STARTED_THREADS: &str = "startedThreads";
@@ -2952,22 +2921,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a"]
         );
-    }
-
-    #[test]
-    fn open_tasks_are_counted_from_the_columns() {
-        let project = ProjectInfo {
-            tasks: Some(
-                json!({"columns": [{"name": "Doing", "kind": "progress"}, {"name": "Done", "kind": "done"}], "items": [{"status": "Doing"}, {"status": "Done"}, {"status": "Doing"}]}),
-            ),
-            ..Default::default()
-        };
-        assert_eq!(project.open_task_count(), 2);
-        let loading = ProjectInfo {
-            tasks: Some(json!({"loading": true, "items": [{"status": "Doing"}]})),
-            ..Default::default()
-        };
-        assert_eq!(loading.open_task_count(), 0);
     }
 
     fn summary(id: &str, status: &str) -> ThreadSummary {

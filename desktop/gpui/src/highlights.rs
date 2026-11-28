@@ -352,10 +352,6 @@ pub(crate) enum MenuAction {
     },
     /// A picture's right-click, the file's own bytes (`copyImage`).
     CopyPicture,
-    MentionCard {
-        task: threadbear_core::projects::Task,
-        thread_id: String,
-    },
     // The folder browser's (`FolderPaneView.menu`).
     OpenFolderRow {
         key: String,
@@ -452,10 +448,7 @@ pub(crate) struct SidePane {
     /// Open folder panels by panel id (`threadbear.folder:<path>`, folders.rs).
     pub(crate) folder_panels: HashMap<String, crate::folders::FolderPanelMeta>,
     pub(crate) flags: HashMap<String, RowFlags>,
-    /// Asks being ticked, by "<thread>/<seq>/<index>".
-    ticking: HashSet<String>,
     pub(crate) projects: HashMap<String, ProjectInfo>,
-    pub(crate) boards: HashMap<String, crate::highlights_board::BoardState>,
     pub(crate) schedules: Vec<Schedule>,
     /// The project whose ⓘ popover is open, and where (`projectWhyShown`).
     pub(crate) project_why: Option<(String, Point<Pixels>)>,
@@ -511,9 +504,7 @@ impl SidePane {
             file_panels: HashMap::new(),
             folder_panels: HashMap::new(),
             flags: HashMap::new(),
-            ticking: HashSet::new(),
             projects: HashMap::new(),
-            boards: HashMap::new(),
             schedules: Vec::new(),
             project_why: None,
             project_briefs: Default::default(),
@@ -1151,69 +1142,6 @@ impl SidePane {
         }
     }
 
-    /// The same `threads.tickAsk` the transcript's card uses: the tick shows at
-    /// once, and the runner's answer (or its `thread.updated`) puts it right.
-    pub(crate) fn tick_ask(
-        &mut self,
-        thread_id: String,
-        seq: u64,
-        index: usize,
-        ticked: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let key = format!("{thread_id}/{seq}/{index}");
-        if !self.ticking.insert(key.clone()) {
-            return;
-        }
-        if let Some(app) = self.app.upgrade() {
-            app.update(cx, |t, cx| {
-                if let Some(ask) = t
-                    .threads
-                    .get_mut(&thread_id)
-                    .map(std::sync::Arc::make_mut)
-                    .and_then(|t| t.asks.as_mut())
-                    .and_then(|a| a.get_mut(index))
-                {
-                    ask.ticked = Some(ticked);
-                }
-                cx.notify();
-            });
-        }
-        cx.notify();
-        let client = self.client.clone();
-        cx.spawn(async move |this, cx| {
-            let res = call(
-                client,
-                "threads.tickAsk",
-                json!({ "threadId": thread_id, "asksSeq": seq, "index": index, "ticked": ticked }),
-            )
-            .await;
-            this.update(cx, |t, cx| {
-                t.ticking.remove(&key);
-                if let Err(e) = res {
-                    if let Some(app) = t.app.upgrade() {
-                        app.update(cx, |app, cx| {
-                            if let Some(ask) = app
-                                .threads
-                                .get_mut(&thread_id)
-                                .map(std::sync::Arc::make_mut)
-                                .and_then(|t| t.asks.as_mut())
-                                .and_then(|a| a.get_mut(index))
-                            {
-                                ask.ticked = Some(!ticked);
-                            }
-                            cx.notify();
-                        });
-                    }
-                    t.note_error(e.message, cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// A menu item chosen.
     pub(crate) fn run_menu_action(
         &mut self,
@@ -1242,9 +1170,6 @@ impl SidePane {
                 },
                 cx,
             ),
-            MenuAction::MentionCard { task, thread_id } => {
-                self.mention_board_card(&task, &thread_id, window, cx)
-            }
             MenuAction::Copy { text } => cx.write_to_clipboard(ClipboardItem::new_string(text)),
             MenuAction::Remove { id, title } => {
                 self.remove_highlight(id, title, thread.id.clone(), cx)
@@ -2493,7 +2418,6 @@ impl SidePane {
             None => vec![],
         };
         let subagents = core::subagents_for_highlights(thread);
-        let asks = thread.asks.clone().unwrap_or_default();
         let tools: HashSet<String> = thread
             .patches()
             .into_iter()
@@ -2506,7 +2430,6 @@ impl SidePane {
             .filter(|panel| tools.contains(&panel.patch))
             .collect();
         if sections.is_empty()
-            && asks.is_empty()
             && projects.is_empty()
             && tool_panels.is_empty()
             && scheduled.is_empty()
@@ -2553,35 +2476,11 @@ impl SidePane {
             }
             list = list.child(block);
         }
-        // The last turn's asks while its card is open, ticked here or in the
-        // card alike (the same `threads.tickAsk`).
-        if let Some(seq) = thread.asks_seq.filter(|_| !asks.is_empty()) {
-            let open = asks.iter().filter(|a| a.ticked != Some(true)).count();
-            let folded = self.is_folded(fold::NEEDS_YOU);
-            list = list.child(self.heading(
-                Heading {
-                    key: fold::NEEDS_YOU.to_owned(),
-                    title: "Needs you".into(),
-                    icon: Some(icon("hand.raised", 11., p.secondary).into_any_element()),
-                    count: Some(open),
-                    folded,
-                    foldable: true,
-                    accessory: None,
-                },
-                p,
-                cx,
-            ));
-            if !folded {
-                for (index, ask) in asks.iter().enumerate() {
-                    list = list.child(self.ask_row(ask, index, seq, thread.id.clone(), p, cx));
-                }
-            }
-        }
         // The thread's projects, each under its own icon with why it's there
         // behind an ⓘ, showing an inline project brief (state, open questions
         // and tasks, open threads and compact links).
         for (index, row) in projects.iter().enumerate() {
-            list = list.child(self.project_block(row, index == 0, thread, p, window, cx));
+            list = list.child(self.project_block(row, index == 0, thread, p, cx));
         }
         if !scheduled.is_empty() {
             let folded = self.is_folded(fold::SCHEDULED);
@@ -2948,75 +2847,6 @@ impl SidePane {
                 ),
             }
         })
-    }
-
-    fn ask_row(
-        &mut self,
-        ask: &threadbear_core::inbox::OpenAsk,
-        index: usize,
-        seq: u64,
-        thread_id: String,
-        p: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let ticked = ask.ticked == Some(true);
-        let tip = if ticked { "Not done" } else { "Done" };
-        let where_text = ask.where_text();
-        let tick_color = if ticked { p.accent } else { p.icon };
-        let label_color = if ticked { p.secondary } else { p.fg };
-        let symbol = if ticked {
-            "checkmark.square.fill"
-        } else {
-            "square"
-        };
-        let action = crate::files::plain_markdown(&ask.action);
-        let (key, id2) = (format!("{thread_id}-{index}"), thread_id);
-        let button = tipped(
-            div()
-                .id(SharedString::from(format!("hl-tick-{key}")))
-                .flex_none()
-                .w(px(16.))
-                .flex()
-                .justify_center()
-                .cursor_pointer()
-                .child(icon(symbol, 13., tick_color)),
-            tip,
-        )
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.tick_ask(id2.clone(), seq, index, !ticked, cx)
-        }));
-        h_flex()
-            .items_start()
-            .gap(px(8.))
-            .pl(px(LEADING))
-            .pr(px(TRAILING + OUTER_INSET))
-            .py(px(6.))
-            .child(button)
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .text_size(px(style::size::LABEL))
-                            .line_height(px(style::natural_line(style::size::LABEL)))
-                            .text_color(label_color)
-                            .when(ticked, |s| s.line_through())
-                            .child(action),
-                    )
-                    .when_some(where_text, |s, place| {
-                        s.child(
-                            div()
-                                .text_size(px(style::size::SMALL))
-                                .line_height(px(style::natural_line(style::size::SMALL)))
-                                .text_color(p.faint)
-                                .line_clamp(2)
-                                .child(place),
-                        )
-                    }),
-            )
-            .into_any_element()
     }
 
     fn show_all_row(
@@ -3634,7 +3464,6 @@ impl SidePane {
             None => vec![],
         };
         let subagents = core::subagents_for_highlights(thread);
-        let asks = thread.asks.clone().unwrap_or_default();
         let tools: HashSet<String> = thread
             .patches()
             .into_iter()
@@ -3647,7 +3476,6 @@ impl SidePane {
             .filter(|panel| tools.contains(&panel.patch))
             .collect();
         if sections.is_empty()
-            && asks.is_empty()
             && projects.is_empty()
             && tool_panels.is_empty()
             && scheduled.is_empty()
@@ -3677,16 +3505,6 @@ impl SidePane {
         }
         if let Some(brief) = &sections.brief {
             pane.insert("brief".into(), json!(HighlightSections::points(brief)));
-        }
-        if !asks.is_empty() {
-            let rows = asks.iter().map(|a| json!({ "title": crate::files::plain_markdown(&a.action), "detail": a.where_text(), "symbol": if a.ticked == Some(true) { "checkmark.square.fill" } else { "square" }, "ticked": a.ticked == Some(true) })).collect();
-            add(
-                fold::NEEDS_YOU,
-                "Needs you",
-                asks.iter().filter(|a| a.ticked != Some(true)).count(),
-                rows,
-                &mut out,
-            );
         }
         for (index, row) in projects.iter().enumerate() {
             out.push(self.project_brief_dump(row, index == 0, thread, &clock, cx));
@@ -3939,16 +3757,6 @@ fn highlight_command(
     window: &mut Window,
     cx: &mut App,
 ) -> Result<Value, String> {
-    if let Some(index) = cmd["tick"].as_u64().map(|i| i as usize) {
-        let asks = thread.asks.clone().unwrap_or_default();
-        let ask = asks.get(index).ok_or_else(|| format!("no ask {index}"))?;
-        let seq = thread.asks_seq.ok_or("no open card of asks")?;
-        let ticked = ask.ticked != Some(true);
-        side.update(cx, |pane, cx| {
-            pane.tick_ask(thread.id.clone(), seq, index, ticked, cx)
-        });
-        return Ok(json!(if ticked { "ok ticked" } else { "ok unticked" }));
-    }
     if let Some(open) = cmd["edited"].as_bool() {
         side.update(cx, |pane, cx| {
             pane.flags.entry(thread.id.clone()).or_default().edited_open = open;

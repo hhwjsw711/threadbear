@@ -54,15 +54,11 @@ Feature: Highlights, what a thread has made and shared
     When I open the edited files in Highlights
     Then the "Changes" highlight "Hero.astro" sits in "src/components"
 
-  @highlights.needsyou
-  Scenario: Ticking an ask in Highlights ticks it on the card, and the count follows
+  @highlights.panel
+  Scenario: A thread's asks stay on its card, not in Highlights
     When I open the thread "Ship the beta to TestFlight"
-    Then the "Needs you" highlight "Accept the new agreement in App Store Connect" sits in "App Store Connect › Business"
-    And the ask "Accept the new agreement in App Store Connect" is not ticked
-    And the "Needs you" heading in Highlights counts 2 when folded
-    When I tick the ask "Accept the new agreement in App Store Connect"
-    Then the ask "Accept the new agreement in App Store Connect" is ticked
-    And the "Needs you" heading in Highlights counts 1 when folded
+    Then Highlights has no heading "Needs you"
+    And Highlights doesn't list "Accept the new agreement in App Store Connect"
 
   @highlights.projects
   Scenario: A project's block lists its links and says why the thread's in it

@@ -235,11 +235,7 @@ impl ProjectBrief {
 
     /// Compact summary shown on a collapsed project heading, e.g.
     /// `"2 waiting · 5 open"` or `"1 open"`.
-    pub fn collapsed_summary(
-        &self,
-        links_count: usize,
-        board_tasks_count: usize,
-    ) -> Option<String> {
+    pub fn collapsed_summary(&self, links_count: usize) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         let waiting = self.waiting_count();
         if waiting > 0 {
@@ -254,8 +250,8 @@ impl ProjectBrief {
                 parts.push(format!("{n} task{}", if n == 1 { "" } else { "s" }));
             } else if !self.items.is_empty() {
                 parts.push(format!("{} open", self.items.len()));
-            } else if links_count + board_tasks_count > 0 {
-                parts.push((links_count + board_tasks_count).to_string());
+            } else if links_count > 0 {
+                parts.push(links_count.to_string());
             }
         }
         (!parts.is_empty()).then(|| parts.join(" · "))
@@ -661,7 +657,7 @@ mod tests {
         assert_eq!(brief.open_threads[2].tag, "2h");
 
         assert_eq!(
-            brief.collapsed_summary(4, 0).as_deref(),
+            brief.collapsed_summary(4).as_deref(),
             Some("2 waiting · 3 open")
         );
     }
@@ -691,7 +687,7 @@ mod tests {
         assert_eq!(brief.open_threads.len(), 1);
         assert_eq!(brief.open_threads[0].id, "t_open");
         assert_eq!(
-            brief.collapsed_summary(1, 0).as_deref(),
+            brief.collapsed_summary(1).as_deref(),
             Some("1 waiting · 1 open")
         );
     }

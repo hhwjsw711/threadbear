@@ -136,8 +136,6 @@ pub struct Composer {
     /// The box's spelling marks and the text they were found in
     /// (composer_spelling.rs).
     pub(crate) spell: crate::composer_spelling::SpellState,
-    /// Board clicks wait for the box's own window and any saved draft restore.
-    pending_mentions: Vec<threadbear_core::board::PendingMention>,
     /// The token card's paste field, for that login (token_card.rs): its
     /// words go out with Set and are never kept.
     pub(crate) token_field: Option<(String, Entity<gpui_kit::component::input::InputState>)>,
@@ -313,7 +311,6 @@ impl Composer {
             pending_box: None,
             pending_saved: None,
             held_extras: Vec::new(),
-            pending_mentions: vec![],
             token_field: None,
             token_sub: None,
             palette: PaletteState::default(),
@@ -655,11 +652,7 @@ impl Composer {
         if let Some(restore) = &self.restore {
             all = RestoreDraft::joined(restore.clone(), all);
         }
-        let (mut text, images) = all.for_saving();
-        for mention in &self.pending_mentions {
-            text = threadbear_core::board::adding(&mention.reference, &text);
-        }
-        (text, images)
+        all.for_saving()
     }
 
     /// Whether the box holds anything a restart would lose: words, or a
@@ -1035,54 +1028,6 @@ impl Composer {
         // it go in beside their chip now.
         for (id, target, paths) in std::mem::take(&mut self.held_extras) {
             self.insert_promised_extra(&id, &target, paths, window, cx);
-        }
-    }
-
-    /// Append a board card as its usual chip, preserving pictures (including
-    /// ones still being copied) and the rest of the draft.
-    pub(crate) fn mention_card(
-        &mut self,
-        task: &threadbear_core::projects::Task,
-        cx: &mut Context<Self>,
-    ) {
-        let mention = threadbear_core::board::PendingMention {
-            reference: task.reference(),
-            edit: self.editing.as_ref().map(|e| e.seq),
-        };
-        if !self.pending_mentions.contains(&mention) {
-            self.pending_mentions.push(mention);
-        }
-        cx.notify();
-    }
-
-    fn append_card_reference(
-        &mut self,
-        reference: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let text = self.input.read(cx).value().to_string();
-        let added = threadbear_core::board::adding(reference, &text);
-        if added != text {
-            let blank = text.trim().is_empty();
-            let range = if blank {
-                0..text.len()
-            } else {
-                text.len()..text.len()
-            };
-            self.input
-                .update(cx, |s, cx| s.set_selected_range(range, cx));
-            let tail = if blank {
-                added.as_str()
-            } else {
-                &added[text.len()..]
-            };
-            self.insert_pieces(
-                threadbear_core::inline_chips::draft_pieces(tail, 0),
-                &[],
-                window,
-                cx,
-            );
         }
     }
 
@@ -2569,20 +2514,6 @@ impl Render for Composer {
             if let Some(restore) = self.restore.take() {
                 self.apply_restore(restore, window, cx);
             }
-        }
-        let mentions = threadbear_core::board::take_mentions(
-            &mut self.pending_mentions,
-            self.editing.as_ref().map(|e| e.seq),
-            self.restore.is_some(),
-        );
-        if !mentions.is_empty() {
-            for reference in mentions {
-                self.append_card_reference(&reference, window, cx);
-            }
-            // This is the window actually drawing the box now. A Highlights
-            // window never activates or focuses a hidden box elsewhere.
-            self.focus(window, cx);
-            crate::web_panels::keyboard_to_app(window);
         }
         self.renumber_chips(cx);
         // With answers picked the box is for anything else; under asks with

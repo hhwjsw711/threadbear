@@ -223,34 +223,22 @@ impl SidePane {
 
     /// One project's inline brief block in normal-thread Highlights (Option A):
     /// heading row, subtle bordered card with State / Open questions & tasks /
-    /// Open threads / compact inline Links, and the Notion board below when one
-    /// is attached.
+    /// Open threads / compact inline Links.
     pub(crate) fn project_block(
         &mut self,
         row: &ProjectRow,
         primary: bool,
         thread: &ThreadSummary,
         p: Palette,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let project_id = row.project.id.clone();
         let key = fold::project(&project_id);
         let clock = side::local_now();
         let brief = self.project_brief_for(&project_id, thread, &clock, cx);
-        let board_tasks = row
-            .project
-            .tasks
-            .as_ref()
-            .and_then(threadbear_core::projects::Tasks::decode);
-        let has_board = board_tasks
-            .as_ref()
-            .is_some_and(|t| !t.board(&thread.id).is_empty());
-        let has_card = brief.has_card_content(row.project.links.len());
-        let foldable = has_card || has_board;
+        let foldable = brief.has_card_content(row.project.links.len());
         let folded = foldable && self.is_project_folded(&key, primary);
-        let summary =
-            brief.collapsed_summary(row.project.links.len(), row.project.open_task_count());
+        let summary = brief.collapsed_summary(row.project.links.len());
 
         let mut list = v_flex();
         list = list.child(self.render_project_heading(
@@ -265,17 +253,8 @@ impl SidePane {
             cx,
         ));
 
-        if !folded {
-            if has_card {
-                list = list.child(self.render_project_brief_card(row, &brief, p, cx));
-            }
-            if let Some(tasks) = board_tasks {
-                list = list.child(
-                    div()
-                        .pt(px(if has_card { 8. } else { 0. }))
-                        .child(self.task_board(&project_id, &tasks, thread, p, window, cx)),
-                );
-            }
+        if !folded && foldable {
+            list = list.child(self.render_project_brief_card(row, &brief, p, cx));
         }
         list.into_any_element()
     }
@@ -1045,13 +1024,7 @@ impl SidePane {
     ) -> Value {
         let key = fold::project(&row.project.id);
         let brief = self.project_brief_for(&row.project.id, thread, clock, cx);
-        let has_board = row
-            .project
-            .tasks
-            .as_ref()
-            .and_then(threadbear_core::projects::Tasks::decode)
-            .is_some_and(|t| !t.board(&thread.id).is_empty());
-        let foldable = brief.has_card_content(row.project.links.len()) || has_board;
+        let foldable = brief.has_card_content(row.project.links.len());
         let folded = foldable && self.is_project_folded(&key, primary);
         let rows: Vec<Value> = if folded {
             vec![]
@@ -1111,14 +1084,14 @@ impl SidePane {
         json!({
             "key": key,
             "title": row.project.title,
-            "count": row.project.links.len() + row.project.open_task_count(),
+            "count": row.project.links.len(),
             "folded": folded,
             "rows": rows,
             "hasCoordinator": brief.has_coordinator,
             "coordinatorOpenTasks": brief.coordinator_open_tasks,
             "state": if folded { None } else { brief.state.clone() },
             "stateUpdated": if folded { None } else { brief.state_updated.clone() },
-            "collapsedSummary": brief.collapsed_summary(row.project.links.len(), row.project.open_task_count()),
+            "collapsedSummary": brief.collapsed_summary(row.project.links.len()),
             "questions": questions,
             "openThreads": open_threads,
         })

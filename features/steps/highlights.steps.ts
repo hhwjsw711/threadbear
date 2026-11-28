@@ -79,24 +79,8 @@ When('I open the edited files in Highlights', async function (this: ThreadbearWo
   await this.app.do({ cmd: 'highlight', edited: true });
 });
 
-Then('the ask {string} is not ticked', async function (this: ThreadbearWorld, title: string) {
-  await this.until(`"${title}" unticked`, (d) => row(d, 'Needs you', title)?.ticked === false);
-});
-
-Then('the ask {string} is ticked', async function (this: ThreadbearWorld, title: string) {
-  await this.until(`"${title}" ticked`, (d) => row(d, 'Needs you', title)?.ticked === true);
-});
-
 Then('the {string} heading in Highlights counts {int} when folded', async function (this: ThreadbearWorld, heading: string, count: number) {
   await this.until(`"${heading}" counting ${count}`, (d) => section(d, heading)?.count === count);
-});
-
-When('I tick the ask {string}', async function (this: ThreadbearWorld, title: string) {
-  const index = await this.until(`the ask "${title}"`, (d) => {
-    const i = section(d, 'Needs you')?.rows.findIndex((r) => r.title === title) ?? -1;
-    return i >= 0 ? i + 1 : false;
-  });
-  await this.app.do({ cmd: 'highlight', tick: index - 1 });
 });
 
 When('I ask why the thread is in the project {string}', async function (this: ThreadbearWorld, title: string) {

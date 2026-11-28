@@ -1146,14 +1146,11 @@ last reply has things for you to do.
 From the top, and only when there's something to show:
 
 - A line or two from the librarian on where the thread is up to.
-- **Needs you**: what the agent's last reply asked you to do, each with a
-  box to tick off as you go. Ticking one here ticks it in the thread too.
 - The thread's projects, each under its icon and name as an inline project
   brief: the project's live state, its open questions and tasks (coordinator
   tasks and decisions together with open Needs you asks from other open
-  threads in the project), other open threads in the project, its links in a
-  compact row, and its Notion task board if it has one (see
-  [Projects](#projects)). Click any open question, task or thread to jump
+  threads in the project), other open threads in the project, and its links
+  in a compact row (see [Projects](#projects)). Click any open question, task or thread to jump
   straight to it; for a coordinated project, **Coordinator →** opens its
   project home and **All tasks →** opens its Tasks view. When a thread is in
   more than one project, secondary projects start folded to a one-line
@@ -1323,17 +1320,8 @@ an agent to. The page shows the board, read every few minutes, with a
 column per status and who and when on each card. Cards are moved in Notion,
 by you, anyone you share the page with, or the agents, who see the open
 cards and are told to keep them moving. A card whose Thread column names a
-thread links to it. A thread's Highlights shows each of its projects' boards too, under the
-project: what's under way first, then what's to do, with Done folded to a
-strip you can click open. If the columns don't fit, drag the bar under them,
-use its arrows, or scroll sideways, or drag the panel wider. Click a card to
-mention it in your message: it shows as a chip with the card's title, and the
-agent gets a link it can read the card from. Mentioning the same card again
-keeps one copy in the draft. Each column starts with four cards; More and
-Show fewer change how many are shown. Click the chip in a sent message to
-open the card; the arrow on a card, or its right-click menu, opens it in
-Notion. The menu also offers Copy Link and, when another thread is working
-on the card, Open the Thread Working on It. Boards are read through
+thread links to it. A card mentioned in a message shows as a chip with its
+title; click it to open the card. Boards are read through
 a Connectors gateway (see [Connectors](#connectors)); without one, the
 project's page says so and nothing is read.
 

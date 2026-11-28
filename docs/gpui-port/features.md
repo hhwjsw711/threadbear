@@ -282,9 +282,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 |---|---|---|---|---|---|---|
 | `highlights.panel` | Panel and folds | Sections hidden when empty, fold remembered for all threads | Drawn foldable sections. | build | M | `HighlightsView`, `HighlightSections` |
 | `highlights.librarian` | Librarian line | Where it's up to | Drawn. | build | S | `HighlightsView` |
-| `highlights.needsyou` | Needs you list | Tick boxes in sync with the card | Drawn. | build | S | `HighlightsView` (`AskRow`) |
 | `highlights.projects` | Project blocks | Icon, links, ⓘ with Keep, Take out, Open | Drawn, with `Popover` for the ⓘ. | build | S | `HighlightsView` (`ProjectWhyButton`) |
-| `highlights.board` | Notion board | Columns, folded strip, sideways bar, cards mention or open | Drawn columns in a sideways scroll. | build | M | `HighlightsBoard` |
 | `highlights.scheduled` | Scheduled list | Click to change | Drawn. | build | S | `HighlightsView` |
 | `highlights.subagents` | Sub-agents list | Status, click to read | Drawn. | build | S | `HighlightsView` |
 | `highlights.started` | Threads it started | Ordered by state | Drawn. | build | S | `HighlightsView`, `StartedThreadRows` |
