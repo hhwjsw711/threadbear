@@ -76,6 +76,8 @@ pub struct Highlight {
     pub sha: Option<String>,
     pub branch: Option<String>,
     pub pushed: bool,
+    /// A PR's auto-fix wand is on.
+    pub watched: bool,
     pub seq: i64,
     pub last_seq: i64,
     pub at_ms: Option<i64>,
@@ -109,6 +111,10 @@ impl Highlight {
             sha: field(item, "sha"),
             branch: field(item, "branch"),
             pushed: item.get("pushed").and_then(Value::as_bool).unwrap_or(false),
+            watched: item
+                .get("watched")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             seq,
             last_seq: item.get("lastSeq").and_then(Value::as_i64).unwrap_or(seq),
             at_ms: field(item, "at").as_deref().and_then(parse_ms),
@@ -239,6 +245,28 @@ impl ProjectInfo {
     }
 }
 
+/// Short relative time for PRs and workflow runs ("just now", "2h ago").
+pub fn run_ago(at_ms: i64, now_ms: i64) -> String {
+    let seconds = (now_ms - at_ms) / 1000;
+    if seconds < 60 {
+        return "just now".into();
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m ago");
+    }
+    let hours = seconds / 3600;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    let days = seconds / 86_400;
+    if days == 1 {
+        "1 day ago".into()
+    } else {
+        format!("{days} days ago")
+    }
+}
+
 // ---------------------------------------------------------------- HighlightSections
 
 /// How many of a long group show before "Show all": a long thread can have
@@ -260,6 +288,7 @@ pub mod fold {
     pub const STARTED_THREADS: &str = "startedThreads";
     pub const PINNED: &str = "pinned";
     pub const FILES: &str = "files";
+    pub const PRS: &str = "prs";
     pub const LINKS: &str = "links";
     pub const CHANGES: &str = "changes";
 
@@ -274,8 +303,10 @@ pub struct HighlightSections {
     pub brief: Option<String>,
     pub pinned: Vec<Highlight>,
     pub files: Vec<Highlight>,
-    /// Links and pull requests.
+    /// Links, and pull requests unless `split_prs` moved them to `prs`.
     pub links: Vec<Highlight>,
+    /// Pull requests, after `split_prs`.
+    pub prs: Vec<Highlight>,
     pub commits: Vec<Highlight>,
     /// Edited files not already listed as a pin or a file.
     pub edited: Vec<String>,
@@ -322,11 +353,23 @@ impl HighlightSections {
         out
     }
 
+    /// Pull requests under a heading of their own, and out of Links so none
+    /// is listed twice. Pinned ones stay pinned.
+    pub fn split_prs(mut self) -> HighlightSections {
+        let (prs, links): (Vec<Highlight>, Vec<Highlight>) = std::mem::take(&mut self.links)
+            .into_iter()
+            .partition(|h| h.kind == HighlightKind::Pr);
+        self.prs = prs;
+        self.links = links;
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.brief.is_none()
             && self.pinned.is_empty()
             && self.files.is_empty()
             && self.links.is_empty()
+            && self.prs.is_empty()
             && self.commits.is_empty()
             && self.edited.is_empty()
     }
@@ -2163,6 +2206,10 @@ mod tests {
             titles(&sections.links),
             ["m/site#14", "localhost:4321", "A future link"]
         );
+        let split = sections.clone().split_prs();
+        assert!(!split.prs[0].watched);
+        assert_eq!(titles(&split.prs), ["m/site#14"]);
+        assert_eq!(titles(&split.links), ["localhost:4321", "A future link"]);
         assert_eq!(sections.commits[0].sha.as_deref(), Some("abc1234"));
         // A file already listed isn't repeated under edited, nor is a repeat.
         assert_eq!(

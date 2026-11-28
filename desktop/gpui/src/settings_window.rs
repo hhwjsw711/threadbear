@@ -1194,14 +1194,16 @@ impl SettingsWindow {
         )
     }
 
-    /// Whether a press held on a panel's background picks it up, or only one
-    /// on its title or tab (`panelBackgroundDrag`, off to begin with).
+    /// Panels: whether a press held on a panel's background picks it up, or
+    /// only one on its title or tab (`panelBackgroundDrag`, off to begin
+    /// with); and whether a PR link opens as a panel beside the thread
+    /// (`prsInPane`, on to begin with).
     fn panels_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let on = self
             .app
             .upgrade()
             .is_some_and(|a| a.read(cx).settings.panel_background_drag());
-        let switch = self.switch(
+        let drag = self.switch(
             "settings-panel-background-drag",
             on,
             "Press and hold anywhere on a panel to move it, not just on its title or tab",
@@ -1212,12 +1214,25 @@ impl SettingsWindow {
                     .ok();
             },
         );
+        let prs = self.switch(
+            "settings-prs-in-pane",
+            crate::reply_links::prs_in_pane(),
+            "Open a pull request link as a panel beside the thread",
+            cx,
+            |_, on, cx| {
+                crate::reply_links::set_prs_in_pane(on);
+                cx.refresh_windows();
+            },
+        );
         section(
             "settings-panels",
             "Panels",
-            "To move a panel, drag its title or tab. With this on, pressing and holding anywhere on a panel picks it up too. A panel with its title hidden can always be moved that way, as it has nothing else to drag it by.",
+            "To move a panel, drag its title or tab. With Move panels by their background on, pressing and holding anywhere on a panel picks it up too. A panel with its title hidden can always be moved that way, as it has nothing else to drag it by. With Open pull requests in the pane off, a PR link opens like any other web link.",
             "change it for you.",
-            vec![row("Move panels by their background", switch, cx)],
+            vec![
+                row("Move panels by their background", drag, cx),
+                row("Open pull requests in the pane", prs, cx),
+            ],
             cx,
         )
     }

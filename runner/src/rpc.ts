@@ -18,7 +18,7 @@ import { ForeignPeer, type PeerCaller, type PeerSocket } from './peer.ts';
 import { cutSafely } from './safe-cut.ts';
 import { wellFormedJson } from './well-formed-json.ts';
 import { unsupportedResetMessage } from './reset-hint.ts';
-import { fetchPr, fetchPrFiles, forgetStates, parsePrUrl, prAct, prStates, type PrAction, type PrRef } from './github-pr.ts';
+import { fetchPr, fetchPrFiles, forgetStates, parsePrUrl, prAct, prStates, prStatus, type PrAction, type PrRef } from './github-pr.ts';
 
 type Conn = {
   id: number;
@@ -108,6 +108,7 @@ export const THREAD_METHODS = new Set([
   'threads.heldBody',
   'threads.markSeen',
   'threads.highlights',
+  'prWatch.set',
   'threads.commands',
   'threads.contextUsage',
   'threads.explain',
@@ -1185,6 +1186,20 @@ export class RpcServer {
         if (!Array.isArray(p.urls) || p.urls.some((u) => typeof u !== 'string')) throw bad('urls must be an array of strings');
         return ghCall(async () => ({ states: await prStates(p.urls as string[]) }));
       }
+      // What decides whether each of a thread's PRs can merge, for
+      // Highlights' Pull requests.
+      case 'github.prStatus': {
+        if (!Array.isArray(p.urls) || p.urls.some((u) => typeof u !== 'string')) throw bad('urls must be an array of strings');
+        return ghCall(async () => ({ prs: await prStatus(p.urls as string[]) }));
+      }
+      // A PR's auto-fix wand (runner/pr-watch.ts).
+      case 'prWatch.set': {
+        if (!Array.isArray(p.urls) || p.urls.some((u) => typeof u !== 'string')) throw bad('urls must be an array of strings');
+        if (typeof p.on !== 'boolean') throw bad('on must be true or false');
+        return r.setPrWatch(reqString(p, 'threadId'), p.urls as string[], p.on);
+      }
+      case 'prWatch.list':
+        return r.listPrWatch();
       case 'github.prAct': {
         const ref = reqPrRef(p);
         const action = { action: reqString(p, 'action'), method: optString(p, 'method'), body: optString(p, 'body') } as PrAction;

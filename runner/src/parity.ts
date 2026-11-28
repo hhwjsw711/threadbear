@@ -51,6 +51,7 @@ export const THREAD_REQUESTS: Record<string, Row> = {
   'threads.delete': { what: 'Deleting it', relay: { no: 'Done on that Mac.' }, phone: { no: 'Not on the phone.' } },
   'threads.highlights': { what: 'Its highlights', relay: { no: 'Highlights are files on that Mac.' }, phone: { no: 'Not on the phone.' } },
   'threads.removeHighlight': { what: 'Removing a highlight', relay: { no: 'Highlights are files on that Mac.' }, phone: { no: 'Not on the phone.' } },
+  'prWatch.set': { what: "A PR's auto-fix wand", relay: { no: 'The watch runs on the Mac that has the thread.' }, phone: { no: 'Not on the phone.' } },
   'threads.explain': { what: 'Explain', relay: { no: 'Runs a model on that Mac.' }, phone: { no: 'Not on the phone.' } },
   'threads.subagent': { what: "Reading a sub-agent's work", relay: { no: 'Sub-agents stay on that Mac.' }, phone: { no: 'Not on the phone.' } },
   'threads.panelShown': { what: 'A panel being shown', relay: { no: 'Patches run on that Mac.' }, phone: { no: 'No panels on the phone.' } },

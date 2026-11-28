@@ -30,6 +30,7 @@ export type Highlight = {
   sha?: string;
   branch?: string;
   pushed?: true;
+  watched?: true; // pr: its auto-fix wand is on (pr-watch.ts); set on the way out, never kept
   seq: number;
   lastSeq: number;
   at: string;

@@ -132,6 +132,8 @@ const HELP = `tb: talk to the Threadbear runner
   tb actions <threadId> [--json]  the thread's actions, panels and patches (from its folder)
   tb patch-check <file.ts>... [--json]  loads patch files now: each one's load error, or the ids it gives
   tb highlights <threadId> [--json]  what the thread made, shared and pinned, and the librarian's brief
+  tb pr-watch on|off <threadId> <pr url>...  a PR's auto-fix wand, for that thread
+  tb pr-watch list [--json]          the PRs whose auto-fix wand is on
   tb panel <threadId> <panelId> [--json]  draws an image panel or fills a list panel now
   tb show-panel <threadId> <panel> [--reload] [--json]  opens a panel when the user looks at that thread (--reload: its page afresh)
   tb run <threadId> <actionId>    run one: a command's output is printed and goes into the thread
@@ -629,6 +631,21 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
       // review thread asks him): brought back, written down as a wrong hide.
       const wrong = cmd === 'unarchive' && f['wrong-hide'] ? { verdict: 'shouldHaveShown' } : {};
       await client.call('threads.update', { threadId: id, archived: cmd === 'archive', ...by, ...wrong });
+      return 0;
+    }
+    case 'pr-watch': {
+      if (args[0] === 'list') {
+        const r = await client.call<{ watches: { url: string; threadId: string; since: string; sentAt?: string; error?: string }[] }>('prWatch.list', {});
+        if (f.json) console.log(JSON.stringify(r));
+        else for (const w of r.watches) console.log(`${w.url}  ${w.threadId.slice(0, 8)}${w.error ? `  error: ${w.error}` : ''}`);
+        return 0;
+      }
+      if (args[0] !== 'on' && args[0] !== 'off') throw new Error('usage: tb pr-watch on|off <threadId> <pr url>... | tb pr-watch list [--json]');
+      const id = await resolveId(client, args[1]);
+      const urls = args.slice(2);
+      if (!urls.length) throw new Error('give one or more PR links');
+      const r = await client.call<{ watched: string[] }>('prWatch.set', { threadId: id, urls, on: args[0] === 'on' });
+      console.log(`${r.watched.length} PR${r.watched.length === 1 ? '' : 's'} watched`);
       return 0;
     }
     case 'highlights': {

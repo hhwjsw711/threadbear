@@ -24,6 +24,7 @@ type Highlight = {
   sha?: string          // commit: short sha
   branch?: string       // commit
   pushed?: true         // commit: a later git push in the thread sent its branch
+  watched?: true        // pr: its auto-fix wand is on
   seq: number           // the event it was first seen in (a pin: lastSeq then)
   lastSeq: number       // the latest event that mentioned it
   at: string            // when it was first seen
@@ -330,6 +331,17 @@ forgets that repo's states so the icons catch up. None of these is in a
 thread key's reads (rpc-gate.ts): a thread can't merge or comment through
 the app's connection. Another runner's thread still opens its PRs through
 this Mac's gh.
+
+Highlights lists a thread's PRs (its `pr` highlights that aren't pinned) under
+Pull requests, above Links, which no longer lists them. While that shows, the
+app asks `github.prStatus` for them: one `gh api graphql` call for up to 40 PRs,
+each answer kept 30 seconds (`PrStatus`: `title`, `state`, `ci`, `review`,
+`mergeable`, `unresolved`, `updatedAt`). Each open PR row has an auto-fix wand
+(`prWatch.set`, `prWatch.list`, kept in `pr-watch.json`). While any PR is
+watched, the runner checks GitHub every minute and sends the thread a message
+for new problems (conflict, failing CI, unresolved review threads, changes
+requested, or new non-bot reviews/comments), asks whether to merge once
+approved, and snoozes for a day while all watched PRs wait for review.
 
 ## Connectors
 

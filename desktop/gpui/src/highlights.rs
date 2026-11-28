@@ -155,6 +155,8 @@ pub(crate) struct RowFlags {
     pub all_commits: bool,
     pub all_subagents: bool,
     pub all_started: bool,
+    /// Pull requests shows its merged and closed ones too.
+    pub show_landed: bool,
 }
 
 impl RowFlags {
@@ -949,8 +951,8 @@ impl SidePane {
             }
             return;
         }
-        // A PR opens as its own panel beside Highlights.
-        if crate::pr_view::pr_url(url).is_some() {
+        // A PR opens as its own panel beside Highlights, unless Settings says otherwise.
+        if crate::reply_links::prs_in_pane() && crate::pr_view::pr_url(url).is_some() {
             let cwd = self.thread(cx).map(|t| t.cwd);
             let url = url.to_owned();
             if let Some(app) = self.app.upgrade() {
@@ -2301,6 +2303,159 @@ impl SidePane {
         pr.render(p, cx).into_any_element()
     }
 
+    /// Pull requests: the thread's PRs, open ones first as they came, each
+    /// with what holds it up, and the merged and closed ones behind a row at
+    /// the foot.
+    fn pr_section(
+        &mut self,
+        items: &[Highlight],
+        thread: &ThreadSummary,
+        show_landed: bool,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let urls: Vec<String> = items.iter().filter_map(|h| h.url.clone()).collect();
+        let statuses = self.pr_statuses(&urls, cx);
+        let status_of = |h: &Highlight| {
+            h.url
+                .as_deref()
+                .and_then(crate::pr_view::pr_url)
+                .and_then(|u| statuses.get(&u).cloned())
+        };
+        let (landed, open): (Vec<&Highlight>, Vec<&Highlight>) = items
+            .iter()
+            .partition(|h| status_of(h).is_some_and(|s| s.landed()));
+        let folded = self.is_folded(fold::PRS);
+        let mut list = v_flex();
+        list = list.child(self.heading(
+            Heading {
+                key: fold::PRS.to_owned(),
+                title: "Pull requests".into(),
+                icon: Some(icon("arrow.triangle.pull", 11., p.secondary).into_any_element()),
+                count: Some(open.len()),
+                folded,
+                foldable: true,
+                accessory: None,
+            },
+            p,
+            cx,
+        ));
+        if folded {
+            return list.into_any_element();
+        }
+        let now = now_ms();
+        for item in open.iter().chain(if show_landed {
+            landed.iter()
+        } else {
+            [].iter()
+        }) {
+            list = list.child(self.pr_status_row(item, status_of(item), thread, now, p, cx));
+        }
+        if !landed.is_empty() {
+            let thread_id = thread.id.clone();
+            let title = if show_landed {
+                "Hide merged and closed".to_owned()
+            } else {
+                format!("Show {} merged or closed", landed.len())
+            };
+            list = list.child(
+                PaneRow::new(SharedString::from("hl-prs-landed"), title)
+                    .icon(if show_landed {
+                        "chevron.up"
+                    } else {
+                        "ellipsis"
+                    })
+                    .quiet()
+                    .tip(if show_landed {
+                        "Hide merged and closed pull requests"
+                    } else {
+                        "Show merged and closed pull requests"
+                    })
+                    .on_click(move |this, _window, cx| {
+                        let flags = this.flags.entry(thread_id.clone()).or_default();
+                        flags.show_landed = !flags.show_landed;
+                        cx.notify();
+                    })
+                    .render(p, cx),
+            );
+        }
+        list.into_any_element()
+    }
+
+    /// A PR with its status: its GitHub title (the link's own until the
+    /// status comes), "api#12" before it, how long since it changed, and a
+    /// line on what holds it up. Opens as a link highlight does.
+    fn pr_status_row(
+        &mut self,
+        item: &Highlight,
+        status: Option<threadbear_core::pull_requests::PrStatus>,
+        thread: &ThreadSummary,
+        now: i64,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use threadbear_core::pull_requests::{short_ref, PrTone};
+        let short = item.url.as_deref().and_then(short_ref);
+        let title = status
+            .as_ref()
+            .map(|s| s.title.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| item.title.clone());
+        let tint = status.as_ref().map(|s| match s.tone() {
+            PrTone::Failed => Some(p.status_failed),
+            PrTone::Blocked => Some(p.warning),
+            PrTone::Ready => Some(style::added_text(cx)),
+            PrTone::Plain => Some(crate::pr_view::state_colour(s.state, cx)),
+        });
+        let detail = status.as_ref().map(|s| s.line()).or_else(|| {
+            Some(item.how.word())
+                .filter(|w| !w.is_empty())
+                .map(str::to_owned)
+        });
+        let (open, thread2) = (item.clone(), thread.clone());
+        let (menu_item, menu_thread) = (item.clone(), thread.clone());
+        // The auto-fix wand, on an open PR of this Mac's runner.
+        let wand = item
+            .url
+            .clone()
+            .filter(|_| !thread.is_remote() && !status.as_ref().is_some_and(|s| s.landed()))
+            .map(|url| {
+                let (on, pending) = self.pr_watch_shown(&url, item.watched);
+                let what = short_ref(&url).unwrap_or_else(|| item.title.clone());
+                let tip = if pending {
+                    format!("Auto-fix {what}: switching {}…", if on { "on" } else { "off" })
+                } else if on {
+                    format!("Auto-fix {what} is on: a conflict, failing CI or new review comments are sent to this thread to fix. Click to turn off.")
+                } else {
+                    format!("Auto-fix {what}: off. Click to have this thread fix its conflicts, failing CI and review comments as they come.")
+                };
+                let thread_id = thread.id.clone();
+                RowSwitch {
+                    id: SharedString::from(format!("hl-row-prs-{}-wand", item.id)),
+                    symbol: "wand.and.stars".into(),
+                    on,
+                    pending,
+                    tip,
+                    press: Rc::new(move |this: &mut SidePane, cx: &mut Context<SidePane>| {
+                        this.press_pr_watch(thread_id.clone(), url.clone(), !on, cx)
+                    }),
+                }
+            });
+        PaneRow::new(SharedString::from(format!("hl-row-prs-{}", item.id)), title)
+            .switch(wand)
+            .icon("arrow.triangle.pull")
+            .tinted(tint.flatten())
+            .lead(short)
+            .trailing(status.as_ref().and_then(|s| s.ago(now)))
+            .detail(detail)
+            .on_click(move |this, _window, cx| this.open_highlight(&open, &thread2, cx))
+            .on_menu(move |this, pos, window, cx| {
+                this.open_highlight_menu(&menu_item, &menu_thread, pos, window, cx)
+            })
+            .render(p, cx)
+            .into_any_element()
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "baselined at 395 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
@@ -2320,7 +2475,7 @@ impl SidePane {
         let Some(sections) = self
             .highlights
             .get(&thread.id)
-            .map(HighlightSections::build)
+            .map(|h| HighlightSections::build(h).split_prs())
         else {
             return div().size_full().into_any_element();
         };
@@ -2640,6 +2795,9 @@ impl SidePane {
                     list = list.child(self.highlight_row_with(item, thread, "files", thumb, p, cx));
                 }
             }
+        }
+        if !sections.prs.is_empty() {
+            list = list.child(self.pr_section(&sections.prs, thread, flags.show_landed, p, cx));
         }
         if !sections.links.is_empty() {
             let folded = self.is_folded(fold::LINKS);
@@ -3323,6 +3481,7 @@ impl SidePane {
             ("pinned", s.pinned.len()),
             ("files", s.files.len()),
             ("links", s.links.len()),
+            ("prs", s.prs.len()),
             ("commits", s.commits.len()),
             ("edited", s.edited.len()),
         ] {
@@ -3396,7 +3555,7 @@ impl SidePane {
         let Some(fetched) = self.highlights.get(&thread.id) else {
             return;
         };
-        let sections = HighlightSections::build(fetched);
+        let sections = HighlightSections::build(fetched).split_prs();
         let projects = core::project_rows(thread, |id| self.projects.get(id).cloned());
         let scheduled = self.schedule_rows(thread, cx);
         let (clock, now) = (side::local_now(), now_ms());
@@ -3575,6 +3734,35 @@ impl SidePane {
                 &mut out,
             );
         }
+        if !sections.prs.is_empty() {
+            // As pr_section draws them, from the statuses heard so far.
+            let status_of = |h: &Highlight| h.url.as_deref().and_then(|u| self.pr_status_heard(u));
+            let (landed, open): (Vec<&Highlight>, Vec<&Highlight>) = sections
+                .prs
+                .iter()
+                .partition(|h| status_of(h).is_some_and(|s| s.landed()));
+            let mut rows: Vec<Value> = open
+                .iter()
+                .chain(if flags.show_landed {
+                    landed.iter()
+                } else {
+                    [].iter()
+                })
+                .map(|h| {
+                    let st = status_of(h);
+                    let title = st
+                        .as_ref()
+                        .map(|s| s.title.clone())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| h.title.clone());
+                    json!({ "title": title, "lead": h.url.as_deref().and_then(threadbear_core::pull_requests::short_ref), "trailing": st.as_ref().and_then(|s| s.ago(now)), "detail": st.as_ref().map(|s| s.line()), "tone": st.as_ref().map(|s| format!("{:?}", s.tone()).to_lowercase()), "watched": h.watched, "symbol": "arrow.triangle.pull" })
+                })
+                .collect();
+            if !landed.is_empty() {
+                rows.push(json!({ "title": if flags.show_landed { "Hide merged and closed".to_owned() } else { format!("Show {} merged or closed", landed.len()) }, "symbol": "ellipsis" }));
+            }
+            add(fold::PRS, "Pull requests", open.len(), rows, &mut out);
+        }
         if !sections.links.is_empty() {
             let (shown, _) =
                 HighlightSections::capped(&sections.links, core::LINK_LIMIT, flags.all_links);
@@ -3734,12 +3922,13 @@ fn highlight_command(
         .get(&thread.id)
         .ok_or("highlights not fetched")?
         .clone();
-    let sections = HighlightSections::build(&fetched);
+    let sections = HighlightSections::build(&fetched).split_prs();
     let find = |title: &str| {
         sections
             .pinned
             .iter()
             .chain(&sections.files)
+            .chain(&sections.prs)
             .chain(&sections.links)
             .chain(&sections.commits)
             .find(|h| h.title == title)

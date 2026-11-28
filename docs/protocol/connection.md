@@ -408,6 +408,9 @@ is done, so a client that waits for it can send big frames straight after.
 | `github.pr` | `{ url, files? }` | `PrView` (see Pull requests). With `files: false`, without its files (`files: []`, `filesLater: true`). `-32602` for a link that isn't a github.com PR; gh's own error (`-32000`) when it can't be read |
 | `github.prFiles` | `{ url }` | `{ files, filesError?, filesCut? }`: a PR's files alone, as in `PrView` |
 | `github.prStates` | `{ urls: string[] }` | `{ states: { [url]: "open" \| "draft" \| "merged" \| "closed" } }`. A link it couldn't place is left out |
+| `github.prStatus` | `{ urls: string[] }` | `{ prs: { [url]: PrStatus } }` (see Pull requests), for Highlights' Pull requests. A PR GitHub doesn't give is left out |
+| `prWatch.set` | `{ threadId, urls: string[], on: boolean }` | `{ watched: string[] }` (every PR watched now, any thread). A PR's auto-fix wand, for that thread (see Pull requests). A thread on Auto may set it for itself; for another thread it needs Full access |
+| `prWatch.list` | `{}` | `{ watches: { url, threadId, since: string; sentAt?, error?: string }[] }` |
 | `github.prAct` | `{ url, action, method?, body? }` | `{}` once GitHub has it, or gh's own error. `action` is `merge` (with `method` `rebase`, `squash` or `merge`), `close`, `reopen`, `comment` (`body`), `approve` (`body?`) or `requestChanges` (`body`) |
 | `connectors.status` | `{ refresh?: boolean }` | `{ connectors: ConnectorsStatus }` (see Connectors). `refresh` asks the gateway's `/health` first, unless it did in the last 10 seconds; the app passes it when the Connectors panel opens. A runner from before Connectors answers `-32601` and the app leaves the panel out |
 | `librarian.run` | `{ threadId?: string }` | `{ librarian: LibrarianStatus }`. Queues a look at the thread now (reason `asked`), or with no `threadId`, at every thread it has never looked at (a backfill, newest first) |

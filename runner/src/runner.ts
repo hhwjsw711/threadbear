@@ -142,6 +142,9 @@ import { editingPart, type EditingPart } from './runner/editing.ts';
 import { patchesPart, type PatchesPart } from './runner/patches.ts';
 import { withThreadId } from './patches.ts';
 import { highlightsPart, type HighlightsPart } from './runner/highlights.ts';
+import { prWatchPart, type PrWatchPart } from './runner/pr-watch.ts';
+import type { PrWatchState } from './pr-watch.ts';
+import type { Gh } from './land-gate.ts';
 import { titlesPart, type TitlesPart } from './runner/titles.ts';
 import { commandsPart, type CommandsPart } from './runner/commands.ts';
 import { contextUsagePart, type ContextUsageAnswer, type ContextUsagePart } from './runner/context-usage.ts';
@@ -763,7 +766,7 @@ const ACCOUNT_RESCAN_MS = 10_000;
 // this often, always ending on the latest list.
 const ACCOUNTS_THROTTLE_MS = 5_000;
 // Parts of the Runner that live in runner/ (see each file's top).
-export interface Runner extends LooseEndsPart, QuietInboxPart, InboxGuessPart, NestedPart, CeilingPart, MailPart, ColdCompactPart, LabReviewPart, NewThreadsPart, HibernationPart, TitlesPart, HighlightsPart, PatchesPart, EditingPart, ClisPart, ReviewsPart, ButtonsPart, ApprovalsPart, ProjectsHostPart, StoppedWorkPart, HandoversPart, PoolsPart, NetworkPart, WorktreesPart, CommandsPart, ContextUsagePart, MovesPart, WarmStartPart {}
+export interface Runner extends LooseEndsPart, QuietInboxPart, InboxGuessPart, NestedPart, CeilingPart, MailPart, ColdCompactPart, LabReviewPart, NewThreadsPart, HibernationPart, TitlesPart, HighlightsPart, PrWatchPart, PatchesPart, EditingPart, ClisPart, ReviewsPart, ButtonsPart, ApprovalsPart, ProjectsHostPart, StoppedWorkPart, HandoversPart, PoolsPart, NetworkPart, WorktreesPart, CommandsPart, ContextUsagePart, MovesPart, WarmStartPart {}
 export class Runner {
   // While main.ts is still starting up: waking a thread for its waits
   // (reconcileWaits) would start a CLI whose tools aren't ready, so they
@@ -789,6 +792,12 @@ export class Runner {
   commandCache = new Map<string, { at: number; commands: SlashCommand[] }>();
   // threads.contextUsage asks in flight, by thread, so two at once share one.
   contextAsks = new Map<string, Promise<ContextUsageAnswer>>();
+  // PR auto-fix's watch (runner/pr-watch.ts): its state once read, the next
+  // look, whether one is under way, and gh (tests set a fake).
+  prWatch?: PrWatchState;
+  prWatchTimer?: TimerHandle;
+  prWatchBusy?: boolean;
+  prWatchGh?: Gh;
   pickAccount: AccountPicker;
   clis?: CliControl;
   clock: Clock;
@@ -1058,6 +1067,8 @@ export class Runner {
       }
     }
     this.armSnoozeTimer();
+    // PRs whose auto-fix wand is on (runner/pr-watch.ts).
+    this.armPrWatch();
     // Waits for room are in thread.json, so they outlive a restart.
     this.armRoomTimer();
     // So are waits for the network.
@@ -1553,6 +1564,7 @@ export class Runner {
     this.dropSpare('runner stopping');
     this.tokenMaker?.stopAll();
     this.snoozeTimer?.cancel();
+    this.prWatchTimer?.cancel();
     this.roomTimer?.cancel();
     this.netTimer?.cancel();
     this.rescanTimer?.cancel();
@@ -5889,7 +5901,7 @@ export class Runner {
 
 // The Runner's other methods live in parts under runner/, one area each;
 // they go onto its prototype here, as the class's own methods would be.
-for (const part of [looseEndsPart, quietInboxPart, inboxGuessPart, nestedPart, ceilingPart, mailPart, coldCompactPart, labReviewPart, newThreadsPart, hibernationPart, titlesPart, highlightsPart, patchesPart, editingPart, clisPart, reviewsPart, buttonsPart, approvalsPart, projectsHostPart, stoppedWorkPart, handoversPart, poolsPart, networkPart, worktreesPart, commandsPart, contextUsagePart, movesPart, warmStartPart]) {
+for (const part of [looseEndsPart, quietInboxPart, inboxGuessPart, nestedPart, ceilingPart, mailPart, coldCompactPart, labReviewPart, newThreadsPart, hibernationPart, titlesPart, highlightsPart, prWatchPart, patchesPart, editingPart, clisPart, reviewsPart, buttonsPart, approvalsPart, projectsHostPart, stoppedWorkPart, handoversPart, poolsPart, networkPart, worktreesPart, commandsPart, contextUsagePart, movesPart, warmStartPart]) {
   for (const [key, d] of Object.entries(Object.getOwnPropertyDescriptors(part))) {
     Object.defineProperty(Runner.prototype, key, { ...d, enumerable: false });
   }

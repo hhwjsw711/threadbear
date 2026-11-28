@@ -19,7 +19,10 @@ export const highlightsPart = {
   highlights(this: Runner, threadId: string): ThreadHighlights {
     const st = this.mustGet(threadId);
     this.catchUpHighlights(st);
-    return highlightsView(st.rec.highlights!, st.rec.brief);
+    const out = highlightsView(st.rec.highlights!, st.rec.brief);
+    // Each PR's auto-fix wand (runner/pr-watch.ts).
+    for (const h of out.highlights) if (h.kind === 'pr' && this.prWatched(h.url)) h.watched = true;
+    return out;
   },
 
   removeHighlight(this: Runner, threadId: string, highlightId: string): { thread: ThreadSummary } {

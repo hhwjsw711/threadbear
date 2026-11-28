@@ -34,6 +34,7 @@ and "iPhone" read every thread through Convex, with the same functions (convex/p
 | Deleting it | `threads.delete` | No: Done on that Mac. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
 | Its highlights | `threads.highlights` | No: Highlights are files on that Mac. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
 | Removing a highlight | `threads.removeHighlight` | No: Highlights are files on that Mac. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
+| A PR's auto-fix wand | `prWatch.set` | No: The watch runs on the Mac that has the thread. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
 | Explain | `threads.explain` | No: Runs a model on that Mac. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
 | Reading a sub-agent's work | `threads.subagent` | No: Sub-agents stay on that Mac. | No: Not on the phone. | No: Not on the phone. | No: Not on the phone. |
 | A panel being shown | `threads.panelShown` | No: Patches run on that Mac. | No: No panels on the phone. | No: No panels on the phone. | No: No panels on the phone. |

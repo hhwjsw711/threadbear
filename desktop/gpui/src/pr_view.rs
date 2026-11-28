@@ -77,6 +77,17 @@ pub(crate) struct PrPanes {
     /// links already asked about (`github.prStates`).
     states: HashMap<String, PrState>,
     asked: std::collections::HashSet<String>,
+    /// Each PR's status for Highlights' Pull requests, with when it came, and
+    /// the PRs being asked about.
+    status: HashMap<String, (rules::PrStatus, i64)>,
+    status_asking: std::collections::HashSet<String>,
+    /// When `github.prStatus` last failed (gh missing or signed out): not
+    /// asked again for a minute.
+    status_failed_at: Option<i64>,
+    /// A redraw is booked for when the statuses showing go stale.
+    status_redraw: bool,
+    /// Auto-fix wands pressed and not yet answered: what each was turned to.
+    watch_pending: HashMap<String, bool>,
     /// A PR's files that came before the PR itself (`load_pr`).
     early_files: HashMap<String, PrFiles>,
     /// When each PR showing was read from GitHub, for reading it again
@@ -398,6 +409,164 @@ impl SidePane {
         .detach();
     }
 
+    /// The status of each PR in `urls` as last heard, asking the runner in
+    /// one `github.prStatus` for those it hasn't heard about lately
+    /// (`rules::PR_STATUS_FRESH_MS`). Called as Highlights draws, and it
+    /// books a redraw for when they go stale, so a pane left open keeps up.
+    pub(crate) fn pr_statuses(
+        &mut self,
+        urls: &[String],
+        cx: &mut Context<Self>,
+    ) -> HashMap<String, rules::PrStatus> {
+        let now = now_ms();
+        let canon: Vec<String> = urls.iter().filter_map(|u| pr_url(u)).collect();
+        let stale = |s: &Self, u: &String| {
+            s.prs
+                .status
+                .get(u)
+                .is_none_or(|(_, at)| now - at >= rules::PR_STATUS_FRESH_MS)
+        };
+        let failed_lately = self
+            .prs
+            .status_failed_at
+            .is_some_and(|at| now - at < 60_000);
+        let ask: Vec<String> = canon
+            .iter()
+            .filter(|u| stale(self, u) && !self.prs.status_asking.contains(*u))
+            .cloned()
+            .collect();
+        if !ask.is_empty() && !failed_lately {
+            self.prs.status_asking.extend(ask.iter().cloned());
+            let client = self.client.clone();
+            cx.spawn(async move |this, cx| {
+                let answer = call(client, "github.prStatus", json!({ "urls": ask })).await;
+                this.update(cx, |this, cx| {
+                    let at = now_ms();
+                    for url in &ask {
+                        this.prs.status_asking.remove(url);
+                    }
+                    match answer {
+                        Ok(v) => {
+                            this.prs.status_failed_at = None;
+                            for url in &ask {
+                                match rules::PrStatus::decode(&v["prs"][url]) {
+                                    Some(s) => {
+                                        this.prs.status.insert(url.clone(), (s, at));
+                                    }
+                                    // GitHub didn't give it: not asked again
+                                    // until it goes stale like the rest.
+                                    None => {
+                                        if let Some(old) = this.prs.status.get_mut(url) {
+                                            old.1 = at;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => this.prs.status_failed_at = Some(at),
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        if !canon.is_empty() && !self.prs.status_redraw {
+            self.prs.status_redraw = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(
+                        rules::PR_STATUS_FRESH_MS as u64,
+                    ))
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.prs.status_redraw = false;
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        canon
+            .into_iter()
+            .filter_map(|u| self.prs.status.get(&u).map(|(s, _)| (u, s.clone())))
+            .collect()
+    }
+
+    /// A PR's status as last heard, asking nothing (the specs' dump).
+    #[cfg(feature = "automation")]
+    pub(crate) fn pr_status_heard(&self, url: &str) -> Option<rules::PrStatus> {
+        pr_url(url).and_then(|u| self.prs.status.get(&u).map(|(s, _)| s.clone()))
+    }
+
+    /// A PR row's auto-fix wand as it shows: what it was pressed to while
+    /// the runner answers, else what the highlight says.
+    pub(crate) fn pr_watch_shown(&self, url: &str, watched: bool) -> (bool, bool) {
+        match pr_url(url).and_then(|u| self.prs.watch_pending.get(&u).copied()) {
+            Some(on) => (on, true),
+            None => (watched, false),
+        }
+    }
+
+    /// The wand pressed: the runner watches the PR for this thread, or stops
+    /// (`prWatch.set`), then Highlights is read again for every wand.
+    pub(crate) fn press_pr_watch(
+        &mut self,
+        thread_id: String,
+        url: String,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(url) = pr_url(&url) else { return };
+        if self.prs.watch_pending.contains_key(&url) {
+            return;
+        }
+        self.prs.watch_pending.insert(url.clone(), on);
+        crate::activity::menu_chosen(
+            Some(format!("PR > auto-fix {}", if on { "on" } else { "off" })),
+            None,
+        );
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let res = call(
+                client,
+                "prWatch.set",
+                json!({ "threadId": thread_id, "urls": [url], "on": on }),
+            )
+            .await;
+            this.update(cx, |this, cx| {
+                if let Err(e) = res {
+                    this.note_error(
+                        format!(
+                            "Couldn't turn auto-fix {}: {}",
+                            if on { "on" } else { "off" },
+                            e.message
+                        ),
+                        cx,
+                    );
+                }
+                this.refresh_highlights(thread_id.clone(), std::time::Duration::ZERO, cx);
+                // Kept until the new highlights come, so the wand doesn't flick back.
+                let url2 = url.clone();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(1500))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        this.prs.watch_pending.remove(&url2);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// A button's work on GitHub: busy until it lands, then the PR read again.
     fn pr_act(
         &mut self,
@@ -421,6 +590,8 @@ impl SidePane {
         cx.spawn_in(window, async move |this, cx| {
             let res = call(client, "github.prAct", params).await;
             this.update_in(cx, |this, window, cx| {
+                // Highlights' status asks again on its next draw.
+                this.prs.status.remove(&url);
                 let ui = this.prs.ui.entry(url.clone()).or_default();
                 ui.busy = None;
                 match res {

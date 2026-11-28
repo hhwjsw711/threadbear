@@ -1165,7 +1165,26 @@ From the top, and only when there's something to show:
   hidden folders in your home folder (`~/.convex`, `~/.ssh`) and files
   named like they hold a key show their icon instead, as the previews are
   on screen whenever Highlights is. Another Mac's files show their icon.
-- **Links**: web pages and pull requests it opened or mentioned.
+- **Pull requests**: the GitHub pull requests it made, linked to or
+  mentioned. Each row has the title and number, how long since it changed,
+  and what decides whether it can merge: CI passing, failing or running,
+  approved, changes asked for or waiting for review, a merge conflict, and
+  how many review threads are still open. Its icon is red when CI fails or
+  changes are asked for, yellow while it waits on something, green when
+  it's ready to merge, and grey as a draft. Merged and closed ones fold
+  under a "Show merged or closed" row. Threadbear asks the `gh` command
+  you're signed into, at most every 30 seconds while Highlights shows.
+  Without `gh`, the rows show without their status. Desktop app only.
+- **Auto-fix**: each open pull request has a wand. Turn it on and
+  Threadbear looks at the PR every minute. A merge conflict, a failing
+  check, an open review thread, changes asked for, or a new review or
+  comment from someone else goes to the thread as a message to fix it. If
+  `~/.threadbear/pr-auto-fix.md` is there, the message says to follow its
+  rules. Once the PR is approved, the thread asks you whether to merge it:
+  it never merges by itself. While all the PRs a thread watches wait for
+  review, the thread snoozes for a day. A thread on Auto can turn the wand
+  on for its own PRs.
+- **Links**: web pages it opened or mentioned.
 - **Changes**: its commits, and a line such as "4 files edited" that
   opens to the code it changed.
 
@@ -1218,7 +1237,9 @@ in its cache folder for this. Each PR you open sits as its own tab beside
 Highlights and follows the thread you opened it from: it closes when you
 switch to another thread and comes back when you return. Drag a PR panel
 into another split or a window of its own and it stays open across threads
-until you close it.
+until you close it. To open pull request links like any other web link
+instead, turn off Settings > General > Panels > Open pull requests in the
+pane.
 
 ### Pins
 

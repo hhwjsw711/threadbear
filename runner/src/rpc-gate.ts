@@ -31,6 +31,7 @@ export const GATED_READS: ReadonlySet<string> = new Set([
   'threads.unsubscribe',
   'threads.subagent',
   'threads.highlights',
+  'prWatch.list',
   'threads.commands',
   'threads.contextUsage',
   'buttons.list',
@@ -261,6 +262,12 @@ export class CallerGate {
         const id = str(p, 'threadId');
         if (id && id !== threadId && above(this.targetAccess(id), caller)) throw needs(`changing the projects of ${this.title(id)}`, 'join_project');
         return { ...p, by: 'agent', controlCeiling: id && id !== threadId ? caller.mode : undefined };
+      }
+      // A PR's auto-fix wand, for this thread only: the watch messages the thread that
+      // set it, so turning it on reaches no thread but the caller's own.
+      case 'prWatch.set': {
+        if (str(p, 'threadId') !== threadId) throw needs("setting a PR's auto-fix wand for another thread");
+        return p;
       }
       case 'threads.showPanel': {
         if (str(p, 'threadId') !== threadId) throw needs("opening another thread's panel", 'show_panel');

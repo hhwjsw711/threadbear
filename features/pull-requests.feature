@@ -18,6 +18,14 @@ Feature: Pull requests open beside the thread
     And the PR's checks read "1 of 2 passed" with "Windows failed"
     And the PR's activity includes "Thanks, looking now."
 
+  # Settings > General > Panels > Open pull requests in the pane.
+  @pane.prs @swift-pending @gpui-pending
+  Scenario: With PR tabs off, a PR link opens like any other web link
+    Given "Open pull requests in the pane" is off in Settings
+    When I follow the PR link "https://github.com/acme/app/pull/72/files" in the thread
+    Then the pane shows no PR tab
+    And the link opens where a web link opens
+
   @pane.prs @swift-pending
   Scenario: The diff tab lists the changed files
     When I follow the PR link "https://github.com/acme/app/pull/72" in the thread

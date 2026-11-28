@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePrUrl, fetchPr, fetchPrFiles, prAct, splitPatch, prStates } from '../../src/github-pr.ts';
+import { parsePrUrl, fetchPr, fetchPrFiles, prAct, splitPatch, prStates, prStatus, forgetStates } from '../../src/github-pr.ts';
 import type { Gh } from '../../src/land-gate.ts';
 
 const view = {
@@ -198,6 +198,42 @@ test('prStates asks once per repo and keeps the answer a while', async () => {
   assert.equal(calls.length, 2);
   await prStates(urls.slice(0, 2), gh, 1000);
   assert.equal(calls.length, 2, 'cached');
+});
+
+test('prStatus asks for every PR in one GraphQL call and keeps the answers 30 seconds', async () => {
+  const calls: string[][] = [];
+  const data = {
+    p0: { pullRequest: { title: 'Fix invoice totals', state: 'OPEN', isDraft: false, mergeable: 'CONFLICTING', reviewDecision: 'CHANGES_REQUESTED', updatedAt: '2026-11-20T08:00:00Z', commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] }, reviewThreads: { nodes: [{ isResolved: false }, { isResolved: true }, { isResolved: false }] } } },
+    p1: { pullRequest: { title: 'Retry webhooks', state: 'MERGED', isDraft: false, mergeable: 'UNKNOWN', reviewDecision: 'APPROVED', updatedAt: '2026-11-19T08:00:00Z', commits: { nodes: [{ commit: { statusCheckRollup: null } }] }, reviewThreads: { nodes: [] } } },
+    p2: null,
+  };
+  // A repo it can't see: GraphQL answers the rest and gh exits non-zero.
+  const gh = fakeGh(calls, { 'api graphql': { ok: false, stdout: JSON.stringify({ data, errors: [{ message: 'Could not resolve' }] }) } });
+  const urls = ['https://github.com/acme/api/pull/4940', 'https://github.com/acme/emmi/pull/96', 'https://github.com/secret/x/pull/1', 'https://github.com/acme/api/pull/4940/files', 'https://example.com/x'];
+  const out = await prStatus(urls, gh, 1000);
+  assert.equal(calls.length, 1);
+  const query = calls[0].at(-1)!;
+  assert.match(query, /^query=\{p0:repository\(owner:"acme",name:"api"\)\{pullRequest\(number:4940\)/);
+  assert.match(query, /p2:repository\(owner:"secret",name:"x"\)/);
+  assert.doesNotMatch(query, /p3:/, 'the same PR linked twice is asked once');
+  assert.deepEqual(out['https://github.com/acme/api/pull/4940'], { title: 'Fix invoice totals', state: 'open', ci: 'failed', review: 'changes', mergeable: 'conflicts', unresolved: 2, updatedAt: '2026-11-20T08:00:00Z' });
+  assert.equal(out['https://github.com/acme/api/pull/4940/files']?.title, 'Fix invoice totals');
+  assert.deepEqual(out['https://github.com/acme/emmi/pull/96'], { title: 'Retry webhooks', state: 'merged', ci: '', review: 'approved', mergeable: 'unknown', unresolved: 0, updatedAt: '2026-11-19T08:00:00Z' });
+  assert.equal(out['https://github.com/secret/x/pull/1'], undefined);
+  assert.equal(Object.keys(out).length, 3);
+
+  await prStatus(urls.slice(0, 2), gh, 20_000);
+  assert.equal(calls.length, 1, 'cached');
+  forgetStates({ owner: 'acme', repo: 'api', number: 4940 });
+  await prStatus(urls.slice(0, 2), gh, 20_000);
+  assert.equal(calls.length, 2, 'a merge or close forgets it');
+  assert.match(calls[1].at(-1)!, /^query=\{p0:repository\(owner:"acme",name:"api"\)[^]*\}\}\}$/);
+  assert.doesNotMatch(calls[1].at(-1)!, /p1:/, 'the other is still fresh');
+});
+
+test('prStatus fails when gh answers nothing', async () => {
+  const gh = fakeGh([], { 'api graphql': { ok: false, stdout: '', stderr: 'gh: To get started, run: gh auth login' } });
+  await assert.rejects(prStatus(['https://github.com/acme/new/pull/1'], gh, 1000), /gh auth login/);
 });
 
 test('without gh installed, a read says to install it rather than spawn ENOENT', async () => {

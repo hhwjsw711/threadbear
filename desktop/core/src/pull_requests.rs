@@ -551,6 +551,118 @@ fn repo_of(url: &str) -> Option<String> {
     PrRef::parse(url).map(|r| format!("{}/{}", r.owner, r.repo))
 }
 
+// ---------------------------------------------------------------- status in Highlights
+
+/// What decides whether a thread's PR can merge, for Highlights' Pull
+/// requests (the runner's `github.prStatus`).
+#[derive(Clone, Debug, PartialEq, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PrStatus {
+    pub title: String,
+    pub state: PrState,
+    /// passed, failed, pending, or "" with no checks.
+    pub ci: String,
+    /// approved, changes, required, or "".
+    pub review: String,
+    /// yes, conflicts or unknown.
+    pub mergeable: String,
+    pub unresolved: u64,
+    pub updated_at: String,
+}
+
+/// A PR row's colour: red, yellow, green, or the plain icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrTone {
+    Failed,
+    Blocked,
+    Ready,
+    Plain,
+}
+
+/// How long a PR's status counts as new: Highlights asks again after this
+/// as it redraws (the runner keeps its own answer 30 seconds).
+pub const PR_STATUS_FRESH_MS: i64 = 30_000;
+
+impl PrStatus {
+    pub fn decode(value: &serde_json::Value) -> Option<PrStatus> {
+        serde_json::from_value(value.clone()).ok()
+    }
+
+    /// Merged or closed: hidden under Show merged.
+    pub fn landed(&self) -> bool {
+        matches!(self.state, PrState::Merged | PrState::Closed)
+    }
+
+    /// Red when CI failed or changes were asked for; green when it's approved
+    /// (or needs no review) with nothing in the way; yellow while it waits on
+    /// something; plain as a draft, merged or closed (the icon's own colour
+    /// says those).
+    pub fn tone(&self) -> PrTone {
+        if self.landed() || self.state == PrState::Draft {
+            return PrTone::Plain;
+        }
+        if self.ci == "failed" || self.review == "changes" {
+            return PrTone::Failed;
+        }
+        let waiting = self.ci == "pending"
+            || self.review == "required"
+            || self.mergeable == "conflicts"
+            || self.unresolved > 0;
+        if waiting {
+            PrTone::Blocked
+        } else {
+            PrTone::Ready
+        }
+    }
+
+    /// The status line: "CI failed · Changes requested · Conflict · 2 open
+    /// threads". Merged and closed say only that.
+    pub fn line(&self) -> String {
+        if self.landed() {
+            return self.state.words().to_owned();
+        }
+        let mut bits: Vec<String> = vec![];
+        if self.state == PrState::Draft {
+            bits.push("Draft".into());
+        }
+        match self.ci.as_str() {
+            "passed" => bits.push("CI passed".into()),
+            "failed" => bits.push("CI failed".into()),
+            "pending" => bits.push("CI running".into()),
+            _ => {}
+        }
+        match self.review.as_str() {
+            "approved" => bits.push("Approved".into()),
+            "changes" => bits.push("Changes requested".into()),
+            "required" => bits.push("Waiting for review".into()),
+            _ => {}
+        }
+        if self.mergeable == "conflicts" {
+            bits.push("Conflict".into());
+        }
+        match self.unresolved {
+            0 => {}
+            1 => bits.push("1 open thread".into()),
+            n => bits.push(format!("{n} open threads")),
+        }
+        if bits.is_empty() {
+            "Open".into()
+        } else {
+            bits.join(" · ")
+        }
+    }
+
+    /// "2h ago": since GitHub last saw a change.
+    pub fn ago(&self, now_ms: i64) -> Option<String> {
+        crate::inbox::parse_ms(&self.updated_at).map(|at| crate::highlights::run_ago(at, now_ms))
+    }
+}
+
+/// "api#4940": a PR's short name, the repo without its owner.
+pub fn short_ref(url: &str) -> Option<String> {
+    PrRef::parse(url).map(|r| format!("{}#{}", r.repo, r.number))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -770,5 +882,69 @@ mod tests {
         assert_eq!(panel_url("threadbear.pr:"), None);
         assert_eq!(panel_url("threadbear.pr:https://example.com/nope"), None);
         assert_eq!(panel_url("threadbear.highlights"), None);
+    }
+
+    fn status(v: serde_json::Value) -> PrStatus {
+        PrStatus::decode(&v).expect("decodes")
+    }
+
+    #[test]
+    fn a_pr_status_says_what_holds_it_up() {
+        let s = status(
+            json!({ "title": "Fix totals", "state": "open", "ci": "failed", "review": "changes", "mergeable": "conflicts", "unresolved": 2, "updatedAt": "2026-11-20T08:00:00Z", "later": 1 }),
+        );
+        assert_eq!(
+            s.line(),
+            "CI failed · Changes requested · Conflict · 2 open threads"
+        );
+        assert_eq!(s.tone(), PrTone::Failed);
+        assert_eq!(
+            s.ago(crate::inbox::parse_ms("2026-11-20T10:00:00Z").unwrap())
+                .as_deref(),
+            Some("2h ago")
+        );
+        assert!(!s.landed());
+    }
+
+    #[test]
+    fn a_pr_status_tone_follows_the_colours() {
+        let ready = status(
+            json!({ "state": "open", "ci": "passed", "review": "approved", "mergeable": "yes" }),
+        );
+        assert_eq!(
+            (ready.tone(), ready.line().as_str()),
+            (PrTone::Ready, "CI passed · Approved")
+        );
+        let waiting = status(
+            json!({ "state": "open", "ci": "passed", "review": "required", "mergeable": "yes" }),
+        );
+        assert_eq!(waiting.tone(), PrTone::Blocked);
+        let threads = status(
+            json!({ "state": "open", "ci": "passed", "review": "approved", "unresolved": 1 }),
+        );
+        assert_eq!(
+            (threads.tone(), threads.line().as_str()),
+            (PrTone::Blocked, "CI passed · Approved · 1 open thread")
+        );
+        let draft = status(json!({ "state": "draft", "ci": "pending" }));
+        assert_eq!(
+            (draft.tone(), draft.line().as_str()),
+            (PrTone::Plain, "Draft · CI running")
+        );
+        let merged = status(json!({ "state": "merged", "ci": "failed", "review": "approved" }));
+        assert_eq!(
+            (merged.tone(), merged.line().as_str(), merged.landed()),
+            (PrTone::Plain, "Merged", true)
+        );
+        assert_eq!(status(json!({ "state": "open" })).line(), "Open");
+    }
+
+    #[test]
+    fn a_short_ref_leaves_the_owner_off() {
+        assert_eq!(
+            short_ref("https://github.com/acme/ecom-api/pull/4940/files").as_deref(),
+            Some("ecom-api#4940")
+        );
+        assert_eq!(short_ref("https://example.com/x"), None);
     }
 }
