@@ -629,6 +629,7 @@ fn step(
                 }
                 menus.push(items);
             }
+            menus.extend(crate::popup_host::open_menu_items(cx));
             Ok(json!(format!(
                 "ok {}",
                 serde_json::to_string(&menus).unwrap_or_default()

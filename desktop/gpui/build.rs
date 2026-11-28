@@ -9,6 +9,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/media_views.m");
     println!("cargo:rerun-if-changed=native/menu_icons.m");
+    println!("cargo:rerun-if-changed=native/popup_window.m");
     println!("cargo:rerun-if-changed=native/file_icons.m");
     println!("cargo:rerun-if-changed=native/composer_media.m");
     println!("cargo:rerun-if-changed=native/translation.swift");
@@ -37,6 +38,10 @@ fn main() {
             .file("native/menu_icons.m")
             .flag("-fobjc-arc")
             .compile("threadbear_menu_icons");
+        cc::Build::new()
+            .file("native/popup_window.m")
+            .flag("-fobjc-arc")
+            .compile("threadbear_popup_window");
         cc::Build::new()
             .file("native/file_icons.m")
             .flag("-fobjc-arc")

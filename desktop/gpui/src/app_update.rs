@@ -430,7 +430,11 @@ pub(crate) fn windows_now(main: AnyWindowHandle, cx: &mut App) -> WindowsNow {
         held: native_panel_up(),
         other_window_input: false,
     };
+    let popup_id = crate::popup_host::window_id();
     for handle in cx.windows() {
+        if popup_id == Some(handle.window_id()) {
+            continue;
+        }
         let looked = handle.update(cx, |_, window, cx| {
             // The kit's menus take the keys while they're open.
             let menu = window

@@ -1016,75 +1016,112 @@ impl SidePane {
     ) -> AnyElement {
         let side = cx.entity().downgrade();
         let menu_thread = thread_id.to_owned();
+        if working {
+            let holder = crate::highlights::tipped_as(
+                div().id("hl-page-visibility").flex_none(),
+                "Change who can open this link",
+                gpui_kit::Role::GenericContainer,
+            );
+            let trigger = VisibilityLabel::new("hl-page-visibility-label", visibility, true, cx);
+            return holder.child(trigger).into_any_element();
+        }
+        let fill = std::rc::Rc::new(move |menu: PopupMenu| {
+            let (s1, t1) = (side.clone(), menu_thread.clone());
+            let (s2, t2) = (side.clone(), menu_thread.clone());
+            let (s3, t3) = (side.clone(), menu_thread.clone());
+            let (s4, t4) = (side.clone(), menu_thread.clone());
+            menu.item(
+                PopupMenuItem::new("Private")
+                    .checked(visibility == Visibility::Private)
+                    .icon(icons::symbol("lock"))
+                    .on_click(move |_, _, cx| {
+                        s1.update(cx, |this, cx| {
+                            this.change_publication(
+                                &t1,
+                                opened,
+                                PublishAction::SetVisibility(Visibility::Private),
+                                cx,
+                            );
+                        })
+                        .ok();
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("Anyone with link")
+                    .checked(visibility == Visibility::Public)
+                    .icon(icons::symbol("globe"))
+                    .on_click(move |_, _, cx| {
+                        s2.update(cx, |this, cx| {
+                            this.change_publication(
+                                &t2,
+                                opened,
+                                PublishAction::SetVisibility(Visibility::Public),
+                                cx,
+                            );
+                        })
+                        .ok();
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("Update web copy")
+                    .icon(icons::symbol("arrow.clockwise"))
+                    .on_click(move |_, _, cx| {
+                        s3.update(cx, |this, cx| {
+                            this.change_publication(&t3, opened, PublishAction::Sync, cx);
+                        })
+                        .ok();
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("Remove web copy")
+                    .icon(icons::symbol("trash"))
+                    .on_click(move |_, _, cx| {
+                        s4.update(cx, |this, cx| {
+                            this.change_publication(&t4, opened, PublishAction::Unpublish, cx);
+                        })
+                        .ok();
+                    }),
+            )
+        });
+        if crate::popup_host::supported() {
+            let bounds_cell = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
+            let capture = bounds_cell.clone();
+            let trigger = VisibilityLabel::new("hl-page-visibility-label", visibility, false, cx)
+                .inner
+                .relative()
+                .child(
+                    canvas(move |bounds, _, _| capture.set(bounds), |_, _, _, _| {})
+                        .absolute()
+                        .inset_0(),
+                );
+            return crate::highlights::tipped(trigger, "Change who can open this link")
+                .on_click(move |event: &ClickEvent, window, cx| {
+                    let mut anchor = bounds_cell.get();
+                    if anchor.is_empty() {
+                        anchor = Bounds::new(event.position(), size(px(1.), px(1.)));
+                    }
+                    let fill = fill.clone();
+                    crate::popup_host::open_menu(
+                        "hl-page-visibility",
+                        true,
+                        anchor,
+                        px(190.),
+                        window,
+                        cx,
+                        move |menu, _, _| fill(menu),
+                    );
+                })
+                .into_any_element();
+        }
         let holder = crate::highlights::tipped_as(
             div().id("hl-page-visibility").flex_none(),
             "Change who can open this link",
             gpui_kit::Role::GenericContainer,
         );
-        let trigger = VisibilityLabel::new("hl-page-visibility-label", visibility, working, cx);
-        if working {
-            return holder.child(trigger).into_any_element();
-        }
+        let trigger = VisibilityLabel::new("hl-page-visibility-label", visibility, false, cx);
         holder
-            .child(trigger.dropdown_menu(move |menu: PopupMenu, _, _| {
-                let (s1, t1) = (side.clone(), menu_thread.clone());
-                let (s2, t2) = (side.clone(), menu_thread.clone());
-                let (s3, t3) = (side.clone(), menu_thread.clone());
-                let (s4, t4) = (side.clone(), menu_thread.clone());
-                menu.item(
-                    PopupMenuItem::new("Private")
-                        .checked(visibility == Visibility::Private)
-                        .icon(icons::symbol("lock"))
-                        .on_click(move |_, _, cx| {
-                            s1.update(cx, |this, cx| {
-                                this.change_publication(
-                                    &t1,
-                                    opened,
-                                    PublishAction::SetVisibility(Visibility::Private),
-                                    cx,
-                                );
-                            })
-                            .ok();
-                        }),
-                )
-                .item(
-                    PopupMenuItem::new("Anyone with link")
-                        .checked(visibility == Visibility::Public)
-                        .icon(icons::symbol("globe"))
-                        .on_click(move |_, _, cx| {
-                            s2.update(cx, |this, cx| {
-                                this.change_publication(
-                                    &t2,
-                                    opened,
-                                    PublishAction::SetVisibility(Visibility::Public),
-                                    cx,
-                                );
-                            })
-                            .ok();
-                        }),
-                )
-                .separator()
-                .item(
-                    PopupMenuItem::new("Update web copy")
-                        .icon(icons::symbol("arrow.clockwise"))
-                        .on_click(move |_, _, cx| {
-                            s3.update(cx, |this, cx| {
-                                this.change_publication(&t3, opened, PublishAction::Sync, cx);
-                            })
-                            .ok();
-                        }),
-                )
-                .item(
-                    PopupMenuItem::new("Remove web copy")
-                        .icon(icons::symbol("trash"))
-                        .on_click(move |_, _, cx| {
-                            s4.update(cx, |this, cx| {
-                                this.change_publication(&t4, opened, PublishAction::Unpublish, cx);
-                            })
-                            .ok();
-                        }),
-                )
-            }))
+            .child(trigger.dropdown_menu(move |menu: PopupMenu, _, _| fill(menu)))
             .into_any_element()
     }
 
@@ -1856,6 +1893,68 @@ impl SidePane {
         };
         let tip = showing.tip();
         let panel_key = panel_id.to_owned();
+        if crate::popup_host::supported() {
+            let bounds_cell = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
+            let capture = bounds_cell.clone();
+            let trigger = ModeLabel::new(
+                SharedString::from(format!("hl-markdown-view-label-{panel_id}")),
+                showing.title(),
+                p,
+            )
+            .inner
+            .relative()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                canvas(move |bounds, _, _| capture.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            );
+            return crate::highlights::tipped(trigger, tip)
+                .on_click(move |event: &ClickEvent, window, cx| {
+                    let mut anchor = bounds_cell.get();
+                    if anchor.is_empty() {
+                        anchor = Bounds::new(event.position(), size(px(1.), px(1.)));
+                    }
+                    let owner_handle = window.window_handle();
+                    let (side, panel_key) = (side.clone(), panel_key.clone());
+                    crate::popup_host::open_menu(
+                        "hl-markdown-view",
+                        true,
+                        anchor,
+                        px(150.),
+                        window,
+                        cx,
+                        move |mut menu: PopupMenu, _, _| {
+                            for view in MarkdownView::ALL {
+                                let (side, panel_key) = (side.clone(), panel_key.clone());
+                                let item = PopupMenuItem::new(view.title())
+                                    .checked(view == showing)
+                                    .icon(icons::symbol(view.symbol()))
+                                    .on_click(move |_, _, cx| {
+                                        let (side, panel_key) = (side.clone(), panel_key.clone());
+                                        cx.defer(move |cx| {
+                                            let _ =
+                                                owner_handle.update(cx, |_, owner_window, cx| {
+                                                    side.update(cx, |this, cx| {
+                                                        this.pick_markdown_view_for(
+                                                            &panel_key,
+                                                            view,
+                                                            owner_window,
+                                                            cx,
+                                                        );
+                                                    })
+                                                    .ok();
+                                                });
+                                        });
+                                    });
+                                menu = menu.item(item);
+                            }
+                            menu
+                        },
+                    );
+                })
+                .into_any_element();
+        }
         let holder = crate::highlights::tipped_as(
             div()
                 .id(SharedString::from(format!("hl-markdown-view-{panel_id}")))

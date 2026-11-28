@@ -107,6 +107,7 @@ mod pane_store;
 mod patch_icons;
 mod patches;
 mod pinned_panels;
+mod popup_host;
 mod pr_view;
 mod prefs;
 mod project_page;
@@ -425,6 +426,8 @@ fn main() {
         // Videos and PDFs in the system's views: their calls back (a PDF's
         // links, to the open gate) and the menus they hide under.
         media_view::init(cx);
+        // Reusable floating popup window for dropdown menus over native views.
+        popup_host::init(cx);
         let mut settings = Settings::load();
         // The Swift app's settings and drafts, brought across once, before
         // anything reads them (swift_import.rs).
