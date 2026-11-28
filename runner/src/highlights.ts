@@ -613,8 +613,8 @@ function shellWords(s: string): string[] {
 }
 
 export function absolute(p: string, cwd: string, home: string = os.homedir()): string {
-  if (p === '~') return home;
-  if (p.startsWith('~/')) return path.join(home, p.slice(2));
+  if (p === '~') return path.resolve(home);
+  if (p.startsWith('~/')) return path.resolve(home, p.slice(2));
   return path.resolve(cwd, p);
 }
 

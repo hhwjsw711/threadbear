@@ -158,9 +158,9 @@ test('ciRuns: a commit in another repo is asked about there; one found nowhere i
 });
 
 test('ciRuns: the folder a push ran in comes from its command', () => {
-  assert.equal(pushDir('cd sub && git push 2>&1 | tail -2', '/x', '/h'), '/x/sub');
-  assert.equal(pushDir('cd /a/b; cd c && git commit -qm x && git push -u origin feat', '/x', '/h'), '/a/b/c');
-  assert.equal(pushDir('git -C ~/repo push', '/x', '/h'), '/h/repo');
+  assert.equal(pushDir('cd sub && git push 2>&1 | tail -2', '/x', '/h'), path.resolve('/x/sub'));
+  assert.equal(pushDir('cd /a/b; cd c && git commit -qm x && git push -u origin feat', '/x', '/h'), path.resolve('/a/b/c'));
+  assert.equal(pushDir('git -C ~/repo push', '/x', '/h'), path.resolve('/h/repo'));
   assert.equal(pushDir('git push', '/x', '/h'), undefined);
   assert.equal(pushDir('cd "$W" && git push', '/x', '/h'), undefined);
   assert.equal(pushDir('git push && cd later', '/x', '/h'), undefined);
@@ -171,11 +171,11 @@ test('ciRuns: the folder a push ran in comes from its command', () => {
   ], { cwd: '/x', home: '/h', exists: () => false });
   const commit = hl.items.find((i) => i.id === 'commit:a1b2c3d')!;
   assert.equal(commit.pushed, true);
-  assert.equal(commit.dir, '/x/sub');
+  assert.equal(commit.dir, path.resolve('/x/sub'));
   assert.equal(view(hl).highlights[0].dir, undefined, 'not sent to clients');
   const state = emptyCiRuns();
   addWatches(state, hl);
-  assert.equal(state.watches[0].dir, '/x/sub');
+  assert.equal(state.watches[0].dir, path.resolve('/x/sub'));
 });
 
 test('ciRuns: a re-run of a finished run shows it going again, and follows it until it finishes', async () => {
