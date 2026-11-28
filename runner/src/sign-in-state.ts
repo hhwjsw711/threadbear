@@ -12,6 +12,9 @@
 // loginExpiresAt), which reads its own sign-in locally and quickly. Never
 // the Keychain: tokens stay the CLI's business.
 import { execFile } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import { onPath } from './adapters/acp/agents.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import type { Account } from './protocol.ts';
 import type { Clock, TimerHandle } from './clock.ts';
@@ -58,7 +61,7 @@ type Reading = AuthStatus & { checkedAt: number };
 // What an account shows (Account.signedOut and loginEndsAt).
 export type SignInView = { signedOut?: true; loginEndsAt?: string };
 
-export type AuthExec = (file: string, args: string[], env: NodeJS.ProcessEnv) => Promise<string>;
+export type AuthExec = (file: string, args: string[], env: NodeJS.ProcessEnv, cwd?: string) => Promise<string>;
 
 // `claude auth status --json`'s answer. undefined when it isn't one.
 export function parseAuthStatus(stdout: string): AuthStatus | undefined {
@@ -86,9 +89,39 @@ export function viewOf(r: Reading | undefined, refused: boolean, now: number): S
   return out;
 }
 
-function realExec(file: string, args: string[], env: NodeJS.ProcessEnv): Promise<string> {
+function hasPathParts(file: string): boolean {
+  return file.includes('/') || file.includes('\\') || /^[A-Za-z]:/.test(file);
+}
+
+// Resolve relative paths while the startup working directory still exists,
+// before changing the child's working directory.
+function resolveRelativePath(file: string): string {
+  if (path.isAbsolute(file) || !hasPathParts(file)) return file;
+  try {
+    return path.resolve(file);
+  } catch {
+    return file;
+  }
+}
+
+// Runs in an explicit existing directory (paths.run(home), or homedir as a
+// fallback) so pruning an older runner release's folder from disk cannot break
+// Claude Code's startup working-directory check. Bare executable names are
+// resolved only against absolute PATH entries (onPath) so lookup can never
+// fall through to cwd.
+export function realExec(file: string, args: string[], env: NodeJS.ProcessEnv, cwd?: string): Promise<string> {
+  let target = resolveRelativePath(file);
+  if (!path.isAbsolute(target) && !hasPathParts(target)) {
+    const found = onPath(target, env.PATH ?? process.env.PATH ?? '');
+    if (!found) {
+      const err = new Error(`spawn ${file} ENOENT`) as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      return Promise.reject(err);
+    }
+    target = found;
+  }
   return new Promise((resolve, reject) => {
-    execFile(file, args, { env, timeout: TIMEOUT_MS, maxBuffer: 1 << 20 }, (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout))));
+    execFile(target, args, { cwd: cwd ?? os.homedir(), env, timeout: TIMEOUT_MS, maxBuffer: 1 << 20 }, (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout))));
   });
 }
 
@@ -103,6 +136,8 @@ export type SignInOptions = {
   exec?: AuthExec;
   // Where refusals are kept (<data dir>/REFUSALS_FILE); none: memory only.
   file?: string;
+  // Existing directory the CLI runs from (paths.run(home)); defaults to os.homedir().
+  cwd?: string;
 };
 
 export class SignInState {
@@ -115,15 +150,17 @@ export class SignInState {
   private running?: Promise<void>;
   private stopped = false;
   private o: SignInOptions;
+  private claudePath: string;
 
   constructor(o: SignInOptions) {
     this.o = o;
+    this.claudePath = resolveRelativePath(o.claudePath);
     const saved = o.file ? readJsonSync<Record<string, Refusal>>(o.file) : undefined;
     for (const [id, r] of Object.entries(saved ?? {})) if (typeof r?.at === 'number' && holding(r, o.clock.now())) this.refused.set(id, r);
   }
 
   private save(): void {
-    if (!this.o.file) return;
+    if (!this.o.file || this.stopped) return;
     const now = this.o.clock.now();
     try {
       atomicWriteFileSync(this.o.file, JSON.stringify(Object.fromEntries([...this.refused].filter(([, r]) => holding(r, now))), null, 2) + '\n');
@@ -224,16 +261,17 @@ export class SignInState {
   }
 
   private async check(account: Account, tell = true): Promise<void> {
+    if (this.stopped) return;
     // The CLI would only say "signed in" for a token (reading()).
     if (account.yearToken) return;
     let status: AuthStatus | undefined;
     try {
-      status = parseAuthStatus(await (this.o.exec ?? realExec)(this.o.claudePath, ['auth', 'status', '--json'], this.o.env(account)));
+      status = parseAuthStatus(await (this.o.exec ?? realExec)(this.claudePath, ['auth', 'status', '--json'], this.o.env(account), this.o.cwd));
     } catch (e) {
-      this.o.log.warn('sign-in: could not ask the CLI', { accountId: account.id, error: String(e) });
+      if (!this.stopped) this.o.log.warn('sign-in: could not ask the CLI', { accountId: account.id, error: String(e) });
       return;
     }
-    if (!status) return;
+    if (this.stopped || !status) return;
     const before = JSON.stringify(this.view(account));
     this.readings.set(account.id, { ...status, checkedAt: this.o.clock.now() });
     // A new sign-in takes a refusal back: another end than the one known

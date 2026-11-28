@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
-import { ACCESS_OFF_HOLD_MS, ACCESS_OFF_TEXT, ENDING_SOON_MS, REFUSALS_FILE, REFUSAL_HOLD_MS, SignInState, heldRefusals, parseAuthStatus, signInWords, viewOf } from '../../src/sign-in-state.ts';
+import { ACCESS_OFF_HOLD_MS, ACCESS_OFF_TEXT, CHECK_MS, ENDING_SOON_MS, REFUSALS_FILE, REFUSAL_HOLD_MS, SignInState, heldRefusals, parseAuthStatus, realExec, signInWords, viewOf } from '../../src/sign-in-state.ts';
 import { AUTH_TEXT } from '../../src/adapters/claude/normalize.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -250,4 +250,101 @@ test('an access-off refusal holds a day, not an hour, and is kept in the data di
   again.noteWorked('claude-1');
   assert.deepEqual([...heldRefusals(file, clock.now())], []);
   assert.deepEqual([...heldRefusals(path.join(path.dirname(file), 'none.json'), NOW)], []);
+});
+
+test('stop cancels recurring check timer and blocks later queued checks', async () => {
+  const clock = new FakeClock(NOW);
+  const accounts = [account('claude-1')];
+  let checks = 0;
+  const state = new SignInState({
+    claudePath: 'c',
+    accounts: () => accounts,
+    env: () => ({}),
+    clock,
+    log: nullLogger,
+    exec: async () => {
+      checks++;
+      return JSON.stringify({ loggedIn: true });
+    },
+  });
+  await state.checkAll();
+  assert.equal(checks, 1);
+  assert.equal(clock.pending(), 1, 'timer was scheduled for next check');
+  state.stop();
+  assert.equal(clock.pending(), 0, 'timer was cancelled on stop');
+  clock.advance(CHECK_MS * 2);
+  state.noteRefused('claude-1');
+  await new Promise((r) => setImmediate(r));
+  assert.equal(checks, 1);
+});
+
+test('realExec succeeds even when the process working directory was deleted', async () => {
+  const prev = process.cwd();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-missing-cwd-'));
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-run-cwd-'));
+  try {
+    process.chdir(dir);
+    fs.rmdirSync(dir);
+    const out = await realExec(process.execPath, ['-e', 'process.stdout.write(JSON.stringify({ cwd: process.cwd() }))'], {}, runDir);
+    assert.equal(fs.realpathSync(JSON.parse(out).cwd), fs.realpathSync(runDir));
+    const fallback = await realExec(process.execPath, ['-e', 'process.stdout.write(JSON.stringify({ cwd: process.cwd() }))'], {});
+    assert.equal(fs.realpathSync(JSON.parse(fallback).cwd), fs.realpathSync(os.homedir()));
+  } finally {
+    process.chdir(prev);
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+test('SignInState resolves a relative claudePath at startup before cwd can be deleted', async () => {
+  const prev = process.cwd();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-rel-cli-'));
+  const work = path.join(root, 'work');
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(work);
+  fs.mkdirSync(bin);
+  const link = path.join(bin, path.basename(process.execPath));
+  fs.symlinkSync(process.execPath, link);
+  const seen: { file: string; cwd?: string }[] = [];
+  try {
+    process.chdir(work);
+    const clock = new FakeClock(NOW);
+    const accounts = [account('claude-1')];
+    const state = new SignInState({
+      claudePath: `../bin/${path.basename(process.execPath)}`,
+      accounts: () => accounts,
+      env: () => ({}),
+      clock,
+      log: nullLogger,
+      cwd: root,
+      exec: async (file, _args, _env, cwd) => {
+        seen.push({ file, cwd });
+        const out = await realExec(file, ['-e', 'process.stdout.write(JSON.stringify({ loggedIn: true }))'], {}, cwd);
+        return out;
+      },
+    });
+    fs.rmdirSync(work);
+    await state.checkAll();
+    assert.equal(seen.length, 1);
+    assert.equal(fs.realpathSync(seen[0]!.file), fs.realpathSync(link));
+    assert.equal(seen[0]!.cwd, root);
+    assert.equal(state.view(accounts[0]!).signedOut, undefined);
+    state.stop();
+  } finally {
+    process.chdir(prev);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('realExec never resolves a bare binary name from cwd even when PATH includes "."', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-decoy-cwd-'));
+  const decoy = path.join(dir, 'tb-decoy-claude');
+  fs.writeFileSync(decoy, '#!/bin/sh\necho "{\\"loggedIn\\":true}"\n', { mode: 0o755 });
+  try {
+    await assert.rejects(
+      realExec('tb-decoy-claude', ['auth', 'status', '--json'], { PATH: `.:${dir.slice(1)}` }, dir),
+      (err: NodeJS.ErrnoException) => err.code === 'ENOENT',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

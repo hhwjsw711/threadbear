@@ -317,7 +317,7 @@ async function main(): Promise<void> {
   const accounts = new AccountRegistry(cfg, usage);
   // Which Claude logins are signed out or ending soon, from the CLI's own
   // `auth status` (sign-in-state.ts); the registry puts it on every account.
-  const signIn = new SignInState({ claudePath: cfg.claudePath, accounts: () => accounts.list(), env: (a) => cliEnv(a), clock: realClock, log, file: path.join(cfg.home, REFUSALS_FILE) });
+  const signIn = new SignInState({ claudePath: cfg.claudePath, accounts: () => accounts.list(), env: (a) => cliEnv(a), clock: realClock, log, file: path.join(cfg.home, REFUSALS_FILE), cwd: paths.run(cfg.home) });
   accounts.signIn = signIn;
   // Year-long token… asked from another Mac (docs/protocol.md, accounts.yearToken).
   const tokenMaker = new YearTokenMaker({ claudePath: cfg.claudePath, env: (a) => cliEnv(a), log });
@@ -2236,6 +2236,8 @@ async function main(): Promise<void> {
       // And keeps Agent Archive's list and builds its sync (THREADBEAR-2J).
       agentArchive.stop();
       librarian.stop();
+      // And polls sign-in status (THREADBEAR-23).
+      signIn.stop();
       // stuckJobs goes on: background work can hold a thread here for hours,
       // and a wait that can never end should still be noticed. It only looks
       // at this runner's threads, so the primary's check doesn't cover them.
