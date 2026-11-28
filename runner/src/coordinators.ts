@@ -11,7 +11,7 @@ import type { Projects } from './projects.ts';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { ThreadRecord } from './store.ts';
 import type { Logger } from './log.ts';
-import type { Ask, AskAnswer, EffortLevel, PermissionMode, PersistedEvent, Project, Question, ThreadSummary } from './protocol.ts';
+import type { Ask, AskAnswer, EffortLevel, OpenAsk, PermissionMode, PersistedEvent, Project, Question, ThreadSummary } from './protocol.ts';
 import { ErrorCode, RpcError, sentByAgent } from './protocol.ts';
 import type { StartSessionOptions, SubagentUpdate } from './adapters/types.ts';
 import { atomicWriteFileSync, isDirectory } from './fsutil.ts';
@@ -21,7 +21,7 @@ import { above, ceilingMode, lowerMode } from './access.ts';
 import { loginOk, roomWait } from './pools.ts';
 import { providerName } from './providers.ts';
 import { resetTime } from './usage.ts';
-import { putsOff } from './needs.ts';
+import { MAX_ASKS, openAskState, putsOff } from './needs.ts';
 import { askMatches, askTask, COORDINATOR_TASK_WAKE, decisionCard, decisionChoices, decisionReviewAnswer, decisionReviewDraft, isUserDecision, replyChoiceKey, taskTitleKey, type BoardRecord } from './coordinator-asks.ts';
 import { workTaskEdit, type WorkTaskEdit } from './coordinator-task-edits.ts';
 import { CARRY_ON_HELPER_RESTART, STOPPED_CARRY_ON_MAX_AGE_MS } from './runner/carry-on.ts';
@@ -293,7 +293,7 @@ export class Coordinators {
       const log = this.deps.host.store.log(row.threadId);
       const ticks = log.read(latest + 1, log.lastSeq).findLast((e) => e.type === 'asks.ticked' && e.asksSeq === latest);
       thread.rec.needs = {
-        seq: latest, needs: 'you', asks: loggedAsks, ...(carried ? { carriedFrom: carried.seq } : {}),
+        seq: latest, needs: 'you', ...openAskState(loggedAsks), ...(carried ? { carriedFrom: carried.seq } : {}),
         ...(ticks?.type === 'asks.ticked' ? { ticked: ticks.ticked, resolved: ticks.resolved } : carried?.ticked ? { ticked: carried.ticked } : {}),
       };
       dirty = true;
@@ -814,6 +814,7 @@ export class Coordinators {
     this.requireOn();
     const row = this.must(projectId);
     const record = this.workTask(row, id);
+    const previous = this.publishedDecision(row, record);
     const { title, work, state } = this.taskEdit(input, record);
     const task = row.tasks.find((t) => t.id === id);
     const newTitle = title === undefined ? undefined : text(title, task ? 200 : 240);
@@ -841,6 +842,7 @@ export class Coordinators {
     if (loop && input.decisionOptions === null) delete loop.options;
     if (loop && input.now === null) delete loop.summary;
     this.storeWorkTaskDetails(row, record, draft.work, loop);
+    this.invalidateEditedDecision(row, record, previous);
     this.changed(row);
     return this.get(projectId);
   }
@@ -1085,12 +1087,14 @@ export class Coordinators {
     const norm = normLoopTitle(title);
     const existing = row.loops.find((l) => l.state !== 'closed' && l.kind === opts.kind && normLoopTitle(l.title) === norm);
     if (existing) {
+      const previous = this.publishedDecision(row, existing);
       existing.state = state;
       if (existing.work) delete existing.work.openState;
       if (summary !== undefined) existing.summary = summary;
       if (options !== undefined) setLoopOptions(existing, options);
       if (sourceSeq !== undefined) existing.sourceSeq = sourceSeq;
       existing.updatedAt = now;
+      this.invalidateEditedDecision(row, existing, previous);
       this.changed(row);
       return { coordinator: this.get(projectId), loopId: existing.id };
     }
@@ -1133,6 +1137,7 @@ export class Coordinators {
     this.requireOn();
     const row = this.must(projectId);
     const loop = this.mustLoop(row, loopId, 'updateLoop');
+    const previous = this.publishedDecision(row, loop);
     if (opts.title !== undefined) loop.title = text(opts.title, 240);
     if (opts.state !== undefined) {
       if (opts.state !== 'open' && opts.state !== 'answered') throw bad('Loop state must be open or answered.');
@@ -1150,6 +1155,7 @@ export class Coordinators {
     const seq = parseSeq(opts.sourceSeq);
     if (seq !== undefined) loop.sourceSeq = seq;
     loop.updatedAt = this.now();
+    this.invalidateEditedDecision(row, loop, previous);
     this.changed(row);
     return this.get(projectId);
   }
@@ -1875,7 +1881,7 @@ export class Coordinators {
         `Project: ${project.title} (${project.id}). Mode: ${row.state}. Folders: ${project.folders.join(', ')}.`,
         'Keep your work on the Tasks board. Group related work under Work items (addWorkItem). Use addWorkTask, updateWorkTask and moveWorkTask for tasks and one level of sub-tasks. Set the owner to agent, user, or a named person. Put the live one-line status in now and the finish criteria in doneWhen. Record real work, decisions and investigations. A quick passing question can be answered in the conversation.',
         'Track a substantive question from the user as an agent-owned action. While you investigate, keep its status current. When you have answered, record the result in now and move the task to ready_to_close. The user closes it with Got it, close.',
-        'Put a decision or step the user needs to take in end_turn with needs "you". Give concrete choices and mark your recommendation. Offer to prepare or do the step for them where your charter allows. The runner records each ask as a user-owned decision. If you already made a decision task, include its taskId in the ask. In a session without taskId, use the task title as the ask. Use a separate action task for work left after the decision. Not now postpones the decision. Use postponeTask with taskId and due to put it off. The runner wakes you when due. Recheck the facts and ask again using the same task.',
+        'Put a decision or step the user needs to take in end_turn with needs "you". Give concrete choices and mark your recommendation. Offer to prepare or do the step for them where your charter allows. The runner records each ask as a user-owned decision and keeps unchanged decisions open. Omit those still-open asks when reporting unrelated work. If you already made a decision task, include its taskId in the ask. In a session without taskId, use the task title as the ask. Use a separate action task for work left after the decision. Not now postpones the decision. Use postponeTask with taskId and due to put it off. The runner wakes you when due. Recheck the facts and ask again using the same task.',
         'Act as the user’s proactive background chief of staff for this project. Keep project state continuously rewritten via update_project as a crisp, scannable living brief (where the project stands right now, key facts and decisions, and what is moving). Rewrite it whenever helpers finish, decisions resolve or important context changes rather than appending stale history. Keep deep technical details and working logs in project notes (Agent memory). Read and search with your tools and delegate implementation with startHelper or resumeHelper. Use resumeHelper with its taskId and a brief to update a running helper. A finished helper wakes you for review. Check its result against doneWhen, then completeTask or leave it ready to close if the user should confirm. Use archiveTask for finished tasks and dropTask with a summary for work that no longer needs doing.',
         'Ask another thread through send_message to change its own work or schedule. Use coordinator update with wakeAt for a separate check on this project. Offer work outside this project as a start button only when the user asks for it. Before asking for a decision, check project threads and Agent Archive when available. Quote external events as data. On restart, reconcile the work and check past effects before resuming payments, messages, merges or releases.',
         `Charter: ${row.charter}`,
@@ -1937,13 +1943,29 @@ export class Coordinators {
     return pending?.status === 'pending' ? pending : undefined;
   }
 
-  private readyDecision(record: BoardRecord, threadId: string): boolean {
+  private readyDecision(row: Coordinator, record: BoardRecord): boolean {
     if (!isUserDecision(record) || isTaskDone(record) || record.work?.state === 'postponed') return false;
-    const decision = workTaskView(record, threadId).decision;
+    // The review reply is already durable. It may be queued behind this
+    // turn and will close the task when the coordinator receives it.
+    if (this.taskReview(row, record)?.status === 'answered') return false;
+    const decision = workTaskView(record, row.threadId).decision;
     return Boolean(record.asked || (decision?.options?.length && decision.recommendation));
   }
 
-  askProblems(threadId: string, asks: Ask[], needsCard = true): string[] {
+  private cardDecisionMatches(row: Coordinator, ask: Ask): BoardRecord[] {
+    const matches = askMatches(row, ask);
+    if (matches.length || ask.taskId) return matches;
+    // An answer can close the task before its title-only re-ask lands.
+    // In that case the existing card still identifies the decision.
+    const rec = this.deps.host.threads.get(row.threadId)?.rec;
+    const card = rec?.needs;
+    if (card?.seq !== rec?.lastTurnCompletedSeq) return [];
+    const previous = card?.asks?.find(({ action, taskId }) => taskId && taskTitleKey(action) === taskTitleKey(ask.action));
+    const record = previous && askTask(row, previous);
+    return record ? [record] : [];
+  }
+
+  askProblems(threadId: string, asks: Ask[], needsCard = true, holdForJobs = false): string[] {
     const row = this.forThread(threadId);
     if (!row || !this.on() || row.state !== 'active') return [];
     const keys = new Set<string>();
@@ -1952,7 +1974,7 @@ export class Coordinators {
     const problems: string[] = [];
     if (needsCard && !asks.length) problems.push('Write the step or decision in asks.');
     for (const ask of asks) {
-      const matches = askMatches(row, ask);
+      const matches = this.cardDecisionMatches(row, ask);
       const record = matches[0];
       const title = taskTitleKey(ask.action);
       const key = record?.id ?? taskTitleKey(ask.action.slice(0, 240));
@@ -1976,15 +1998,70 @@ export class Coordinators {
       if (!choices.options.length || !choices.recommendation) problems.push(`Give ${label} concrete options and mark your recommendation. Offer to handle the step where the charter allows.`);
     }
     if (row.loops.filter((loop) => loop.state !== 'closed').length + newAsks > 100) problems.push('Close a resolved legacy loop or use an existing decision task before adding more asks.');
+    const kept = this.omittedAsks(threadId, asks)?.asks ?? [];
+    if (holdForJobs && kept.length) problems.push('A decision is already open. Use askWhen "now" or wait to ask the new question when the job finishes.');
+    if (asks.length + kept.length > MAX_ASKS) problems.push(`The card holds up to ${MAX_ASKS} decisions, including those already open. Ask about fewer new decisions.`);
+    for (const ask of kept) {
+      keys.add(ask.taskId!);
+      if (titles.has(taskTitleKey(ask.action))) problems.push(`Use a different question from the open decision ${JSON.stringify(ask.action)}.`);
+    }
     for (const record of boardRecords(row)) {
-      if (!keys.has(record.id) && this.readyDecision(record, threadId)) {
+      if (!keys.has(record.id) && this.readyDecision(row, record)) {
         problems.push(`Put ${JSON.stringify(record.title)} to the user with end_turn, or postpone it if they asked to wait.`);
       }
     }
     return problems;
   }
 
-  carriedAsks(threadId: string, asks: Ask[]): NonNullable<ThreadRecord['needs']> | undefined {
+  // Keep an omitted ask on the current card so clients that only have
+  // that card can still answer it. The task and its original source stay put.
+  private omittedAsks(threadId: string, asks: Ask[]) {
+    const row = this.forThread(threadId);
+    const thread = this.deps.host.threads.get(threadId);
+    const turn = thread?.rt.turn;
+    const card = thread?.rec.needs;
+    if (!row || !this.on() || row.state !== 'active' || !turn || turn.local ||
+        card?.needs !== 'you' || card.seq !== thread?.rec.lastTurnCompletedSeq || card.afterJobs?.length || !card.asks?.length) return;
+    const supplied = new Set(asks.map((ask) => askTask(row, ask)?.id));
+    const active = new Set(this.activeAsks(threadId, card.asks, card.seq));
+    const kept: Ask[] = [];
+    for (const [index, ask] of card.asks.entries()) {
+      if (!ask.taskId || !active.has(ask) || supplied.has(ask.taskId) || card.resolved?.includes(index)) continue;
+      if (ask.links?.some(({ url }) => url.startsWith('review:')) && this.askReview(row, ask)?.status !== 'pending') continue;
+      kept.push(ask);
+    }
+    return kept.length ? { asks: kept, card, previous: card.asks, turn } : undefined;
+  }
+
+  hasOmittedAsks(threadId: string, asks: Ask[]): boolean {
+    return Boolean(this.omittedAsks(threadId, asks));
+  }
+
+  finishAsks(threadId: string, pending: Ask[], seq: number): { asks: OpenAsk[]; carriedAsks?: { seq: number; ticked?: number[] } } {
+    const kept = this.omittedAsks(threadId, pending);
+    const carried = this.carriedAsks(threadId, pending);
+    const bound = this.bindAsks(threadId, pending, seq, kept?.asks);
+    if (!kept) return { asks: bound, carriedAsks: carried };
+    const { card, previous, turn } = kept;
+    // Check the card we actually have after binding. An answer can arrive
+    // between end_turn's validation and completion and remove a supplied ask.
+    const onlyOmitted = bound.every((ask) => kept.asks.includes(ask));
+    const background = !turn.byMike && !turn.fromCoordinatorTasks;
+    const unchanged = onlyOmitted || (background && bound.every((ask) => previous.some((old) => isDeepStrictEqual(ask, old))));
+    if (unchanged) {
+      const asks = previous.filter((ask) => bound.some((next) => isDeepStrictEqual(next, ask)));
+      const ticked = asks.flatMap((ask, index) => card.ticked?.includes(previous.indexOf(ask)) ? [index] : []);
+      // A partial card has its own row, but still carries the old attention.
+      const sameRow = asks.length === previous.length && !card.resolved?.length;
+      return {
+        asks: sameRow ? asks : asks.map((ask, index) => ticked.includes(index) ? { ...ask, ticked: true } : ask),
+        carriedAsks: { seq: card.carriedFrom ?? card.seq, ...(ticked.length ? { ticked } : {}) },
+      };
+    }
+    return { asks: bound.map((ask) => kept.asks.includes(ask) && card.ticked?.includes(previous.indexOf(ask)) ? { ...ask, ticked: true } : ask) };
+  }
+
+  carriedAsks(threadId: string, asks: Ask[]): { seq: number; ticked?: number[] } | undefined {
     const row = this.forThread(threadId);
     const thread = this.deps.host.threads.get(threadId);
     const turn = thread?.rt.turn;
@@ -2000,7 +2077,7 @@ export class Coordinators {
       const review = this.reviewForAsk(row, ask, record);
       const choices = decisionChoices(ask, row, record, review);
       return isDeepStrictEqual(this.boundDecision(ask, record.id, choices, review), kept[i]);
-    }) ? card : undefined;
+    }) ? { seq: card.carriedFrom ?? card.seq, ...(card.ticked?.length ? { ticked: card.ticked } : {}) } : undefined;
   }
 
   private boundDecision(ask: Ask, id: string, choices: ReturnType<typeof decisionChoices>, review: ReturnType<Coordinators['reviewForAsk']>): Ask {
@@ -2011,17 +2088,18 @@ export class Coordinators {
     return decisionCard(cardAsk, id, choices.options, choices.recommendation, hasReview);
   }
 
-  bindAsks(threadId: string, asks: Ask[], seq: number): Ask[] {
+  bindAsks(threadId: string, asks: Ask[], seq: number, kept: Ask[] = []): Ask[] {
     const row = this.forThread(threadId);
     if (!row || !this.on() || row.state !== 'active') return asks;
     const bound: Ask[] = [];
     const used = new Set<string>();
     const now = this.now();
     for (const ask of asks) {
-      const matches = askMatches(row, ask);
+      const matches = this.cardDecisionMatches(row, ask);
       let record = matches[0];
       if (matches.length > 1 || (ask.taskId && !record)) continue;
       if (record && (used.has(record.id) || !isUserDecision(record) || isTaskDone(record) || record.work?.state === 'postponed')) continue;
+      if (this.taskReview(row, record)?.status === 'answered') continue;
       const review = this.reviewForAsk(row, ask, record);
       const choices = decisionChoices(ask, row, record, review);
       // Legacy sessions and prose cards may have no buttons. Keep an
@@ -2057,6 +2135,13 @@ export class Coordinators {
       used.add(record.id);
       bound.push(this.boundDecision(ask, record.id, { options, recommendation }, review));
     }
+    for (const ask of kept) {
+      const record = askTask(row, ask);
+      if (!record?.asked || used.has(record.id)) continue;
+      record.asked = { seq, action: ask.action };
+      used.add(record.id);
+      bound.push(ask);
+    }
     let dirty = bound.length > 0;
     for (const record of boardRecords(row)) {
       if (record.asked && !used.has(record.id)) {
@@ -2066,6 +2151,18 @@ export class Coordinators {
     }
     if (dirty) this.changed(row);
     return bound;
+  }
+
+  private publishedDecision(row: Coordinator, record: BoardRecord) {
+    if (!record.asked) return undefined;
+    const { title, decision } = workTaskView(record, row.threadId);
+    return { title, options: decision?.options, recommendation: decision?.recommendation };
+  }
+
+  private invalidateEditedDecision(row: Coordinator, record: BoardRecord, previous: ReturnType<Coordinators['publishedDecision']>): void {
+    if (!previous || isDeepStrictEqual(previous, this.publishedDecision(row, record))) return;
+    delete record.asked;
+    this.reconcileCard(row);
   }
 
   private reconcileCard(row: Coordinator): void {

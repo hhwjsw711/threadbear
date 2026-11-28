@@ -67,6 +67,22 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: 'a coordinator asks a new question while a prior decision is still open',
+    shows: ['Which venue should I book?', 'What time works?', 'Town hall', 'Ten'],
+    play: (p) => {
+      p.coordinate('p_event');
+      const venue = { question: 'Which venue should I book?', options: [{ label: 'Town hall' }, { label: 'Not now' }] };
+      p.say('I can book the town hall.');
+      p.endTurn({ needs: 'you', asks: [venue] });
+      p.send('What about the time?');
+      p.say('Ten is available.');
+      p.endTurn({ needs: 'you', asks: [
+        { question: 'What time works?', options: [{ label: 'Ten' }, { label: 'Not now' }] },
+        venue,
+      ] });
+    },
+  },
+  {
     name: 'a message sent from the phone app',
     shows: ['The photo can wait until tomorrow.'],
     play: (p) => {

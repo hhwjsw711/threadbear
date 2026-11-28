@@ -3298,34 +3298,40 @@ test('an unattended coordinator turn carries an unchanged decision without askin
   assert.equal(c.get(project.id).taskBoard.tasks.find(({ id }) => id === taskId)?.decision?.answer, 'Red');
 });
 
-test('a coordinator restores ticks after a carried card was written before its thread record', async (t) => {
-  const { c, h, project, home, claude } = setup();
-  t.after(() => c.stop());
-  const { threadId } = c.create({ projectId: project.id, accountId: 'claude-3' }).coordinator;
-  await tick();
-  const ask = async (itemId: string) => {
-    const session = claude.sessions.at(-1)!;
-    session.out({ kind: 'event', event: { type: 'tool.call', itemId, name: 'mcp__threadbear__end_turn', title: 'end_turn', kind: 'mcp',
-      input: { needs: 'you', asks: [{ action: 'Which room?', options: ['Blue', 'Red'], suggested: 0 }] } } });
-    session.result('completed');
+for (const mode of ['unchanged', 'mixed'] as const) {
+  test(`a coordinator restores ticks after a card (${mode}) was written before its thread record`, async (t) => {
+    const { c, h, project, home, claude } = setup();
+    t.after(() => c.stop());
+    const { threadId } = c.create({ projectId: project.id, accountId: 'claude-3' }).coordinator;
     await tick();
-  };
-  await ask('original-card');
-  const { rec } = h.runner.mustGet(threadId);
-  const before = rec.needs;
-  h.runner.send(threadId, 'A helper finished.', [], { origin: 'runner' });
-  await tick();
-  await ask('carried-card');
-  const seq = h.runner.get(threadId).asksSeq!;
-  h.runner.tickAsk(threadId, seq, 0, true);
-  rec.needs = before;
-  h.runner.flush();
-  c.stop();
-  const { host, c: restored } = recoverFresh(h, home);
-  t.after(() => restored.stop());
-  assert.equal(host.get(threadId).asksSeq, seq);
-  assert.equal(host.get(threadId).asks?.[0]?.ticked, true);
-});
+    const ask = async (itemId: string, action = 'Which room?') => {
+      const session = claude.sessions.at(-1)!;
+      session.out({ kind: 'event', event: { type: 'tool.call', itemId, name: 'mcp__threadbear__end_turn', title: 'end_turn', kind: 'mcp',
+        input: { needs: 'you', asks: [{ action, options: ['Blue', 'Red'], suggested: 0 }] } } });
+      session.result('completed');
+      await tick();
+    };
+    await ask('original-card');
+    const { rec } = h.runner.mustGet(threadId);
+    const before = rec.needs;
+    if (mode === 'mixed') h.runner.tickAsk(threadId, h.runner.get(threadId).asksSeq!, 0, true);
+    h.runner.send(threadId, 'A helper finished.', [], { origin: 'runner' });
+    await tick();
+    const checked = mode === 'mixed' ? 1 : 0;
+    await ask('carried-card', mode === 'mixed' ? 'Which alert?' : undefined);
+    const seq = h.runner.get(threadId).asksSeq!;
+    if (mode === 'unchanged') h.runner.tickAsk(threadId, seq, checked, true);
+    rec.needs = before;
+    h.runner.flush();
+    c.stop();
+    const { host, c: restored } = recoverFresh(h, home);
+    t.after(() => restored.stop());
+    assert.equal(host.get(threadId).asksSeq, seq);
+    assert.equal(host.get(threadId).asks?.[checked]?.ticked, true);
+    host.tickAsk(threadId, seq, checked, false);
+    assert.equal(host.get(threadId).asks?.[checked]?.ticked, undefined);
+  });
+}
 
 test('task board actions retire only their asks, preserving other choices on the same card', async (t) => {
   const { c, h, project, claude } = setup();
@@ -3588,44 +3594,207 @@ test('a linked design review can be postponed and answered from its decision tas
   assert.equal(c.forThread(threadId)!.events.filter((event) => event.text.includes('answered a decision')).length, 0);
 });
 
-test('replacing a decision card clears its omitted ask and a stale legacy answer cannot resolve it', async (t) => {
-  const { c, h, project, claude } = setup();
+test('unrelated turns keep old decisions answerable without making the coordinator ask again', async (t) => {
+  const { c, h, project, claude, home } = setup();
   t.after(() => c.stop());
   const { thread } = c.create({ projectId: project.id, accountId: 'claude-3' });
   await tick();
+  const tool = buildThreadbearTools(h.runner, thread.id, () => h.clock.now(), undefined, undefined, undefined, {
+    coordinators: () => c, provider: 'codex', plainCardNote: false,
+  }).find(({ name }) => name === 'end_turn')!;
   const emit = async (input: Record<string, unknown>) => {
+    const result = await tool.handler(input as never, {});
+    assert.ok(!result.isError, JSON.stringify(result));
     const session = claude.sessions.at(-1)!;
     session.out({ kind: 'event', event: { type: 'tool.call', itemId: crypto.randomUUID(), name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input } });
     session.result('completed');
     await tick();
+    return h.events(thread.id).findLast((event) => event.type === 'turn.completed')!;
   };
-  const oldAsk = { action: 'Choose the venue', options: ['Town hall', 'Library'], suggested: 0 };
+  const source = path.join(home, 'venue.png');
+  fs.writeFileSync(source, makePng(40, 40));
+  const { review } = h.runner.createReview(thread.id, { title: 'Venue', recommended: 'T', options: [
+    { id: 'T', title: 'Town hall', path: source }, { id: 'L', title: 'Library', path: source },
+  ] });
+  const oldAsk = { action: 'Choose the venue', links: [{ title: 'Compare venues', url: `review:${review.id}` }] };
   const newAsk = { action: 'Choose the time', options: ['Ten', 'Eleven'], suggested: 0 };
-  await emit({ needs: 'you', asks: [oldAsk] });
+  const first = await emit({ needs: 'you', asks: [oldAsk] });
   const task = (title: string) => c.get(project.id).taskBoard.tasks.find((row) => row.title === title)!;
   const old = task(oldAsk.action);
   assert.equal(old.needsYou, true);
-  assert.match(c.askProblems(thread.id, [newAsk]).join(' '), /Choose the venue/);
+  assert.equal(h.runner.get(thread.id).asksSeq, first.seq);
+  h.runner.tickAsk(thread.id, first.seq, 0, true);
 
-  h.runner.send(thread.id, 'Any other updates?');
+  h.runner.send(thread.id, 'Can you check the deadline?');
   await tick();
-  await emit({ needs: 'you', asks: [newAsk] });
-  assert.equal(task(oldAsk.action).needsYou, undefined);
+  h.runner.markSeen(thread.id, h.runner.get(thread.id).lastSeq);
+  const kept = await emit({ needs: 'nothing' });
+  assert.deepEqual(kept.carriedAsks, { seq: first.seq, ticked: [0] });
+  assert.equal(h.runner.get(thread.id).asks?.[0]?.taskId, old.id);
+  assert.equal(h.runner.get(thread.id).pendingReviews, 1);
+
+  h.runner.send(thread.id, 'What about the time?');
+  await tick();
+  const session = claude.sessions.at(-1)!;
+  const input = { needs: 'you', asks: [newAsk], askWhen: 'jobsEnd' };
+  const held = await tool.handler(input as never, {});
+  assert.ok(held.isError && JSON.stringify(held).includes('already open'), 'reject even before a parallel job has started');
+  session.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'Checking the schedule' }] });
+  const itemId = crypto.randomUUID();
+  session.out({ kind: 'event', event: { type: 'tool.call', itemId, name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input } });
+  session.out({ kind: 'event', event: { type: 'tool.result', itemId, ok: false, text: JSON.stringify(held), truncated: false, images: [] } });
+  session.result('completed');
+  await tick();
+  const stillOpen = h.runner.get(thread.id);
+  assert.deepEqual(stillOpen.asks?.map((ask) => ask.taskId), [old.id]);
+  assert.equal(stillOpen.asksAfterJobs, undefined);
+  h.runner.send(thread.id, 'The time choice can go up while you check the schedule.');
+  await tick();
+  const newer = await emit({ needs: 'you', asks: [newAsk], askWhen: 'now' });
+  const current = h.runner.get(thread.id);
+  assert.equal(newer.carriedAsks, undefined);
+  assert.deepEqual(current.asks?.map((ask) => ask.taskId), [task(newAsk.action).id, old.id]);
+  assert.equal(current.asks?.[1]?.links?.[0]?.url, oldAsk.links[0]?.url);
+  assert.equal(current.asks?.[1]?.ticked, true);
+  assert.equal(newer.asks?.[1]?.ticked, true);
+  assert.equal(task(oldAsk.action).needsYou, true);
+  assert.deepEqual(task(oldAsk.action).source, old.source);
   assert.equal(task(newAsk.action).needsYou, true);
-  h.runner.send(thread.id, 'Town hall and Ten', [], { origin: 'phone', answers: [
-    { action: oldAsk.action, answer: 'Town hall' },
+  assert.throws(() => coordinatorMethods(c)['coordinators.answerDecision']({
+    projectId: project.id, taskId: old.id, asksSeq: first.seq, answer: 'Town hall',
+  }), /card has changed/);
+  h.runner.send(thread.id, 'Ten at the town hall', [], { origin: 'phone', answers: [
     { action: newAsk.action, answer: 'Ten' },
+    { action: oldAsk.action, answer: 'Town hall' },
   ] });
   await tick();
-  assert.equal(task(oldAsk.action).state, 'todo');
   assert.equal(task(newAsk.action).decision?.answer, 'Ten');
-  await emit({ needs: 'you', asks: [{ ...oldAsk, taskId: old.id }] });
-  assert.equal(task(oldAsk.action).needsYou, true);
-  h.runner.send(thread.id, 'A separate update');
+  assert.equal(h.runner.getReview(thread.id, review.id).review.response?.pickedId, 'T');
+  assert.equal(task(oldAsk.action).decision?.answer, 'Town hall');
+});
+
+test('a review answered during a coordinator turn is left to its queued reply', async (t) => {
+  const { c, h, project, claude, home } = setup();
+  t.after(() => c.stop());
+  const { threadId } = c.create({ projectId: project.id, accountId: 'claude-3' }).coordinator;
   await tick();
-  await emit({ needs: 'nothing' });
-  assert.equal(task(oldAsk.action).needsYou, undefined);
-  assert.equal(task(oldAsk.action).state, 'todo');
+  const source = path.join(home, 'venue.png');
+  fs.writeFileSync(source, makePng(40, 40));
+  const { review } = h.runner.createReview(threadId, { title: 'Venue', recommended: 'T', options: [
+    { id: 'T', title: 'Town hall', path: source }, { id: 'L', title: 'Library', path: source },
+  ] });
+  const tool = buildThreadbearTools(h.runner, threadId, () => h.clock.now(), undefined, undefined, undefined, {
+    coordinators: () => c, provider: 'codex', plainCardNote: false,
+  }).find(({ name }) => name === 'end_turn')!;
+  const end = async (input: Record<string, unknown>) => {
+    const session = claude.sessions.at(-1)!;
+    session.out({ kind: 'event', event: {
+      type: 'tool.call', itemId: crypto.randomUUID(), name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input,
+    } });
+    session.result('completed');
+    await tick();
+  };
+  await end({ needs: 'you', asks: [{ action: 'Which venue?', links: [{ title: 'Compare venues', url: `review:${review.id}` }] }] });
+  const task = () => c.get(project.id).taskBoard.tasks[0]!;
+  h.runner.send(threadId, 'Check the budget.', [], { origin: 'runner' });
+  await tick();
+  h.runner.respondReview(threadId, review.id, review.revision, { pickedId: 'L', notes: {} });
+  assert.equal(task().decision?.answer, undefined, 'the review reply is queued behind the running turn');
+  const input = { needs: 'nothing' };
+  const result = await tool.handler(input as never, {});
+  assert.ok(!result.isError, JSON.stringify(result));
+  await end(input);
+  assert.equal(task().decision?.answer, 'Library');
+  assert.equal(task().state, 'done');
+  assert.equal(h.runner.get(threadId).asks?.length ?? 0, 0);
+});
+
+test('a repeated subset in a background turn does not bring back the same decisions', async (t) => {
+  const { c, h, project, claude } = setup();
+  t.after(() => c.stop());
+  const { threadId } = c.create({ projectId: project.id, accountId: 'claude-3' }).coordinator;
+  await tick();
+  const day = { action: 'Which day?', options: ['Friday', 'Monday'], suggested: 0 };
+  const room = { action: 'Which room?', options: ['Blue', 'Red'], suggested: 0 };
+  const end = async (asks: typeof room[]) => {
+    const session = claude.sessions.at(-1)!;
+    session.out({ kind: 'event', event: {
+      type: 'tool.call', itemId: crypto.randomUUID(), name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn',
+      input: { needs: 'you', asks },
+    } });
+    session.result('completed');
+    await tick();
+  };
+  await end([day, room]);
+  const original = h.runner.get(threadId);
+  h.runner.tickAsk(threadId, original.asksSeq!, 0, true);
+  h.runner.markSeen(threadId, h.runner.get(threadId).lastSeq);
+  h.runner.send(threadId, 'Check the budget.', [], { origin: 'runner' });
+  await tick();
+  await end([room]);
+  const kept = h.runner.get(threadId);
+  assert.equal(kept.needsYou, false);
+  assert.deepEqual(kept.asks?.map(({ taskId, ticked }) => [taskId, ticked]), [
+    [original.asks?.[0]?.taskId, true], [original.asks?.[1]?.taskId, undefined],
+  ]);
+  const completion = h.events(threadId).findLast((event) => event.type === 'turn.completed');
+  assert.equal(completion?.carriedAsks?.seq, original.asksSeq);
+
+  h.runner.send(threadId, 'Check the arrival time.', [], { origin: 'runner' });
+  await tick();
+  assert.deepEqual(c.askProblems(threadId, [room]), []);
+  coordinatorMethods(c)['coordinators.answerDecision']({
+    projectId: project.id, taskId: kept.asks![1]!.taskId!, asksSeq: kept.asksSeq, answer: 'Red',
+  });
+  await end([room]);
+  const remaining = h.runner.get(threadId);
+  assert.deepEqual(remaining.asks?.map(({ taskId, ticked }) => [taskId, ticked]), [[original.asks?.[0]?.taskId, true]]);
+  assert.equal(remaining.needsYou, false);
+});
+
+test('an omitted decision keeps its tick until a material task edit requires a new ask', async (t) => {
+  const { c, h, project, claude } = setup();
+  t.after(() => c.stop());
+  const { threadId } = c.create({ projectId: project.id, accountId: 'claude-3' }).coordinator;
+  await tick();
+  const question = 'Which room?';
+  const end = async (input: Record<string, unknown>) => {
+    const session = claude.sessions.at(-1)!;
+    session.out({ kind: 'event', event: {
+      type: 'tool.call', itemId: crypto.randomUUID(), name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input,
+    } });
+    session.result('completed');
+    await tick();
+  };
+  await end({ needs: 'you', asks: [{ action: question, options: ['Blue', 'Red'], suggested: 0 }] });
+  const first = h.runner.get(threadId);
+  const taskId = first.asks![0]!.taskId!;
+  h.runner.tickAsk(threadId, first.asksSeq!, 0, true);
+  h.runner.markSeen(threadId, h.runner.get(threadId).lastSeq);
+  h.runner.send(threadId, 'Can you check when the venue closes?');
+  await tick();
+  c.updateBoardTask(project.id, taskId, { now: 'Closing time confirmed' });
+  await end({ needs: 'nothing' });
+  const kept = h.runner.get(threadId);
+  assert.equal(kept.asks?.[0]?.taskId, taskId);
+  assert.ok(kept.asks?.[0]?.ticked);
+  assert.equal(kept.needsYou, false);
+
+  h.runner.send(threadId, 'The blue room has sold out.');
+  await tick();
+  c.updateBoardTask(project.id, taskId, { decisionOptions: [{ label: 'Red' }, { label: 'Green' }], recommendation: 'Red' });
+  assert.equal(h.runner.get(threadId).asks?.length ?? 0, 0);
+  assert.throws(() => h.runner.send(threadId, 'Blue', [], { origin: 'phone', answers: [{ action: question, answer: 'Blue' }] }), /already handled/);
+  const tool = buildThreadbearTools(h.runner, threadId, () => h.clock.now(), undefined, undefined, undefined, {
+    coordinators: () => c, provider: 'codex', plainCardNote: false,
+  }).find(({ name }) => name === 'end_turn')!;
+  const refused = await tool.handler({ needs: 'nothing' } as never, {});
+  assert.ok(refused.isError && JSON.stringify(refused).includes(question));
+  await end({ needs: 'you', asks: [{ action: question, taskId }] });
+  const changed = h.runner.get(threadId);
+  assert.equal(changed.needsYou, true);
+  assert.deepEqual(changed.asks?.[0]?.options, ['Red', 'Green', 'Not now']);
+  assert.equal(changed.asks?.[0]?.ticked, undefined);
 });
 
 test('a re-asked comparison keeps one decision and an unrelated message leaves the review open', async (t) => {

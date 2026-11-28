@@ -3,7 +3,7 @@
 // section his own instructions ask every agent to end with. No model call:
 // the agent that did the work is the one that knows.
 
-import { sentByAgent, type Ask, type AskLink, type NeedsWho, type PersistedEvent } from './protocol.ts';
+import { sentByAgent, type Ask, type AskLink, type NeedsWho, type OpenAsk, type PersistedEvent } from './protocol.ts';
 import { hasLineBreak, replaceLinks } from './linear-text.ts';
 import { cutSafely, safeEnd } from './safe-cut.ts';
 import { MAX_NAMED_RUNS, namedRun, type NamedRun, type RunsWait } from './ci-runs.ts';
@@ -17,8 +17,19 @@ export const END_TURN_TOOL = 'end_turn';
 // here too so the adapters needn't import the server.
 export const END_TURN_FULL_NAME = `mcp__threadbear__${END_TURN_TOOL}`;
 
+// The wire card can start with some items ticked. In the live record
+// keep those separately so a later untick can clear them.
+export function openAskState(asks: OpenAsk[]): { asks: Ask[]; ticked?: number[] } {
+  const ticked: number[] = [];
+  const clean = asks.map(({ ticked: checked, ...ask }, index) => {
+    if (checked) ticked.push(index);
+    return ask;
+  });
+  return { asks: clean, ...(ticked.length ? { ticked } : {}) };
+}
+
 // Big enough for any real list; an agent that sends more is rambling.
-const MAX_ASKS = 10;
+export const MAX_ASKS = 10;
 const MAX_ACTION = 500;
 const MAX_SHORT = 200;
 // A decision with more than this many choices is better as a question.

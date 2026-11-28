@@ -856,10 +856,10 @@ reconsider and ask again with the same ID. Legacy replies keep the
 `answers: [{ action, answer }]` shape. An ordinary reply can answer a decision
 when it matches a choice on one active ask. Convex continues to mirror the
 legacy card fields. Only a reply to the current card can resolve a task through
-the legacy card route. Include every open decision that is ready to ask when
-ending the turn. The explicit Not now option postpones until 9 a.m. tomorrow.
-A linked comparison stays available through a re-ask on the same task.
-An unrelated message leaves that comparison open.
+the legacy card route. Include new or changed decisions that are ready to ask.
+The runner keeps omitted decisions on the card and in Tasks. Ask new questions
+when a job finishes if they would hold that card back. Not now postpones until
+9 a.m. tomorrow. Linked comparisons stay open across unrelated turns.
 
 `markTaskDone` marks a user-owned action done. `closeTask` confirms an
 agent-owned action that is ready to close, including a substantive question

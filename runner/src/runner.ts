@@ -94,7 +94,7 @@ import type { Models } from './models/index.ts';
 import { LATE_CHECK_LOST, LATE_CHECK_QUEUED, LATE_NEWS_KEPT_MS, localWhen } from './wake-when.ts';
 import { parseWhen } from './when.ts';
 import { SERVER_NAME } from './threadbear-mcp.ts';
-import { archiveFromTool, bylineFromTool, END_TURN_TOOL, runsFromTool, snoozeFromTool, waitForFromTool, WakeRead } from './needs.ts';
+import { archiveFromTool, bylineFromTool, END_TURN_TOOL, openAskState, runsFromTool, snoozeFromTool, waitForFromTool, WakeRead } from './needs.ts';
 import { dropsStream, replyTurn, turnNeeds, type ReplyEvent, type ReplyMove, type ReplyOut } from './reply-phase.ts';
 import { cliHears, cliOf, cliRuntime, runningSession, STALE, type CliEvent, type CliMove } from './cli-session.ts';
 import type { Needs } from './needs.ts';
@@ -3559,9 +3559,13 @@ export class Runner {
       if (prevNext.nextPick) said.nextPick = prevNext.nextPick;
       if (prevNext.nextSuggested !== undefined) said.nextSuggested = prevNext.nextSuggested;
     }
+    // A refused first end_turn can still supply the completion's card.
+    // Keep an already open card visible and leave the rejected asks for
+    // the turn that reads the background job's result.
+    const deferNewAsks = said?.afterJobs && said.asks && this.coordinators?.hasOmittedAsks(rec.id, said.asks);
     if (said) {
-      body.needs = said.needs;
-      if (said.asks) body.asks = said.asks;
+      body.needs = deferNewAsks ? 'nothing' : said.needs;
+      if (said.asks && !deferNewAsks) body.asks = said.asks;
       if (said.next) body.next = said.next;
       if (said.nextPick) body.nextPick = said.nextPick;
       if (said.nextSuggested !== undefined) body.nextSuggested = said.nextSuggested;
@@ -3570,7 +3574,7 @@ export class Runner {
     // Here rather than only in end_turn's handler: a refused end_turn
     // leaves the asks in the reply's text, and that thread never heard
     // Mike had restarted (29 Oct 2026).
-    if (said?.needs === 'you' && asksForAppRestart(said.asks)) this.appRestartAsked?.(rec.id);
+    if (!deferNewAsks && said?.needs === 'you' && asksForAppRestart(said.asks)) this.appRestartAsked?.(rec.id);
     // Review by another lab (runner/lab-review.ts): a review thread's
     // verdict is kept for the thread it reviewed (deliverReview), and the
     // turn that answers a round's findings takes the ledger to its card.
@@ -3597,16 +3601,16 @@ export class Runner {
     // Any completed turn replaces the last one's card; one that said
     // neither leaves no card, and counts as before.
     if (outcome === 'completed') {
-      if (said) {
+      if (body.needs !== undefined) {
         rec.needs = {
           seq: ev.seq,
-          needs: body.needs ?? said.needs,
-          ...(body.asks ? { asks: body.asks } : {}),
+          needs: body.needs,
+          ...(body.asks ? openAskState(body.asks) : {}),
           ...(body.carriedAsks ? { carriedFrom: body.carriedAsks.seq, ticked: body.carriedAsks.ticked } : {}),
-          ...(said.next?.length ? { next: said.next } : {}),
-          ...(said.nextPick ? { nextPick: said.nextPick } : {}),
-          ...(said.nextSuggested !== undefined ? { nextSuggested: said.nextSuggested } : {}),
-          ...this.afterJobs(st, said),
+          ...(body.next?.length ? { next: body.next } : {}),
+          ...(body.nextPick ? { nextPick: body.nextPick } : {}),
+          ...(body.nextSuggested !== undefined ? { nextSuggested: body.nextSuggested } : {}),
+          ...(said && !deferNewAsks ? this.afterJobs(st, said) : {}),
         };
       }
       // Said nothing at all (no end_turn): asks held for a job and never
@@ -5254,15 +5258,19 @@ export class Runner {
     const log = this.store.log(st.rec.id);
     if (body.type === 'turn.completed' && body.outcome === 'completed' && this.coordinators) {
       const pending = body.needs === 'you' ? body.asks ?? [] : [];
-      const carried = this.coordinators.carriedAsks(st.rec.id, pending);
-      if (carried) body.carriedAsks = { seq: carried.carriedFrom ?? carried.seq, ...(carried.ticked?.length ? { ticked: carried.ticked } : {}) };
-      const asks = this.coordinators.bindAsks(st.rec.id, pending, log.lastSeq + 1);
-      if (pending.length) {
-        if (asks.length) body.asks = asks;
-        else {
-          delete body.asks;
-          body.needs = 'nothing';
+      const { asks, carriedAsks } = this.coordinators.finishAsks(st.rec.id, pending, log.lastSeq + 1);
+      if (asks.length) {
+        body.asks = asks;
+        if (body.needs !== 'you') {
+          body.needs = 'you';
+          delete body.next;
+          delete body.nextPick;
+          delete body.nextSuggested;
         }
+        if (carriedAsks) body.carriedAsks = carriedAsks;
+      } else if (pending.length) {
+        delete body.asks;
+        body.needs = 'nothing';
       }
     }
     const event = { seq: log.lastSeq + 1, ts: this.isoNow(), threadId: st.rec.id, ...(turnId ? { turnId } : {}), ...body } as PersistedEvent;

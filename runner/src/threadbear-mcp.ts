@@ -455,11 +455,11 @@ export function buildThreadbearTools(
     return projectStepNudge(live, unansweredItems(await recentEvents(), next ?? []));
   };
 
-  const coordinatorNote = async (needs: string, asks: Ask[]): Promise<string | undefined> => {
+  const coordinatorNote = async (needs: string, asks: Ask[], afterJobs?: true): Promise<string | undefined> => {
     const desk = opts.coordinators?.();
     if (!desk?.forThread(selfId)) return undefined;
     const reviews = needs === 'nothing' ? desk.reviewsToNote(selfId) : [];
-    const gaps = desk.askProblems(selfId, needs === 'you' ? asks : [], needs === 'you');
+    const gaps = desk.askProblems(selfId, needs === 'you' ? asks : [], needs === 'you', afterJobs);
     if ((!reviews.length && !gaps.length) || (!codex && !(await replied()).landed)) return undefined;
     if (gaps.length) return `Not ended: coordinator decisions belong on the Needs you card. ${gaps.join(' ')}`;
     if (!reviews.length) return undefined;
@@ -2008,7 +2008,7 @@ export function buildThreadbearTools(
           throw new Error(plainCardNudge());
         }
         await checkJobs(input, needs, events);
-        const projectNote = (await coordinatorNote(needs, asks)) ?? (await projectStepNote(input, needs, parsed?.next, events));
+        const projectNote = (await coordinatorNote(needs, asks, parsed?.afterJobs)) ?? (await projectStepNote(input, needs, parsed?.next, events));
         if (projectNote) throw new Error(projectNote);
         let restart = '';
         if (needs === 'you' && appRestarts && asksForAppRestart(asks)) {
@@ -2158,7 +2158,7 @@ export function buildThreadbearTools(
           throw new Error(plainCardNudge());
         }
         await checkJobs(args, needs, events);
-        const projectNote = (await coordinatorNote(needs, asks ?? [])) ?? (await projectStepNote(args, needs, parsed?.next, events));
+        const projectNote = (await coordinatorNote(needs, asks ?? [], parsed?.afterJobs)) ?? (await projectStepNote(args, needs, parsed?.next, events));
         if (projectNote) throw new Error(projectNote);
         // Asking Mike to Restart to Update means wanting to know when he
         // has, to check the change in the running app: the same as
