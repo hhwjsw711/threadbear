@@ -1628,23 +1628,26 @@ export class Runner {
     rt.idleTimer?.cancel();
     rt.deltaTimer?.cancel();
     rt.ciTimer?.cancel();
+    // A shell its last turn ended waiting on has ended and the CLI is still
+    // to wake for it (a 90 s grace on OpenCode), or the runner's nudge for
+    // one waits in the queue, which recovery would clear: stopping loses
+    // either, so the next runner tells the thread, as for work the stop
+    // kills, and a done card held for it isn't settled on the waiting turn
+    // (Codex's and Gemini's review, 28 Nov 2026). Only where a nudge could
+    // go: in the Inbox, nothing else queued or left unread by Mike.
+    const nudged = Boolean(rt.nudgeTurnId && rec.queue.some((m) => m.turnId === rt.nudgeTurnId));
+    const unread = !rt.turn && (rt.wakeTimer || nudged) && this.adapters[rt.sessionProvider ?? rec.provider]?.nudgesUnreadShells ? this.unreadAwaited(st) : [];
+    const tell = (unread.length > 0 || nudged) && this.bucket(rec) === 'inbox' && !rec.interruptedMessages?.length && rec.queue.length === (nudged ? 1 : 0);
+    if (tell) {
+      const what = rt.finished.filter((t) => unread.includes(t.id)).map((t) => `${t.description || t.type} (it had finished; you hadn't read its result yet)`);
+      this.withdrawNudge(st);
+      rec.stoppedWork = { what: [...(rec.stoppedWork?.what ?? []), ...(what.length ? what : ['a background shell that had finished; you hadn\'t read its result yet'])], at: this.isoNow() };
+      this.markDirty(st);
+    }
     // A done card held back for the wake grace: no turn can come now, so
     // it finishes (a review it's due is owed to the next runner), or a
     // stop within those 15 s would leave it unfinished for good.
-    if (!rt.turn) this.settlePendingFinish(st);
-    // A shell its last turn ended waiting on has ended, and the CLI is
-    // still to wake for it (a 90 s grace on OpenCode): stopping the CLI
-    // loses that wake, so the next runner tells the thread, as for work
-    // the stop kills (Gemini's review, 28 Nov 2026).
-    if (rt.wakeTimer && !rt.turn && this.adapters[rt.sessionProvider ?? rec.provider]?.nudgesUnreadShells) {
-      const going = new Set(rt.tasks.map((t) => t.id));
-      const unread = (rt.awaitedShells ?? []).filter((id) => !going.has(id));
-      if (unread.length) {
-        const what = rt.finished.filter((t) => unread.includes(t.id)).map((t) => `${t.description || t.type} (it had finished; you hadn't read its result yet)`);
-        rec.stoppedWork = { what: [...(rec.stoppedWork?.what ?? []), ...(what.length ? what : ['a background shell that had finished; you hadn\'t read its result yet'])], at: this.isoNow() };
-        this.markDirty(st);
-      }
-    }
+    else if (!rt.turn) this.settlePendingFinish(st);
     rt.wakeTimer?.cancel();
     rt.wakeTimer = undefined;
     delete rt.awaitedShells;
@@ -2365,6 +2368,9 @@ export class Runner {
     // (runner/hibernation.ts, wakeAtTime).
     if (fromMike(text, opts)) delete rec.lateChecks;
     if (opts.origin !== 'runner') {
+      // Their message answers for the nudge, which would otherwise run
+      // after it, over its end_turn (Gemini's review, 28 Nov 2026).
+      this.withdrawNudge(st);
       rt.hookTurns = undefined;
       delete rec.stoppedWorkWakes;
       // A new ask: its change can be reviewed afresh. Not while a review's
@@ -3514,8 +3520,7 @@ export class Runner {
         // First, so a helper's run or a review's finish isn't settled on the
         // turn that was still waiting: a queued or started nudge holds both
         // back until its own turn ends (Codex's and Gemini's review, 28 Nov).
-        const going = new Set(rt.tasks.map((t) => t.id));
-        const unread = (rt.awaitedShells ?? []).filter((id) => !going.has(id));
+        const unread = this.unreadAwaited(st);
         this.pruneAwaited(st);
         if (unread.length && adapter?.nudgesUnreadShells) this.nudgeUnreadShells(st, unread.length, finished.filter((t) => unread.includes(t.id)));
         this.settlePendingFinish(st);
@@ -3538,22 +3543,45 @@ export class Runner {
   // 30 minutes and its wake came after the grace, which an update's
   // handover then took as nothing coming). STOPPED_WORK_WAKES in a row at
   // most, reset by anyone else writing to the thread.
-  private nudgeUnreadShells(st: ThreadState, count: number, ended: BackgroundTask[]): void {
+  private nudgeUnreadShells(st: ThreadState, count: number, ended: BackgroundTask[]): boolean {
     const { rec, rt } = st;
     // Not behind a message Mike's interrupted turn left unread: kickQueue
     // wouldn't start it, and it would go after his next one, stale.
-    if (this.stopping || rt.deleted || rt.turn || rec.queue.length || rec.interruptedMessages?.length || this.bucket(rec) !== 'inbox') return;
-    if (this.coordinators?.dispatchRefusal(rec.id)) return;
+    if (this.stopping || rt.deleted || rt.turn || rec.queue.length || rec.interruptedMessages?.length || this.bucket(rec) !== 'inbox') return false;
+    if (this.coordinators?.dispatchRefusal(rec.id)) return false;
     const wakes = rec.stoppedWorkWakes ?? 0;
-    if (wakes >= STOPPED_WORK_WAKES) return;
+    if (wakes >= STOPPED_WORK_WAKES) return false;
     const what = ended.map((t) => t.description || t.type);
     try {
       rec.stoppedWorkWakes = wakes + 1;
       rt.nudgeTurnId = this.sendTo(st, unreadShellsMessage(count, what, wakes + 1 >= STOPPED_WORK_WAKES), [], { origin: 'runner', queue: true, wakeReason: 'Its background shell ended' });
       this.log.info('nudged a thread whose CLI never woke for its shell', { threadId: rec.id, what });
+      return true;
     } catch (e) {
+      rec.stoppedWorkWakes = wakes;
       this.log.error('could not nudge a thread whose CLI never woke for its shell', { threadId: rec.id, error: String(e) });
+      return false;
     }
+  }
+
+  // Awaited shells (the last turn ended waiting on them) that have ended.
+  private unreadAwaited(st: ThreadState): string[] {
+    const going = new Set(st.rt.tasks.map((t) => t.id));
+    return (st.rt.awaitedShells ?? []).filter((id) => !going.has(id));
+  }
+
+  // Takes back the runner's nudge while it's still queued (the CLI woke
+  // after all, or someone else wrote), uncounted.
+  private withdrawNudge(st: ThreadState): void {
+    const { rec, rt } = st;
+    if (!rt.nudgeTurnId) return;
+    const at = rec.queue.findIndex((m) => m.turnId === rt.nudgeTurnId);
+    if (at >= 0) {
+      rec.queue.splice(at, 1);
+      if (rec.stoppedWorkWakes) rec.stoppedWorkWakes--;
+      this.markDirty(st);
+    }
+    delete rt.nudgeTurnId;
   }
 
   openCliTurn(st: ThreadState): void {
@@ -3564,14 +3592,7 @@ export class Runner {
     // The CLI woke after all: a nudge still queued for that wake would be
     // a second turn after it, and hold back its end_turn's archive or snooze
     // (Codex's and Gemini's review, 28 Nov 2026).
-    if (rt.nudgeTurnId) {
-      const at = rec.queue.findIndex((m) => m.turnId === rt.nudgeTurnId);
-      if (at >= 0) {
-        rec.queue.splice(at, 1);
-        if (rec.stoppedWorkWakes) rec.stoppedWorkWakes--;
-      }
-      delete rt.nudgeTurnId;
-    }
+    this.withdrawNudge(st);
     // What finished and woke the CLI, so the transcript can mark the wait
     // between this turn and the last one with what ended it (Mike, 3 Nov:
     // "still waiting" and "it's back" read as one breath).
@@ -4249,6 +4270,11 @@ export class Runner {
     // above can look at the thread (a handover's readiness check) and must
     // still see the work.
     this.cli(st, { kind: 'stopTasks' });
+    // A CLI that fell over in the wake grace of a shell its last turn ended
+    // waiting on: a fresh one is nudged to read it, before a held finish or
+    // helper run settles on the waiting turn (Gemini's review, 28 Nov 2026).
+    const ended = rt.finished;
+    const unread = !released && !rt.turn && rt.wakeTimer && this.adapters[rt.sessionProvider ?? rec.provider]?.nudgesUnreadShells ? this.unreadAwaited(st) : [];
     rt.finished = [];
     rt.taskEndedInTurn = false;
     delete rt.awaitedShells;
@@ -4257,8 +4283,9 @@ export class Runner {
     rt.wakeTimer?.cancel();
     rt.wakeTimer = undefined;
     // No CLI to open a turn reading a background result: a done card held
-    // back for one stands, and a helper's held turn ends its run.
-    if (!rt.turn) {
+    // back for one stands, and a helper's held turn ends its run. Not yet
+    // with a nudge to send, below, once this exit is dealt with.
+    if (!rt.turn && !unread.length) {
       this.settlePendingFinish(st);
       this.settleHelperPending(st);
     }
@@ -4374,6 +4401,10 @@ export class Runner {
       }
       this.failTurn(st, err?.message || 'The CLI stopped unexpectedly.', err instanceof SessionUsageLimitError ? 'usageLimit' : undefined);
     } else {
+      if (unread.length && !this.nudgeUnreadShells(st, unread.length, ended.filter((t) => unread.includes(t.id)))) {
+        this.settlePendingFinish(st);
+        this.settleHelperPending(st);
+      }
       this.markDirty(st);
     }
     // A CLI that exited by itself (not released) may have been all an

@@ -755,8 +755,11 @@ sends the agent a message to read the result and carry on, at most three in a
 row until someone else writes. The nudge goes before a helper's run or a
 review's finish is settled, so neither settles on the waiting turn; a draining
 runner's goes across in the queue, and keeps the thread out of Needs you
-meanwhile; a late wake of the CLI's own withdraws a nudge still queued; a stop
-during the grace leaves the shell in `stoppedWork` for the next runner to tell.
+meanwhile; a late wake of the CLI's own, or anyone else writing, withdraws a
+nudge still queued; a stop during the grace, or with the nudge still queued,
+leaves the shell in `stoppedWork` for the next runner to tell instead of
+settling a held finish; a CLI that falls over in the grace has a fresh one
+nudged.
 If no turn comes on Claude, or the nudged turn has no say either, the thread
 is Mike's as usual. Shells from an earlier turn, or left after an
 `end_turn`, don't count. The incident: 28 Nov 2026, c2df7d18, where OpenCode

@@ -67,7 +67,7 @@ test('a CLI that never wakes for its shell is nudged to read it, rather than lea
   assert.equal(t.background, undefined);
   assert.equal(s.sent.length, before + 1);
   assert.match(s.sent.at(-1)!.text, /weren't woken to read its result:\n\n- npm test/);
-  assert.equal(t.status, 'running');
+  assert.ok(t.status === 'starting' || t.status === 'running', t.status);
   assert.equal(t.needsYou, false);
   // That turn ends with nothing said either: it's Mike's after all.
   s.result('completed');
@@ -396,4 +396,52 @@ test('the runner stopping during the wake grace leaves the next one to tell the 
   const what = h.runner.threads.get(id)!.rec.stoppedWork?.what ?? [];
   assert.equal(what.length, 1);
   assert.match(what[0]!, /tb land \(it had finished; you hadn't read its result yet\)/);
+});
+
+// Round 2 of the review.
+test('Mike writing while a nudge is queued takes the nudge back', async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  await h.runner.beginDrain([id], { onHandedOver: () => {}, ready: () => false });
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(91_000);
+  await tick();
+  const st = h.runner.threads.get(id)!;
+  assert.equal(st.rec.queue.length, 1);
+  h.runner.send(id, 'Never mind that, do this instead');
+  await tick();
+  assert.deepEqual(st.rec.queue.map((m) => m.text), ['Never mind that, do this instead']);
+});
+
+test('a queued nudge the runner stops before handing over becomes stopped work for the next runner, and settles nothing', async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  await h.runner.beginDrain([id], { onHandedOver: () => {}, ready: () => false });
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(91_000);
+  await tick();
+  await h.runner.shutdown();
+  const rec = h.runner.threads.get(id)!.rec;
+  assert.equal(rec.queue.length, 0, 'not left for recovery to clear');
+  assert.equal(rec.stoppedWork?.what.length, 1);
+  assert.equal(rec.stoppedWorkWakes ?? 0, 0, 'the withdrawn nudge is uncounted; the next runner counts its own');
+});
+
+test('a CLI that falls over in the wake grace: a fresh one is nudged to read the shell', async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(10_000);
+  s.kill();
+  await tick();
+  await tick();
+  const sessions = h.adapter.sessions.filter((x) => x.opts.threadId === id);
+  const sent = sessions.flatMap((x) => x.sent.map((m) => m.text));
+  assert.match(sent.at(-1) ?? '', /weren't woken to read its result:\n\n- tb land/);
+  const t = h.runner.get(id);
+  assert.ok(t.status === 'starting' || t.status === 'running', t.status);
+  assert.equal(t.needsYou, false);
 });
