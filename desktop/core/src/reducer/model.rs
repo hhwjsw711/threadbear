@@ -2177,42 +2177,26 @@ impl TranscriptModel {
             .filter(|&p| text(turn[p]).is_some_and(|t| t.is_final))
             .map(|p| turn[p])
             .collect();
-        let reply_in_tail = |after: &[usize]| -> Vec<usize> {
-            let steps: Vec<usize> = after
-                .iter()
-                .copied()
-                .filter(|&k| {
-                    matches!(self.items[k].content, RowContent::User(_))
-                        || Self::is_real_step(&self.items[k])
-                })
-                .collect();
-            let last_result = steps
-                .iter()
-                .filter_map(|&k| self.result_seqs.get(&self.items[k].id).copied())
-                .max()
-                .unwrap_or(i64::MIN);
-            let last_step = steps.last().copied();
-            let words: Vec<usize> = after
-                .iter()
-                .copied()
-                .filter(|&k| {
-                    text(k).is_some_and(|t| !t.is_summary && !t.is_narration)
-                        && last_step.is_none_or(|last| k > last)
-                        && self.items[k].seq > last_result
-                })
-                .collect();
-            if !words.is_empty() {
-                words
-            } else {
-                after
-                    .iter()
-                    .rev()
-                    .find(|&&k| text(k).is_some_and(|t| !t.is_summary))
-                    .copied()
-                    .into_iter()
-                    .collect()
+        // Keep an earlier part's bullets summary visible above a steered
+        // non-runner user message too (unless that part already has a final
+        // reply after it).
+        if fresh > 0
+            && matches!(
+                &self.items[turn[fresh - 1]].content,
+                RowContent::User(u) if !u.is_from_runner()
+            )
+        {
+            if let Some(last_summary_pos) = (0..fresh)
+                .rev()
+                .find(|&p| text(turn[p]).is_some_and(|t| t.is_summary))
+            {
+                let superseded = (last_summary_pos + 1..fresh)
+                    .any(|p| text(turn[p]).is_some_and(|t| t.is_final));
+                if !superseded {
+                    out.insert(turn[last_summary_pos]);
+                }
             }
-        };
+        }
         let fresh_finals: Vec<usize> = (end..turn.len())
             .filter(|&p| text(turn[p]).is_some_and(|t| t.is_final))
             .collect();
@@ -2226,7 +2210,7 @@ impl TranscriptModel {
                 .iter()
                 .any(|&k| text(k).is_some_and(|t| !t.is_summary))
             {
-                out.extend(reply_in_tail(after));
+                out.extend(self.reply_in_tail(after));
             }
             return out;
         }
@@ -2271,17 +2255,40 @@ impl TranscriptModel {
             let has_step_after = after_summary
                 .iter()
                 .any(|&k| Self::is_real_step(&self.items[k]));
-            // A queued CLI part (or later work) that ran steps after a bullets
-            // summary writes its own reply after its last step; keep both the
-            // summary and that reply visible instead of letting the length rule
-            // hide it or sweeping in pre-tool commentary.
-            if has_step_after
-                && after_summary
-                    .iter()
-                    .any(|&k| text(k).is_some_and(|t| !t.is_summary))
+            let has_steered_user = turn
+                .iter()
+                .filter(|&&k| matches!(self.items[k].content, RowContent::User(_)))
+                .count()
+                > 1;
+            // Under Claude's accepted bullets end_turn ("Noted: this thread..."),
+            // reply-phase drops any single-part trailing text (unless it's a
+            // longer owed reply), whereas Codex's "Noted. Now write your final
+            // answer." lets its own trailing "Done." through. So when a steered
+            // user message is present, trailing text after an accepted bullets
+            // summary (or a second message after Codex's sign-off, or any text
+            // after a tool step) is Part 2's reply and stays visible alongside
+            // Part 1's summary instead of being hidden by the length rule.
+            let accepted_bullets = end < turn.len()
+                && matches!(
+                    &self.items[turn[end]].content,
+                    RowContent::Tool(tool)
+                        if tool.result.as_ref().is_some_and(|r| r.text.starts_with("Noted: this thread"))
+                );
+            let after_texts: Vec<usize> = after_summary
+                .iter()
+                .copied()
+                .filter(|&k| text(k).is_some_and(|t| !t.is_summary))
+                .collect();
+            if !after_texts.is_empty()
+                && (has_step_after
+                    || (has_steered_user && (accepted_bullets || after_texts.len() >= 2)))
             {
                 out.insert(summary);
-                out.extend(reply_in_tail(after_summary));
+                if has_step_after || accepted_bullets {
+                    out.extend(self.reply_in_tail(after_summary));
+                } else if let Some(&last_reply) = after_texts.last() {
+                    out.insert(last_reply);
+                }
                 return out;
             }
             // A narration block is only a paraphrase, so it never beats the bullets.
@@ -2337,6 +2344,44 @@ impl TranscriptModel {
             out.insert(k);
         }
         out
+    }
+
+    fn reply_in_tail(&self, after: &[usize]) -> Vec<usize> {
+        let steps: Vec<usize> = after
+            .iter()
+            .copied()
+            .filter(|&k| {
+                matches!(self.items[k].content, RowContent::User(_))
+                    || Self::is_real_step(&self.items[k])
+            })
+            .collect();
+        let last_result = steps
+            .iter()
+            .filter_map(|&k| self.result_seqs.get(&self.items[k].id).copied())
+            .max()
+            .unwrap_or(i64::MIN);
+        let last_step = steps.last().copied();
+        let words: Vec<usize> = after
+            .iter()
+            .copied()
+            .filter(|&k| {
+                self.text_item(k)
+                    .is_some_and(|t| !t.is_summary && !t.is_narration)
+                    && last_step.is_none_or(|last| k > last)
+                    && self.items[k].seq > last_result
+            })
+            .collect();
+        if !words.is_empty() {
+            words
+        } else {
+            after
+                .iter()
+                .rev()
+                .find(|&&k| self.text_item(k).is_some_and(|t| !t.is_summary))
+                .copied()
+                .into_iter()
+                .collect()
+        }
     }
 
     fn text_item(&self, k: usize) -> Option<&TextItem> {

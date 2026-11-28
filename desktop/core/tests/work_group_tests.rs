@@ -1383,4 +1383,114 @@ fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
         folded.row("a:m2").is_none(),
         "short sign-off after folded steer still folds"
     );
+
+    // Direct Part 2 reply with no tool calls after Claude's accepted bullets summary stays visible.
+    let direct_claude = from_events(vec![
+        user(1, "Start the dev server"),
+        started(2),
+        event_turn(
+            3,
+            "user.message",
+            json!({"text": "What port is it running on?"}),
+            Some("t1"),
+        ),
+        end_turn_call(4, "e1"),
+        result_text(5, "e1", "Noted: this thread is done.").with_turn("t1"),
+        event_turn(
+            6,
+            "assistant.text",
+            json!({"itemId": "e1.summary", "text": "- Started the dev server with detailed verification across all packages.", "summary": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            7,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Port 3000."}),
+            Some("t1"),
+        ),
+        done(8),
+    ]);
+    assert!(
+        direct_claude.row("a:e1.summary").is_some(),
+        "Part 1 summary stays visible"
+    );
+    assert!(
+        direct_claude.row("a:m2").is_some(),
+        "short direct Part 2 answer without tools stays visible"
+    );
+
+    // Direct Part 2 reply with no tool calls after Codex's bullets summary and Part 1's "Done." sign-off.
+    let direct_codex = from_events(vec![
+        user(1, "Start the dev server"),
+        started(2),
+        event_turn(3, "user.message", json!({"text": "What port?"}), Some("t1")),
+        end_turn_call(4, "e1"),
+        result_text(5, "e1", "Noted. Now write your final answer.").with_turn("t1"),
+        event_turn(
+            6,
+            "assistant.text",
+            json!({"itemId": "e1.summary", "text": "- Started the dev server with full checks.", "summary": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            7,
+            "assistant.text",
+            json!({"itemId": "m1", "text": "Done."}),
+            Some("t1"),
+        ),
+        event_turn(
+            8,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Port 5173."}),
+            Some("t1"),
+        ),
+        done(9),
+    ]);
+    assert!(
+        direct_codex.row("a:e1.summary").is_some(),
+        "Part 1 Codex summary stays visible"
+    );
+    assert!(
+        direct_codex.row("a:m1").is_none(),
+        "Part 1 Codex sign-off stays folded"
+    );
+    assert!(
+        direct_codex.row("a:m2").is_some(),
+        "Part 2 direct answer stays visible"
+    );
+
+    // Steered message arriving after Part 1's bullets summary keeps both the earlier summary and Part 2's reply.
+    let steered_after_summary = from_events(vec![
+        user(1, "First request"),
+        started(2),
+        end_turn_call(3, "e1"),
+        result_text(4, "e1", "Noted: this thread is done.").with_turn("t1"),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "e1.summary", "text": "- First part finished.", "summary": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            6,
+            "user.message",
+            json!({"text": "Also check staging"}),
+            Some("t1"),
+        ),
+        event_turn(
+            7,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Staging failed; fix it?"}),
+            Some("t1"),
+        ),
+        done(8),
+    ]);
+    assert!(
+        steered_after_summary.row("a:e1.summary").is_some(),
+        "Part 1 bullets summary stays visible above the steered message"
+    );
+    assert!(
+        steered_after_summary.row("a:m2").is_some(),
+        "Part 2 answer stays visible below the steered message"
+    );
 }
