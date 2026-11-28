@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { openCardEvents, phoneCommands, primaryRemote, runnerAlive, ThreadRouter } from '../../src/handover.ts';
+import { openCardEvents, phoneCommands, primaryRemote, runnerAlive, ThreadRouter, type PeerClient } from '../../src/handover.ts';
 import type { PersistedEvent } from '../../src/protocol.ts';
 import { FakeAccounts, FakeAdapter, makeHarness, testConfig, tick, type Harness } from '../helpers/fakes.ts';
 import { skipOnWindows } from '../helpers/platform.ts';
@@ -719,7 +719,7 @@ for (const failure of ['connect', 'hello', 'list', 'subscribe']) test(`Peers: st
         onNotification: () => () => {},
         waitClosed: () => new Promise<void>(() => {}),
         close: () => { closed++; },
-      } as any;
+      } as unknown as PeerClient;
     },
   });
   try {
@@ -764,7 +764,7 @@ function recordingLog() {
   return { lines, log: { info: at('info'), warn: at('warn'), error: at('error'), debug: () => {} } };
 }
 
-function fakePeer(opts: { hello?: () => Promise<unknown>; threads?: string[]; notify?: (fn: (m: string, p: any) => void) => void } = {}) {
+function fakePeer(opts: { hello?: () => Promise<unknown>; threads?: string[]; notify?: (fn: (m: string, p: unknown) => void) => void } = {}) {
   let closed = 0;
   const threads = opts.threads ?? ['t-old'];
   const client = {
@@ -773,7 +773,7 @@ function fakePeer(opts: { hello?: () => Promise<unknown>; threads?: string[]; no
       if (method === 'threads.list') return { threads: threads.map((id) => ({ id, title: id, lastActivityAt: '' })) };
       return {};
     },
-    onNotification: (fn: (m: string, p: any) => void) => (opts.notify?.(fn), () => {}),
+    onNotification: (fn: (m: string, p: unknown) => void) => (opts.notify?.(fn), () => {}),
     waitClosed: () => new Promise<never>(() => {}),
     close: () => void closed++,
   };
@@ -793,7 +793,7 @@ test('Peers: a retry that then works reports nothing to Sentry; giving up report
       sweep: async () => {},
       connect: async () => {
         if (++attempts < 3 || !works) throw new Error("The runner didn't prove itself in time.");
-        return fakePeer().client as any;
+        return fakePeer().client as unknown as PeerClient;
       },
     });
     if (works) await peers.connectAll();
@@ -815,7 +815,7 @@ test('Peers: the startup deadline covers a setup call that never answers, and cl
     home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 100,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async (p) => void swept.push(p),
-    connect: async () => stuck.client as any,
+    connect: async () => stuck.client as unknown as PeerClient,
   });
   const started = Date.now();
   await assert.rejects(peers.connectAll(), /still alive/);
@@ -835,11 +835,11 @@ test('Peers: a connect that never finishes is bounded too, and closed if it fini
     home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 50,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async () => {},
-    connect: () => new Promise((r) => { finish = r; }) as any,
+    connect: () => new Promise<PeerClient>((r) => { finish = r as (c: unknown) => void; }),
   });
   await assert.rejects(peers.connectAll(), /still alive/);
   finish(late.client);
-  await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 100 && late.closed() === 0; i++) await tick();
   assert.equal(late.closed(), 1);
 });
 
@@ -867,7 +867,7 @@ test('Peers: a thread handed over while startup waits on another runner is taken
     const h = makeHarness();
     writeDrainInfo(h.home, { pid: 424266, port: 1, version: 'old', since: new Date().toISOString(), threads: ['t-a'] });
     writeDrainInfo(h.home, { pid: 424267, port: 2, version: 'old', since: new Date().toISOString(), threads: ['t-b'] });
-    let notifyA: (m: string, p: any) => void = () => {};
+    let notifyA: (m: string, p: unknown) => void = () => {};
     const a = fakePeer({ threads: ['t-a'], notify: (fn) => { notifyA = fn; } });
     const adopted: string[] = [];
     let triesB = 0;
@@ -876,11 +876,11 @@ test('Peers: a thread handed over while startup waits on another runner is taken
       runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} },
       sweep: async () => {},
       connect: async (port) => {
-        if (port === 1) return a.client as any;
+        if (port === 1) return a.client as unknown as PeerClient;
         // A hands its thread over while B is still being tried.
         if (++triesB === 1) notifyA('drain.handedOver', { threadId: 't-a' });
         if (!reached || triesB < 3) throw new Error('no answer');
-        return fakePeer({ threads: ['t-b'] }).client as any;
+        return fakePeer({ threads: ['t-b'] }).client as unknown as PeerClient;
       },
     });
     if (reached) {
@@ -906,13 +906,13 @@ test("Peers: a thread handed over to a failed attempt isn't taken in from it", a
     runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async () => {},
     connect: async () => {
-      if (++attempts > 1) return fakePeer({ threads: ['t-old'] }).client as any;
-      let notify: (m: string, p: any) => void = () => {};
+      if (++attempts > 1) return fakePeer({ threads: ['t-old'] }).client as unknown as PeerClient;
+      let notify: (m: string, p: unknown) => void = () => {};
       const first = fakePeer({ threads: ['t-old', 't-gone'], notify: (fn) => { notify = fn; } });
       return { ...first.client, call: async (m: string) => {
         if (m === 'threads.subscribe') { notify('drain.handedOver', { threadId: 't-gone' }); throw new Error('no answer'); }
         return first.client.call(m);
-      } } as any;
+      } } as unknown as PeerClient;
     },
   });
   assert.deepEqual([...(await peers.connectAll())], ['t-old']);
