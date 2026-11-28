@@ -278,7 +278,10 @@ test('stop cancels recurring check timer and blocks later queued checks', async 
   assert.equal(checks, 1);
 });
 
-test('realExec succeeds even when the process working directory was deleted', async () => {
+// Windows refuses to delete a process's working directory (EBUSY), so a deleted cwd can't happen there.
+const cwdDeletable = { skip: process.platform === 'win32' && 'Windows cannot delete the working directory' };
+
+test('realExec succeeds even when the process working directory was deleted', cwdDeletable, async () => {
   const prev = process.cwd();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-missing-cwd-'));
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-run-cwd-'));
@@ -295,7 +298,7 @@ test('realExec succeeds even when the process working directory was deleted', as
   }
 });
 
-test('SignInState resolves a relative claudePath at startup before cwd can be deleted', async () => {
+test('SignInState resolves a relative claudePath at startup before cwd can be deleted', cwdDeletable, async () => {
   const prev = process.cwd();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-rel-cli-'));
   const work = path.join(root, 'work');
