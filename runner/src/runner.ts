@@ -3808,9 +3808,6 @@ export class Runner {
         // Since the helper's check: a new turn, Mike has looked, or it's
         // to archive once the threads it started are done.
         if (later && (rt.turn || rec.lastSeenSeq >= rec.lastTurnCompletedSeq || rt.quietOnceChildrenDone !== undefined)) return;
-        // Waiting on a shell it started: the turn that reads it is the one
-        // that's Mike's (Codex's review, round 3).
-        if (this.awaitingShells(st, rec.needs?.seq === rec.lastTurnCompletedSeq)) return;
         rec.forceUnread = true;
         this.markDirty(st);
       };
