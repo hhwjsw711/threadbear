@@ -268,7 +268,7 @@ export const hibernationPart = {
   // waiting on another's report could only end as done, in the inbox.
   // `askedBy`: its access when its agent asked to wait (end_turn), if it
   // has more now, as `by` is the less of the two.
-  waitOn(this: Runner, st: ThreadState, waits: WaitFor[], when: string | undefined, askedBy?: Authority): void {
+  waitOn(this: Runner, st: ThreadState, waits: WaitFor[], when: string | undefined, askedBy?: Authority): boolean {
     const { rec } = st;
     const list: { threadId: string; title: string; until?: string }[] = [];
     const skipped: string[] = [];
@@ -290,7 +290,7 @@ export const hibernationPart = {
     }
     if (!list.length) {
       this.emit(st, { type: 'system.note', text: `Not hibernated: none of the threads it was to wait on (${ids.join(', ')}) are here and still going.` });
-      return;
+      return false;
     }
     const now = this.clock.now();
     let until: string | undefined;
@@ -305,7 +305,7 @@ export const hibernationPart = {
     this.update({ threadId: rec.id, snoozedUntil: until, noted: true });
     const by = leastAuthority(askedBy, this.authorityNow(rec.id));
     // Refused only if it has woken already (its time passed meanwhile).
-    if (!this.park(st, { kind: 'waitOn', waits: list.map((x) => ({ ...x, by })) })) return;
+    if (!this.park(st, { kind: 'waitOn', waits: list.map((x) => ({ ...x, by })) })) return false;
     this.markDirty(st);
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const also = skipped.length ? ` (${skipped.join(', ')} isn't a thread here that's still going, so it isn't waited on.)` : '';
@@ -316,6 +316,7 @@ export const hibernationPart = {
     // One waited on for something may have done it already, and had its
     // look before this wait was there to be judged: one more look.
     for (const x of list) if (x.until && this.threads.has(x.threadId)) this.tellActivity({ kind: 'waited-on', threadId: x.threadId });
+    return rec.waitingOn?.some((wait) => !wait.done) ?? false;
   },
 
   // A review of this thread's change has started (runner/lab-review.ts):

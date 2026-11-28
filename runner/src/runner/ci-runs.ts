@@ -125,7 +125,7 @@ export const ciRunsPart = {
   // runs are over, a day at most (or the snooze time), then wakes with how
   // each went. Before this an agent waiting on CI booked a schedule with a
   // shell check, and each raised a card the phone couldn't allow (24 Nov 2026).
-  waitRuns(this: Runner, st: ThreadState, wait: RunsWait, when: string | undefined): void {
+  waitRuns(this: Runner, st: ThreadState, wait: RunsWait, when: string | undefined): boolean {
     const { rec } = st;
     // Picks up this turn's pushes first.
     this.kickCiRuns(st);
@@ -138,7 +138,7 @@ export const ciRunsPart = {
       this.emit(st, { type: 'system.note', text: 'Not hibernated: none of this thread\'s GitHub workflow runs are queued or running.' });
       const latest = state.runs.slice(0, 5).map((r) => `- ${r.workflow}: ${r.status} ${r.url}`).join('\n');
       this.sendTo(st, `You asked to hibernate until this thread's GitHub workflow runs finish, but Threadbear isn't watching any that are queued or running${latest ? `. The latest it saw:\n${latest}` : ''}.\n\nIf the run is one this thread didn't start, end the turn again with waitForRuns naming it (its link, or { run, repo }). Otherwise carry on.`, [], { origin: 'runner', queue: true });
-      return;
+      return false;
     }
     let until: string | undefined;
     if (when && !['restart', 'release'].includes(when.toLowerCase())) {
@@ -150,12 +150,13 @@ export const ciRunsPart = {
     }
     if (!until || Date.parse(until) <= now) until = new Date(now + WAIT_FOR_DEFAULT_MS).toISOString();
     this.update({ threadId: rec.id, snoozedUntil: until, noted: true });
-    if (!this.park(st, { kind: 'forRuns', keys })) return;
+    if (!this.park(st, { kind: 'forRuns', keys })) return false;
     this.markDirty(st);
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     this.emit(st, { type: 'system.note', text: `Hibernating until its GitHub workflows finish, or ${localWhen(Date.parse(until), timeZone)} at the latest.` });
     // A named run needs a look booked: it came from no push.
     if (!st.rt.ciTimer && !st.rt.ciChecking) st.rt.ciTimer = this.clock.setTimeout(() => void this.checkCiRuns(st), FIRST_LOOK_MS);
+    return true;
   },
 
   // Wakes a thread whose awaited runs are all over, with how each went.

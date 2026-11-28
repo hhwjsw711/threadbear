@@ -2419,15 +2419,24 @@ export class Coordinators {
       return;
     }
     if (event.type !== 'turn.completed') return;
-    if (!['completed', 'failed'].includes(event.outcome)) return;
+    const { outcome, turnId } = event;
+    if (outcome !== 'completed' && outcome !== 'failed') return;
     const thread = this.deps.host.has(threadId) ? this.deps.host.get(threadId) : this.deps.elsewhere?.(threadId);
     if (!thread) return;
+    const turn = this.deps.host.threads.get(threadId)?.rt.turn;
+    const report = () => this.projectTurnFinished(thread, turnId, outcome);
+    if (turn?.turnId === turnId && turn.projectReport) turn.projectReport.ifNotWaiting = report;
+    else report();
+  }
+
+  private projectTurnFinished(thread: ThreadSummary, turnId: string, outcome: 'completed' | 'failed'): void {
+    const { id: threadId } = thread;
     for (const row of this.rows.values()) {
       const matches = thread.projects?.some((p) => p.id === row.projectId) || row.interests.some((interest) => `${thread.title}\n${thread.preview}`.toLowerCase().includes(interest.toLowerCase()));
       if (!matches) continue;
-      const key = `${threadId}:${event.turnId}`;
+      const key = `${threadId}:${turnId}`;
       if (row.seen.includes(key) || row.events.some((e) => e.key === key)) continue;
-      row.events.push({ key, text: JSON.stringify({ source: 'project thread', threadId, title: thread.title, outcome: event.outcome, summary: thread.preview.slice(0, 2000) }) });
+      row.events.push({ key, text: JSON.stringify({ source: 'project thread', threadId, title: thread.title, outcome, summary: thread.preview.slice(0, 2000) }) });
       this.changed(row);
     }
   }

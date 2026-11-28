@@ -979,9 +979,9 @@ wake timers and interrupts its CLI. Resume reconciles interrupted work. If a
 runner is stopping or handing over, refusals say to wait for the runner to come
 back. A disabled coordinator feature is reported separately. Pause does
 not pause independent threads that the coordinator messages. Completion/failure
-events from project threads and matching interest keywords are deduplicated and
-batched for ten minutes; progress does not wake it. An explicit timer or a helper
-question wakes it without that batch delay. Sources remain quoted event data.
+events from project threads and matching interest keywords batch for ten minutes and are deduplicated.
+Local turns parked on other threads or workflow runs and helper progress do not wake it.
+An explicit timer or helper question wakes it without batching. Sources remain quoted event data.
 
 Queued coordinator updates survive runner recovery. An update already started
 has a durable receipt; a still-queued update remains queued rather than becoming

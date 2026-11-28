@@ -388,6 +388,9 @@ export type Turn = {
   // An end_turn of either form was taken (endTurnTaken): ended is only the
   // one-reply form's, and Codex's bullets form says "Noted. Now write".
   tookEndTurn?: boolean;
+  // Only for a project event from a turn asking to wait for other work.
+  // The coordinator can defer its report until the runner tries that wait.
+  projectReport?: { ifNotWaiting?: () => void };
   lastText?: string;
   // The agent's latest end_turn call, and whether one was accepted since
   // Mike last wrote. Text after that is dropped: end_turn has already told
@@ -3788,6 +3791,9 @@ export class Runner {
         this.markDirty(st);
       }
     }
+    if (said?.needs === 'nothing' && (turn.endTurn?.waitFor !== undefined || turn.endTurn?.waitForRuns !== undefined)) {
+      turn.projectReport = {};
+    }
     const ev = this.emit(st, body, turn.turnId);
     // Any completed turn replaces the last one's card; one that said
     // neither leaves no card, and counts as before.
@@ -3975,8 +3981,9 @@ export class Runner {
       this.emit(st, { type: 'system.note', text: 'Archived, as the agent was asked to once it had finished.' });
       this.update({ threadId: rec.id, archived: true, archivedBy: 'agent', noted: true });
     }
-    if (waitFor && !rt.turn && !rec.archivedAt && !this.stopping) this.waitOn(st, waitFor, snooze, turn.endTurnBy);
-    else if (forRuns && !rt.turn && !rec.archivedAt && !this.stopping) this.waitRuns(st, forRuns, snooze);
+    let waitingOnProjectWork = false;
+    if (waitFor && !rt.turn && !rec.archivedAt && !this.stopping) waitingOnProjectWork = this.waitOn(st, waitFor, snooze, turn.endTurnBy);
+    else if (forRuns && !rt.turn && !rec.archivedAt && !this.stopping) waitingOnProjectWork = this.waitRuns(st, forRuns, snooze);
     else if (snooze && !rt.turn && !rec.archivedAt && !this.stopping) this.snoozeAfterTurn(st, snooze, turn.endTurnBy, turn.wakeCheck);
     else if (forApp && !rt.turn && !rec.archivedAt && !this.stopping) {
       this.emit(st, { type: 'system.note', text: 'Hibernating until the Threadbear app restarts onto the new build, a day at most.' });
@@ -3985,6 +3992,16 @@ export class Runner {
       // it under Running, as its work isn't over until Mike's running it.
       this.park(st, { kind: 'forApp' });
       this.markDirty(st);
+    }
+    // Other threads or workflow runs still going keep this turn out of the
+    // project event batch. A refused, empty or already-settled wait leaves
+    // a normal report, with the preview captured when the turn ended.
+    if (turn.projectReport?.ifNotWaiting && !waitingOnProjectWork) {
+      try {
+        turn.projectReport.ifNotWaiting();
+      } catch (e) {
+        this.log.error('could not report a completed project turn', { threadId: rec.id, error: String(e) });
+      }
     }
     // The check a wake gave it (runner/hibernation.ts, wakeToCheck) is over
     // and it hasn't gone back to sleep: what it waited for has happened, or

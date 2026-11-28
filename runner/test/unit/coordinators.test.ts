@@ -1704,6 +1704,111 @@ test('a user timer earlier than a pending event batch takes precedence and deliv
   c.stop();
 });
 
+function finishProjectTurn(session: FakeAdapter['last'], input: Record<string, unknown>, outcome: 'completed' | 'failed' = 'completed', accepted = true): void {
+  session.out({ kind: 'event', event: { type: 'tool.call', itemId: 'end', name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input } });
+  session.out({ kind: 'event', event: { type: 'tool.result', itemId: 'end', ok: accepted, text: accepted ? 'Noted: this thread is done. Now write your reply.' : 'The requested wait is invalid.', truncated: false, images: [] } });
+  session.result(outcome);
+}
+
+test('a project thread waiting on its workflow reports the result after the workflow ends', async () => {
+  const { c, h, claude, project } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  const other = h.runner.create({ text: 'Check stock', accountId: 'claude-3', projectIds: [project.id] }).thread;
+  await tick();
+  const session = claude.last;
+  const row = c.forThread(coordinator.threadId)!;
+  // Watch a named run. The fake clock never reaches the external lookup.
+  finishProjectTurn(session, { needs: 'nothing', waitForRuns: ['https://github.com/shop/stock/actions/runs/42'] });
+  assert.equal(h.runner.get(other.id).awaitingRuns, true);
+  assert.equal(row.events.length, 0, 'an accepted live wait is progress');
+  assert.ok(h.events(other.id).some((event) => event.type === 'turn.completed' && event.outcome === 'completed'));
+
+  const state = h.runner.mustGet(other.id);
+  state.rec.ciRuns!.watches[0]!.done = true;
+  h.runner.settleRunsWait(state);
+  await tick();
+  assert.equal(h.runner.get(other.id).awaitingRuns, undefined);
+  claude.last.text('result', 'The workflow finished and the stock count is up to date.');
+  claude.last.result();
+  assert.equal(row.events.length, 1);
+  assert.match(row.events[0]!.text, /stock count is up to date/);
+  c.stop();
+});
+
+test('a settled or refused project wait and an explicit ask still report to the coordinator', async () => {
+  const { c, h, claude, project } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  const child = h.runner.create({ text: 'Inspect stock', accountId: 'claude-3' }).thread;
+  await tick();
+  const childSession = claude.last;
+  const other = h.runner.create({ text: 'Check stock', accountId: 'claude-3', projectIds: [project.id] }).thread;
+  await tick();
+  const session = () => claude.sessions.findLast((candidate) => candidate.opts.threadId === other.id)!;
+  const row = c.forThread(coordinator.threadId)!;
+  finishProjectTurn(session(), { needs: 'nothing', waitFor: [child.id] });
+  assert.equal(h.runner.get(other.id).waitingOn?.[0]?.threadId, child.id);
+  assert.equal(row.events.length, 0);
+
+  finishProjectTurn(childSession, { needs: 'nothing' });
+  await tick();
+  assert.equal(h.runner.get(other.id).waitingOn, undefined);
+  // An already-finished thread wakes this one immediately; it was never
+  // left waiting. A request for its own runs also has nothing to wait on.
+  finishProjectTurn(session(), { needs: 'nothing', waitFor: [child.id] });
+  assert.equal(row.events.length, 1);
+  await tick();
+  finishProjectTurn(session(), { needs: 'nothing', waitForRuns: true });
+  assert.equal(h.runner.get(other.id).awaitingRuns, undefined);
+  assert.equal(row.events.length, 2);
+  await tick();
+  finishProjectTurn(session(), { needs: 'nothing', waitForRuns: true }, 'completed', false);
+  assert.equal(row.events.length, 3);
+
+  const asking = h.runner.create({ text: 'Plan the next stock count', accountId: 'claude-3', projectIds: [project.id] }).thread;
+  await tick();
+  finishProjectTurn(claude.last, { needs: 'you', asks: [{ question: 'Update the stock list?' }], waitForRuns: true });
+  assert.equal(row.events.length, 4);
+  assert.equal(h.runner.get(asking.id).asks?.length, 1);
+
+  h.runner.create({ text: 'Rerun stock count', accountId: 'claude-3', projectIds: [project.id] });
+  await tick();
+  finishProjectTurn(claude.last, { needs: 'nothing', waitFor: [child.id] }, 'failed');
+  assert.equal(row.events.length, 5);
+  assert.match(row.events[4]!.text, /"outcome":"failed"/);
+  c.stop();
+});
+
+test('an empty project wait still reports when an automatic review takes over', async () => {
+  const { c, h, claude, project } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  const review = h.runner.create({ text: 'Review stock changes', accountId: 'claude-3' }).thread;
+  const other = h.runner.create({ text: 'Update the stock list', accountId: 'claude-3', projectIds: [project.id] }).thread;
+  await tick();
+  h.runner.startLabReview = (st) => st.rec.id === other.id ? [review.id] : undefined;
+  const session = claude.sessions.find((candidate) => candidate.opts.threadId === other.id)!;
+  finishProjectTurn(session, { needs: 'nothing', waitFor: [] });
+  assert.equal(h.runner.get(other.id).waitingOn?.[0]?.threadId, review.id);
+  assert.equal(c.forThread(coordinator.threadId)!.events.length, 1);
+  c.stop();
+});
+
+test('a fallback explicit wait uses the same project report rule if it really parks', async () => {
+  const { c, h, claude, project } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
+  await tick();
+  const other = h.runner.create({ text: 'Check stock', accountId: 'claude-3', projectIds: [project.id] }).thread;
+  await tick();
+  // The runner can still act on the first end_turn's parsed fields after
+  // a refusal. The project observes whether it parked, like any wait.
+  finishProjectTurn(claude.last, { needs: 'nothing', waitForRuns: ['https://github.com/shop/stock/actions/runs/42'] }, 'completed', false);
+  assert.equal(h.runner.get(other.id).awaitingRuns, true);
+  assert.equal(c.forThread(coordinator.threadId)!.events.length, 0);
+  c.stop();
+});
+
 test('pause and resume rearms a scheduled check without a later project update', async () => {
   const { c, h, project } = setup();
   const { coordinator } = c.create({ projectId: project.id, accountId: 'claude-3' });
