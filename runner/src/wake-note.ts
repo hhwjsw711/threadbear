@@ -22,8 +22,9 @@ export function wakeNote(t: Parameters<typeof longNote>[0], scrub?: (text: strin
   return cutSafely(scrub ? scrub(note) : note, WAKE_NOTE_MAX, '…');
 }
 
-function longNote(t: Pick<ThreadSummary, 'waitingOn' | 'wakeWhen' | 'snoozedUntil' | 'snoozedUntilRestart' | 'snoozedUntilRelease'>): string | undefined {
+function longNote(t: Pick<ThreadSummary, 'waitingOn' | 'wakeWhen' | 'awaitingRuns' | 'snoozedUntil' | 'snoozedUntilRestart' | 'snoozedUntilRelease'>): string | undefined {
   if (!t.snoozedUntil) return undefined;
+  if (t.awaitingRuns) return 'its GitHub workflows finish';
   const left = (t.waitingOn ?? []).filter((w) => !w.done);
   if (left.length) {
     if (left.every((w) => !w.until)) return `${left.map((w) => `"${w.title}"`).join(left.length === 2 ? ' and ' : ', ')} ${left.length === 1 ? 'finishes' : 'finish'}`;

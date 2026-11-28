@@ -152,6 +152,7 @@ pub(crate) struct RowFlags {
     pub edited_open: bool,
     pub all_pinned: bool,
     pub all_links: bool,
+    pub all_runs: bool,
     pub all_commits: bool,
     pub all_subagents: bool,
     pub all_started: bool,
@@ -165,6 +166,7 @@ impl RowFlags {
         match which {
             "pinned" => &mut self.all_pinned,
             "links" => &mut self.all_links,
+            "runs" => &mut self.all_runs,
             "commits" => &mut self.all_commits,
             "subagents" => &mut self.all_subagents,
             _ => &mut self.all_started,
@@ -2456,6 +2458,32 @@ impl SidePane {
             .into_any_element()
     }
 
+    /// A GitHub Actions run: its status as the icon, green when it passed and
+    /// red when it failed, the workflow, then branch, commit and when. Opens
+    /// the run on GitHub.
+    fn run_row(&mut self, run: &core::CiRun, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let color = match run.status.as_str() {
+            "passed" => Some(style::added_text(cx)),
+            "failed" => Some(p.status_failed),
+            _ => None,
+        };
+        let word = run.word();
+        let (url, url2) = (run.url.clone(), run.url.clone());
+        PaneRow::new(
+            SharedString::from(format!("hl-row-runs-{}", run.id)),
+            run.workflow.clone(),
+        )
+        .icon(run.symbol())
+        .tinted(color)
+        .trailing((!word.is_empty()).then(|| word.to_owned()))
+        .detail(Some(run.detail(now_ms())).filter(|d| !d.is_empty()))
+        .tip(run.tip())
+        .on_click(move |this, _window, cx| this.follow_link(&url, cx))
+        .on_menu(move |this, pos, window, cx| this.open_link_row_menu(&url2, pos, window, cx))
+        .render(p, cx)
+        .into_any_element()
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "baselined at 395 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
@@ -2824,6 +2852,40 @@ impl SidePane {
                     list = list.child(self.show_all_row(
                         "links",
                         sections.links.len(),
+                        thread.id.clone(),
+                        p,
+                        cx,
+                    ));
+                }
+            }
+        }
+        // GitHub Actions runs its pushes, dispatches and re-runs set off,
+        // between Links and Changes.
+        if !sections.runs.is_empty() {
+            let folded = self.is_folded(fold::RUNS);
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::RUNS.to_owned(),
+                    title: "Runs".into(),
+                    icon: Some(icon("play.circle", 11., p.secondary).into_any_element()),
+                    count: Some(sections.runs.len()),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
+            if !folded {
+                let (shown, _) =
+                    HighlightSections::capped(&sections.runs, core::RUN_LIMIT, flags.all_runs);
+                for run in shown {
+                    list = list.child(self.run_row(run, p, cx));
+                }
+                if sections.runs.len() > core::RUN_LIMIT {
+                    list = list.child(self.show_all_row(
+                        "runs",
+                        sections.runs.len(),
                         thread.id.clone(),
                         p,
                         cx,
@@ -3482,6 +3544,7 @@ impl SidePane {
             ("files", s.files.len()),
             ("links", s.links.len()),
             ("prs", s.prs.len()),
+            ("runs", s.runs.len()),
             ("commits", s.commits.len()),
             ("edited", s.edited.len()),
         ] {
@@ -3771,6 +3834,19 @@ impl SidePane {
                 rows.push(json!({ "title": HighlightSections::show_all_label(sections.links.len(), flags.all_links), "symbol": "ellipsis" }));
             }
             add(fold::LINKS, "Links", sections.links.len(), rows, &mut out);
+        }
+        if !sections.runs.is_empty() {
+            let (shown, _) =
+                HighlightSections::capped(&sections.runs, core::RUN_LIMIT, flags.all_runs);
+            let now = now_ms();
+            let mut rows: Vec<Value> = shown
+                .iter()
+                .map(|r| json!({ "title": r.workflow, "trailing": Some(r.word()).filter(|w| !w.is_empty()), "detail": Some(r.detail(now)).filter(|d| !d.is_empty()), "symbol": r.symbol() }))
+                .collect();
+            if sections.runs.len() > core::RUN_LIMIT {
+                rows.push(json!({ "title": HighlightSections::show_all_label(sections.runs.len(), flags.all_runs), "symbol": "ellipsis" }));
+            }
+            add(fold::RUNS, "Runs", sections.runs.len(), rows, &mut out);
         }
         if !sections.commits.is_empty() || !sections.edited.is_empty() {
             let (shown, _) =

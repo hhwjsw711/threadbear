@@ -65,15 +65,15 @@ import type { WakeWhen } from './wake-when.ts';
 export const FAR_OFF = '9999-12-31T00:00:00.000Z';
 
 export const PLACE_FIELDS = [
-  'snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'snoozedByAgent',
+  'snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'waitingOnRuns', 'snoozedByAgent',
   'snoozedAt', 'woke', 'wakeChecked', 'archivedAt', 'archivedBy', 'archiveVerdict', 'unarchivedBySchedule', 'keptOut',
 ] as const;
 export type PlaceField = (typeof PLACE_FIELDS)[number];
 export type PlaceFields = Pick<ThreadRecord, PlaceField>;
 
 // The fields that make up a sleep, which every end of one clears.
-const SLEEP_FIELDS = ['snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'snoozedByAgent'] as const;
-type SleepDetail = Pick<ThreadRecord, 'snoozedUntilRestart' | 'untilRelease' | 'wakeWhen' | 'waitingOn' | 'hibernatedForApp' | 'snoozedByAgent'>;
+const SLEEP_FIELDS = ['snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'waitingOnRuns', 'snoozedByAgent'] as const;
+type SleepDetail = Pick<ThreadRecord, 'snoozedUntilRestart' | 'untilRelease' | 'wakeWhen' | 'waitingOn' | 'hibernatedForApp' | 'waitingOnRuns' | 'snoozedByAgent'>;
 export type Wait = NonNullable<ThreadRecord['waitingOn']>[number];
 
 export type SleepFor =
@@ -84,6 +84,8 @@ export type SleepFor =
   | { kind: 'words'; wakeWhen: WakeWhen }
   | { kind: 'threads'; waitingOn: Wait[] }
   | { kind: 'app' }
+  // GitHub workflow runs: the keys of the ci-runs watches it waits on.
+  | { kind: 'runs'; keys: string[] }
   // Fields together that no move writes: kept as found.
   | { kind: 'odd'; fields: SleepDetail };
 
@@ -119,6 +121,7 @@ export type PlaceEvent =
   | { kind: 'wordsFailed'; said: string }
   | { kind: 'waitOn'; waits: Wait[] }
   | { kind: 'forApp' }
+  | { kind: 'forRuns'; keys: string[] }
   | { kind: 'checked'; threadId: string; seq: number }
   | { kind: 'wake' }
   | { kind: 'message'; fromSchedule: boolean; fromMike: boolean }
@@ -157,7 +160,7 @@ export function placeOf(rec: PlaceFields): Place {
 }
 
 function sleepFor(rec: PlaceFields): SleepFor {
-  const has = (['snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'snoozedByAgent'] as const).filter((k) => rec[k] !== undefined);
+  const has = (['snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'waitingOnRuns', 'snoozedByAgent'] as const).filter((k) => rec[k] !== undefined);
   const only = (...ks: string[]) => has.length > 0 && has.every((k) => ks.includes(k));
   if (!has.length) return { kind: 'time' };
   if (only('snoozedByAgent') && rec.snoozedByAgent === true) return { kind: 'time', by: 'agent' };
@@ -167,6 +170,7 @@ function sleepFor(rec: PlaceFields): SleepFor {
   if (only('wakeWhen') && isObject(rec.wakeWhen)) return { kind: 'words', wakeWhen: rec.wakeWhen };
   if (only('waitingOn') && Array.isArray(rec.waitingOn)) return { kind: 'threads', waitingOn: rec.waitingOn };
   if (only('hibernatedForApp') && rec.hibernatedForApp === true) return { kind: 'app' };
+  if (only('waitingOnRuns') && Array.isArray(rec.waitingOnRuns)) return { kind: 'runs', keys: rec.waitingOnRuns };
   const fields: SleepDetail = {};
   for (const k of has) (fields as Record<string, unknown>)[k] = rec[k];
   return { kind: 'odd', fields };
@@ -204,6 +208,9 @@ export function placeFields(place: Place): { [K in PlaceField]: PlaceFields[K] |
         break;
       case 'app':
         out.hibernatedForApp = true;
+        break;
+      case 'runs':
+        out.waitingOnRuns = f.keys;
         break;
       case 'odd':
         Object.assign(out, f.fields);
@@ -283,10 +290,11 @@ export function movePlace(place: Place, e: PlaceEvent, now: number): PlaceMove {
       if (!pendingWords(place, e.said)) return no('it was woken or put away again while its words were read');
       return ok(withSleep(place, undefined, marks));
     case 'waitOn':
-    case 'forApp': {
+    case 'forApp':
+    case 'forRuns': {
       const sleep = place.kind === 'inbox' ? undefined : place.sleep;
       if (!sleep || sleep.for.kind !== 'time') return no('it has no sleep until a time to wait in');
-      const f: SleepFor = e.kind === 'waitOn' ? { kind: 'threads', waitingOn: e.waits } : { kind: 'app' };
+      const f: SleepFor = e.kind === 'waitOn' ? { kind: 'threads', waitingOn: e.waits } : e.kind === 'forRuns' ? { kind: 'runs', keys: e.keys } : { kind: 'app' };
       return ok({ ...place, sleep: { until: sleep.until, for: f } } as Place);
     }
     case 'checked': {

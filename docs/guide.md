@@ -1185,6 +1185,12 @@ From the top, and only when there's something to show:
   review, the thread snoozes for a day. A thread on Auto can turn the wand
   on for its own PRs.
 - **Links**: web pages it opened or mentioned.
+- **Runs**: GitHub Actions workflow runs its pushes, `gh workflow run`
+  dispatches and `gh run rerun` calls set off, each queued, running,
+  passed or failed. Click one to open it on GitHub. An agent can also
+  pass `waitForRuns` to `end_turn` to hibernate until its GitHub workflows
+  finish (staying under Running as "Until its GitHub workflows finish")
+  and wake with each run's result and link.
 - **Changes**: its commits, and a line such as "4 files edited" that
   opens to the code it changed.
 

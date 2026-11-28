@@ -292,6 +292,7 @@ export type ThreadSummary = {
   wakeWhen?: { said: string; topic?: string; pending?: true; agent?: true };
   waitingOn?: { threadId: string; title: string; until?: string; done?: true }[]; // hibernating until these finish (or do `until`)
   awaitingAppRestart?: true; // hibernating until the Mac app restarts onto what this thread landed
+  awaitingRuns?: true; // hibernating until GitHub workflow runs finish (end_turn's waitForRuns)
   awaitingApp?: { commit?: string; short?: string }; // waiting to hear the app restarted onto this commit (wait_for_app_restart), for the Updates panel
   woke?: { at: string; since?: string }; // woke from hibernating by itself, not looked at yet
   onOldRunner?: boolean; // finishing a turn on a runner that handed over (Handovers)

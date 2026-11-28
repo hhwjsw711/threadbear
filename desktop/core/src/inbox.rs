@@ -126,6 +126,10 @@ pub struct ThreadSummary {
     /// (wait_for_app_restart): its work isn't over until he's running it.
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub awaiting_app_restart: Option<bool>,
+    /// Hibernating until GitHub workflow runs finish (end_turn's
+    /// waitForRuns): its work isn't over until they have.
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub awaiting_runs: Option<bool>,
     /// Waiting to hear the app restarted onto a build with this commit
     /// (wait_for_app_restart), hibernating or not: the Updates panel lists
     /// it with whether the build on its way has it.
@@ -527,6 +531,7 @@ impl ThreadSummary {
             return false;
         }
         self.awaiting_app_restart == Some(true)
+            || self.awaiting_runs == Some(true)
             || self
                 .waiting_on
                 .iter()
@@ -1710,11 +1715,15 @@ mod tests {
             5,
             json!({ "snoozedUntil": "2026-11-07T00:00:00Z", "archivedAt": "2026-11-06T09:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] }),
         );
-        let all = [waiting, heard, for_app, asleep, archived];
+        let for_runs = thread(
+            7,
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "awaitingRuns": true }),
+        );
+        let all = [waiting, heard, for_app, asleep, archived, for_runs];
         let s = sections(&all, now());
         assert_eq!(
             ids(&s, "running"),
-            ["t3", "t1"],
+            ["t7", "t3", "t1"],
             "still at its job, so not hibernating (newest first)"
         );
         assert_eq!(

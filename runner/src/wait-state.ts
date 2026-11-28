@@ -115,6 +115,7 @@ export type WaitInputs = {
   wakeWhen?: { topic?: string; agent?: true };
   waitingOn?: { done?: true }[];
   awaitingAppRestart?: true;
+  awaitingRuns?: true;
   looseEnds?: { ends: { kind: string }[] };
   waitingForRoom?: unknown;
   archivedAt?: string;
@@ -135,7 +136,7 @@ export function waitStateOf(t: WaitInputs, opts: { now: number; scheduled: boole
   if (snoozed) {
     if (t.waitingOn?.some((w) => !w.done)) return 'onThreads';
     if (t.awaitingAppRestart) return 'appRestart';
-    if (waitingToLand(t)) return 'landing';
+    if (t.awaitingRuns || waitingToLand(t)) return 'landing';
     return 'hibernating';
   }
   const turn = t.status === 'running' || t.status === 'starting';

@@ -223,6 +223,9 @@ type ThreadSummary = {
                         // what this thread landed (wait_for_app_restart);
                         // only while snoozedUntil is set. With an unfinished
                         // waitingOn, the sidebar puts it under Running.
+  awaitingRuns?: true   // hibernating until GitHub workflow runs finish
+                        // (end_turn's waitForRuns); only while snoozedUntil
+                        // is set. Under Running as "Until its GitHub workflows finish".
   awaitingApp?: { commit?, short? } // waiting to hear the app restarted onto
                         // a build with this commit (wait_for_app_restart),
                         // hibernating or not, and under a day old; {} when

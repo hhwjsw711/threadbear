@@ -141,6 +141,8 @@ pub struct ThreadHighlights {
     pub highlights: Vec<Highlight>,
     pub edited: Vec<String>,
     pub brief: Option<String>,
+    /// GitHub Actions runs it set off, newest first.
+    pub runs: Vec<CiRun>,
 }
 
 impl ThreadHighlights {
@@ -167,6 +169,98 @@ impl ThreadHighlights {
                 .and_then(|b| b.get("text"))
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            runs: value
+                .get("runs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(CiRun::decode)
+                .collect(),
+        }
+    }
+}
+
+/// A GitHub Actions run a thread's push or `gh workflow run` set off
+/// (docs/protocol/panels.md, "Highlights", Runs).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CiRun {
+    pub id: String,
+    pub workflow: String,
+    /// queued, running, passed, failed, cancelled or skipped; anything else
+    /// is from a newer runner and drawn plain, with no word.
+    pub status: String,
+    pub url: String,
+    pub sha: String,
+    pub branch: Option<String>,
+    pub event: Option<String>,
+    pub at_ms: Option<i64>,
+}
+
+impl CiRun {
+    /// One with no id or url is skipped: there'd be nothing to open.
+    pub fn decode(value: &Value) -> Option<CiRun> {
+        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+        let id = text("id").filter(|s| !s.is_empty())?;
+        let url = text("url").filter(|s| !s.is_empty())?;
+        Some(CiRun {
+            id,
+            url,
+            workflow: text("workflow")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Workflow".into()),
+            status: text("status").unwrap_or_default(),
+            sha: text("sha").unwrap_or_default(),
+            branch: text("branch").filter(|s| !s.is_empty()),
+            event: text("event"),
+            at_ms: text("at").as_deref().and_then(parse_ms),
+        })
+    }
+
+    /// The word at the end of its row; empty for a status this app doesn't know.
+    pub fn word(&self) -> &'static str {
+        match self.status.as_str() {
+            "queued" => "Queued",
+            "running" => "Running",
+            "passed" => "Passed",
+            "failed" => "Failed",
+            "cancelled" => "Cancelled",
+            "skipped" => "Skipped",
+            _ => "",
+        }
+    }
+
+    /// The SF Symbol for its status.
+    pub fn symbol(&self) -> &'static str {
+        match self.status.as_str() {
+            "queued" => "circle",
+            "running" => "circle.dashed",
+            "passed" => "checkmark.circle",
+            "failed" => "xmark.circle",
+            "cancelled" => "minus.circle",
+            _ => "arrow.uturn.right.circle",
+        }
+    }
+
+    /// "feat · a1b2c3d · 4m ago": its branch, commit and when it started.
+    pub fn detail(&self, now_ms: i64) -> String {
+        let mut bits: Vec<String> = vec![];
+        if let Some(branch) = &self.branch {
+            bits.push(branch.clone());
+        }
+        if !self.sha.is_empty() {
+            bits.push(self.sha.clone());
+        }
+        if let Some(at) = self.at_ms {
+            bits.push(run_ago(at, now_ms));
+        }
+        bits.join(" · ")
+    }
+
+    /// The row's tooltip.
+    pub fn tip(&self) -> String {
+        match self.word() {
+            "" => "Open the run on GitHub".into(),
+            word => format!("{word}. Click to open the run on GitHub."),
         }
     }
 }
@@ -273,6 +367,7 @@ pub fn run_ago(at_ms: i64, now_ms: i64) -> String {
 /// fifteen commits, which pushed Files and Links off screen.
 pub const COMMIT_LIMIT: usize = 5;
 pub const LINK_LIMIT: usize = 10;
+pub const RUN_LIMIT: usize = 5;
 pub const SUBAGENT_LIMIT: usize = 5;
 /// Pins come newest first and are never dropped, so a long thread's list
 /// grew past the screen (Ville, 23 Nov 2026); the rest wait behind Show all.
@@ -290,6 +385,7 @@ pub mod fold {
     pub const FILES: &str = "files";
     pub const PRS: &str = "prs";
     pub const LINKS: &str = "links";
+    pub const RUNS: &str = "runs";
     pub const CHANGES: &str = "changes";
 
     pub fn project(id: &str) -> String {
@@ -307,6 +403,8 @@ pub struct HighlightSections {
     pub links: Vec<Highlight>,
     /// Pull requests, after `split_prs`.
     pub prs: Vec<Highlight>,
+    /// GitHub Actions runs, newest first.
+    pub runs: Vec<CiRun>,
     pub commits: Vec<Highlight>,
     /// Edited files not already listed as a pin or a file.
     pub edited: Vec<String>,
@@ -337,6 +435,7 @@ impl HighlightSections {
                 }
             }
         }
+        out.runs = highlights.runs.clone();
         let listed: HashSet<&str> = out
             .pinned
             .iter()
@@ -370,6 +469,7 @@ impl HighlightSections {
             && self.files.is_empty()
             && self.links.is_empty()
             && self.prs.is_empty()
+            && self.runs.is_empty()
             && self.commits.is_empty()
             && self.edited.is_empty()
     }
@@ -2482,6 +2582,33 @@ mod tests {
         );
         assert_eq!(HighlightSections::show_all_label(9, false), "Show all 9");
         assert_eq!(HighlightSections::show_all_label(9, true), "Show fewer");
+    }
+
+    #[test]
+    fn runs_decode_tolerantly_and_show_between_links_and_changes() {
+        let decoded = ThreadHighlights::decode(&json!({"highlights": [], "edited": [], "runs": [
+            {"id": "run:2", "workflow": "CI", "status": "failed", "url": "https://github.com/o/r/actions/runs/2", "sha": "a1b2c3d", "branch": "feat", "event": "push", "at": "2026-11-12T10:00:00Z"},
+            {"id": "run:1", "workflow": "Lint", "status": "warping", "url": "https://github.com/o/r/actions/runs/1", "sha": "a1b2c3d", "new": 1},
+            {"id": "run:0", "workflow": "No url"}
+        ]}));
+        assert_eq!(
+            decoded
+                .runs
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run:2", "run:1"],
+            "the one without a url is skipped"
+        );
+        assert_eq!(decoded.runs[0].word(), "Failed");
+        assert_eq!(
+            decoded.runs[1].word(),
+            "",
+            "a status from a newer runner has no word"
+        );
+        let sections = HighlightSections::build(&decoded);
+        assert_eq!(sections.runs.len(), 2);
+        assert!(!sections.is_empty());
     }
 
     #[test]

@@ -29,6 +29,7 @@ import { workTaskEditShape } from './coordinator-task-edits.ts';
 import { COORDINATOR_THREADBEAR_TOOLS, COORDINATOR_WORKER_PROMPT, HELPER_THREADBEAR_TOOLS } from './coordinator-policy.ts';
 import { parseWhen, relativeFuture, relativeTime } from './when.ts';
 import { SAID_MAX } from './wake-when.ts';
+import { MAX_NAMED_RUNS, namedRun } from './ci-runs.ts';
 
 export { parseWhen, relativeFuture, relativeTime };
 import { RUNNER_VERSION, expandHome } from './config.ts';
@@ -428,10 +429,10 @@ export function buildThreadbearTools(
     markNoted('jobs', events);
     throw new Error(jobsNudge(jobs));
   };
-  const projectStepNote = async (input: { archive?: unknown; snooze?: unknown; waitFor?: unknown }, needs: string, next: string[] | undefined, events: PersistedEvent[]): Promise<string | undefined> => {
+  const projectStepNote = async (input: { archive?: unknown; snooze?: unknown; waitFor?: unknown; waitForRuns?: unknown }, needs: string, next: string[] | undefined, events: PersistedEvent[]): Promise<string | undefined> => {
     if (opts.coordinators?.()?.forThread(selfId)) return undefined;
     if (opts.projectStepNote === false || needs !== 'nothing' || !projects) return undefined;
-    if (input.archive === true || snoozeFromTool({ ...input, needs: 'nothing' }) || (Array.isArray(input.waitFor) && input.waitFor.length) || alreadyNoted('project', events, projectStepNudged(events))) return undefined;
+    if (input.archive === true || snoozeFromTool({ ...input, needs: 'nothing' }) || (Array.isArray(input.waitFor) && input.waitFor.length) || (input.waitForRuns !== undefined && input.waitForRuns !== false) || alreadyNoted('project', events, projectStepNudged(events))) return undefined;
     if (appRestarts?.isWatching(selfId)) return undefined;
     // Nor when it has done what the note asks, and something will run it
     // again: a background job or sub-agent of its own still going, or a
@@ -1815,12 +1816,13 @@ export function buildThreadbearTools(
 
   // Active project coordinators stay awake: refuse archive, snooze and
   // waitFor in end_turn so the agent sees why and ends normally instead.
-  const checkCoordinatorStayAwake = (input: { archive?: unknown; snooze?: unknown; waitFor?: unknown }): void => {
+  const checkCoordinatorStayAwake = (input: { archive?: unknown; snooze?: unknown; waitFor?: unknown; waitForRuns?: unknown }): void => {
     if (!opts.coordinators?.()?.isActive(selfId)) return;
     const hasSnooze = typeof input.snooze === 'string' && input.snooze.trim().length > 0;
     const hasWaitFor = Array.isArray(input.waitFor) && input.waitFor.length > 0;
-    if (input.archive === true || hasSnooze || hasWaitFor) {
-      throw new Error('Not ended: an active project coordinator stays awake and cannot be archived or hibernated. Leave archive, snooze and waitFor out of end_turn (use coordinator action update with wakeAt for a timed follow-up).');
+    const hasWaitForRuns = input.waitForRuns === true || (Array.isArray(input.waitForRuns) && input.waitForRuns.length > 0);
+    if (input.archive === true || hasSnooze || hasWaitFor || hasWaitForRuns) {
+      throw new Error('Not ended: an active project coordinator stays awake and cannot be archived or hibernated. Leave archive, snooze, waitFor and waitForRuns out of end_turn (use coordinator action update with wakeAt for a timed follow-up).');
     }
   };
 
@@ -1866,6 +1868,21 @@ export function buildThreadbearTools(
     .max(MAX_FINDINGS)
     .optional()
     .describe('Only when a code review asks, in the shape its message gives.');
+
+  // waitForRuns is checked before the turn ends too: a run it can't read is
+  // said to the agent (runner/ci-runs.ts, namedRun).
+  const checkWaitForRuns = (w: unknown, needs: string): void => {
+    if (w === undefined || w === false || (Array.isArray(w) && !w.length)) return;
+    if (needs !== 'nothing') throw new Error('Not ended: waitForRuns hibernates this thread, so it only goes with needs "nothing". Leave it out while the user has something to do.');
+    for (const x of Array.isArray(w) ? w : []) {
+      const n = namedRun(x);
+      if (typeof n === 'string') throw new Error(`Not ended: in waitForRuns, ${n} Give a run's link, its id, or { run, repo: "owner/name" }.`);
+    }
+  };
+  const waitForRunsArg = z
+    .union([z.literal(true), z.array(z.union([z.string(), z.object({ run: z.union([z.string(), z.number()]), repo: z.string().optional() })])).max(MAX_NAMED_RUNS)])
+    .optional()
+    .describe('Hibernates until GitHub Actions runs finish, then wakes you with each result and link: true for this thread\'s own (its pushes, gh workflow run, gh run rerun), or run links or { run, repo: "owner/name" }. snooze is the latest (1 day if left out). Needs "nothing". Use it to wait on CI, not a schedule.');
 
   const waitForArg = z
     .array(z.union([z.string(), z.object({ thread: z.string(), until: z.string().max(MAX_UNTIL) })]))
@@ -1952,6 +1969,7 @@ export function buildThreadbearTools(
           .describe('Hibernates this thread once the turn is over, until 2h, 1d, tomorrow, an ISO time with its offset, "restart" (the runner next starting), "release" (it starting on a new release) or words saying when ("when the phone arrives"), with needs "nothing": when the user asked for that, or when the rest waits on a message (one wakes it), until it should have come. It only brings the thread back, it doesn\'t run you: for a step of your own later, use schedule_message. Except words for something to happen ("until X ships"): those wake you with a turn to check. Asked after you called end_turn? Call it again with this.'),
         askWhen: askWhenArg,
         waitFor: waitForArg,
+        waitForRuns: waitForRunsArg,
         findings: findingsArg,
       },
       handle(sayingOpenCards(async (input) => {
@@ -1960,6 +1978,7 @@ export function buildThreadbearTools(
         const parsed = needsFromTool(input);
         const needs = parsed?.needs ?? 'nothing';
         await checkWaitFor(input.waitFor, needs);
+        checkWaitForRuns(input.waitForRuns, needs);
         const asks = parsed?.asks ?? [];
         const events = await turnEvents();
         // Before anything that could take the call: a refusal of any kind
@@ -2076,12 +2095,14 @@ export function buildThreadbearTools(
           .describe('Hibernate this thread once the turn is over, until 30m, 2h, 1d, tomorrow, an ISO time with its offset, "restart" (until the runner next starts), "release" (until it starts on a new release), or words saying when ("when the phone arrives"). Only with needs "nothing": when the user has asked for this thread to be snoozed or hibernated, or when the rest waits on a message (one wakes it), until it should have come. It only brings the thread back, it doesn\'t run you: for a step of your own later, use schedule_message. Except words for something to happen ("until X ships"): those wake you with a turn to check. If they ask after you have called end_turn, call it again with this.'),
         askWhen: askWhenArg,
         waitFor: waitForArg,
+        waitForRuns: waitForRunsArg,
         findings: findingsArg,
       },
       handle(sayingOpenCards(async (args) => {
         checkCoordinatorStayAwake(args);
         checkSnooze(args.snooze);
         await checkWaitFor(args.waitFor, needsFromTool(args)?.needs ?? 'nothing');
+        checkWaitForRuns(args.waitForRuns, needsFromTool(args)?.needs ?? 'nothing');
         // Archive wins over snooze in the runner, so only one is said.
         const { archive: archived } = args;
         const archive = archived || Boolean(args.snooze?.trim());

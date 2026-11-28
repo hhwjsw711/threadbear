@@ -965,7 +965,7 @@ that isn't archived):
 | `working` | Running | A turn is running or starting. |
 | `job` | Running | No turn, a background job or (for a project coordinator) a helper still going, and nothing asked of Mike that it isn't still working on. |
 | `onThreads` | Running | Its agent put it away to hear back from other threads (`waitingOn`). |
-| `landing` | Running | Its agent put it away until something it watches for, with commits not on main. |
+| `landing` | Running | Its agent put it away until something it watches for, with commits not on main, or until GitHub workflow runs finish (`awaitingRuns`). |
 | `appRestart` | Running | Its agent put it away until the app restarts onto what it landed (`awaitingAppRestart`). |
 | `sending` | Running | Only an app's own guess while a message is on its way; never sent. |
 | `card` | Inbox | Stuck on a card only Mike can answer. First in every order. |

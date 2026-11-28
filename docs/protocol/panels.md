@@ -36,6 +36,7 @@ type ThreadHighlights = {
                         // at most 200
   brief?: { text: string; at: string } // the librarian's line on where
                         // the thread is up to (see Projects)
+  runs?: CiRun[]        // GitHub Actions runs its pushes, dispatches or re-runs set off
 }
 ```
 

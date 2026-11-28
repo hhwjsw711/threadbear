@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { PersistedEvent } from './protocol.ts';
 import { replaceLinks, trimEndOf } from './linear-text.ts';
+import type { CiRun } from './ci-runs.ts';
 import { isLocalPath } from './platform.ts';
 
 export type HighlightKind = 'file' | 'link' | 'pr' | 'commit';
@@ -30,6 +31,9 @@ export type Highlight = {
   sha?: string;
   branch?: string;
   pushed?: true;
+  pushedAt?: string; // commit: when that push was
+  repo?: string; // commit: owner/name, from the push's "To" line, on GitHub
+  dir?: string; // commit: the folder the push ran in, when not the thread's
   watched?: true; // pr: its auto-fix wand is on (pr-watch.ts); set on the way out, never kept
   seq: number;
   lastSeq: number;
@@ -40,6 +44,8 @@ export type ThreadHighlights = {
   highlights: Highlight[];
   edited: string[];
   brief?: { text: string; at: string };
+  // GitHub Actions runs the thread set off, newest first (ci-runs.ts).
+  runs?: CiRun[];
 };
 
 // Kept on the thread record.
@@ -51,7 +57,13 @@ export type HighlightState = {
   // Command calls whose result matters (git commit, git push, gh pr
   // create), by itemId, until their tool.result comes.
   pending?: Record<string, { command: string }>;
+  // Workflows started with `gh workflow run` or `gh run rerun`, for the Runs
+  // section (ci-runs.ts). Not shown as highlights.
+  dispatches?: Dispatch[];
 };
+
+export type Dispatch = { seq: number; workflow: string; ref?: string; repo?: string; runId?: number; at: string };
+const DISPATCHES_KEPT = 20;
 
 export const HIGHLIGHTS_KEPT = 80;
 export const EDITED_KEPT = 200;
@@ -108,7 +120,7 @@ export function observe(state: HighlightState, events: Iterable<PersistedEvent>,
               if (isFile(abs)) add({ id: `file:${abs}`, kind: 'file', title: path.basename(abs), path: abs, how: 'opened', seq: e.seq }, e);
             }
           }
-          if (gitRuns(input.command, 'commit') || gitRuns(input.command, 'push') || /\bgh\s+pr\s+create\b/.test(input.command)) {
+          if (gitRuns(input.command, 'commit') || gitRuns(input.command, 'push') || /\bgh\s+pr\s+create\b/.test(input.command) || /\bgh\s+(?:workflow\s+run|run\s+rerun)\b/.test(input.command)) {
             (state.pending ??= {})[e.itemId] = { command: input.command };
           }
         }
@@ -136,14 +148,26 @@ export function observe(state: HighlightState, events: Iterable<PersistedEvent>,
             add(item, e);
           }
         }
+        if (e.ok) {
+          const d = dispatchOf(call.command, text);
+          if (d) {
+            state.dispatches = [...(state.dispatches ?? []), { ...d, seq: e.seq, at: e.ts }].slice(-DISPATCHES_KEPT);
+            changed = true;
+          }
+        }
         if (gitRuns(call.command, 'push') && e.ok) {
           const branches = new Set([...pushedBranches(text), ...pushArgBranches(call.command)]);
+          const repo = pushedRepo(text);
+          const dir = pushDir(call.command, ctx.cwd, home);
           for (const item of state.items) {
             if (item.kind !== 'commit' || item.pushed) continue;
             // A push whose branch can't be told (`git push -q`) sends what
             // the thread has just committed, near enough.
             if (!branches.size || !item.branch || branches.has(item.branch)) {
               item.pushed = true;
+              item.pushedAt = e.ts;
+              if (repo) item.repo = repo;
+              if (dir && dir !== ctx.cwd) item.dir = dir;
               item.lastSeq = e.seq;
               changed = true;
             }
@@ -189,7 +213,8 @@ export function upsert(state: HighlightState, h: Highlight): boolean {
 export function view(state: HighlightState, brief?: { text: string; at: string }): ThreadHighlights {
   const pins = state.items.filter((h) => h.how === 'pinned').sort((a, b) => b.seq - a.seq);
   const rest = state.items.filter((h) => h.how !== 'pinned').sort((a, b) => b.lastSeq - a.lastSeq);
-  const out: ThreadHighlights = { highlights: [...pins, ...rest].map(({ ...h }) => h), edited: [...state.edited] };
+  // `dir` is the runner's own, for ci-runs.ts.
+  const out: ThreadHighlights = { highlights: [...pins, ...rest].map(({ dir: _dir, ...h }) => h), edited: [...state.edited] };
   if (brief) out.brief = brief;
   return out;
 }
@@ -476,10 +501,91 @@ export function pushArgBranches(command: string): string[] {
 // cubic in a push's output of newlines (64 KB of them is hours). No line
 // break of any kind in that space, as `^` starts again after each one (a
 // \r, U+2028 and U+2029 too), and each start would scan the rest of the run.
+// The GitHub repo a push went to, from git's "To <remote>" line.
+export function pushedRepo(text: string): string | undefined {
+  const m = /^To (?:https:\/\/(?:[^@\s/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([\w.-]+\/[\w.-]+?)(?:\.git)?\/?\s*$/m.exec(text);
+  return m?.[1];
+}
+
+// A `gh workflow run <workflow> [--ref x] [-R owner/repo]` that worked: the
+// workflow, and the run's id when gh printed its URL.
+// A `gh run rerun <id or url> [-R owner/repo]` is followed by that run's
+// id, with no workflow.
+export function dispatchOf(command: string, text: string): Omit<Dispatch, 'seq' | 'at'> | undefined {
+  const rerun = /\bgh\s+run\s+rerun\b(.*)/.exec(command);
+  if (rerun) return rerunOf(rerun[1]);
+  const m = /\bgh\s+workflow\s+run\s+(.*)/.exec(command);
+  if (!m) return undefined;
+  const words = (m[1].split(/\s*(?:&&|\|\||;|\||\n)/)[0].match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^(["'])(.*)\1$/, '$2'));
+  let workflow: string | undefined;
+  const out: Omit<Dispatch, 'seq' | 'at' | 'workflow'> = {};
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const flag = /^(--ref|-r|--repo|-R)(?:=(.*))?$/.exec(w);
+    if (flag) {
+      const v = flag[2] ?? words[++i];
+      if (!v) break;
+      if (flag[1] === '--ref' || flag[1] === '-r') out.ref = v;
+      else if (/^[\w.-]+\/[\w.-]+$/.test(v)) out.repo = v;
+    } else if (/^-[fF]$|^--(?:field|raw-field|json)$/.test(w)) i++;
+    else if (w.startsWith('-')) continue;
+    else workflow ??= w;
+  }
+  if (!workflow) return undefined;
+  const run = /github\.com\/([\w.-]+\/[\w.-]+)\/actions\/runs\/(\d+)/.exec(text);
+  if (run) {
+    out.runId = Number(run[2]);
+    out.repo ??= run[1];
+  }
+  return { workflow, ...out };
+}
+
+function rerunOf(rest: string): Omit<Dispatch, 'seq' | 'at'> | undefined {
+  const words = rest.split(/\s*(?:&&|\|\||;|\||\n)/)[0].match(/\S+/g) ?? [];
+  let runId: number | undefined;
+  let repo: string | undefined;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const flag = /^(--repo|-R|--job|-j)(?:=(.*))?$/.exec(w);
+    if (flag) {
+      const v = flag[2] ?? words[++i];
+      if ((flag[1] === '--repo' || flag[1] === '-R') && v && /^[\w.-]+\/[\w.-]+$/.test(v)) repo = v;
+      continue;
+    }
+    const url = /github\.com\/([\w.-]+\/[\w.-]+)\/actions\/runs\/(\d+)/.exec(w);
+    if (url) {
+      runId ??= Number(url[2]);
+      repo ??= url[1];
+    } else if (/^\d+$/.test(w)) runId ??= Number(w);
+  }
+  if (!runId) return undefined;
+  return repo ? { workflow: '', runId, repo } : { workflow: '', runId };
+}
+
 export function pushedBranches(text: string): string[] {
   const out = new Set<string>();
   for (const m of text.matchAll(/^[^\S\n\r\u2028\u2029]*(?:[+*][^\S\n\r\u2028\u2029]*)?(?:[0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40}|\[new branch\])\s+(\S+)\s+->\s+\S+/gm)) out.add(m[1]!);
   return [...out];
+}
+
+// The folder a command's first `git push` ran in, when the command says:
+// `git -C dir push`, or a `cd dir` before it. Undefined when it doesn't, or
+// names it with a variable.
+export function pushDir(command: string, cwd: string, home?: string): string | undefined {
+  let dir: string | undefined;
+  for (const segment of command.split(/&&|\|\||;|\||\n|\(|\)/)) {
+    const words = shellWords(segment.trim());
+    if (words[0] === 'cd' && words.length === 2 && !/[$`]/.test(words[1]) && words[1] !== '-') dir = absolute(words[1], dir ?? cwd, home);
+    if (words[0] !== 'git') continue;
+    let i = 1;
+    let at: string | undefined;
+    for (; words[i] === '-C' || words[i] === '-c'; i += 2) if (words[i] === '-C') at = words[i + 1];
+    while (words[i]?.startsWith('-')) i++;
+    if (words[i] !== 'push') continue;
+    if (at && !/[$`]/.test(at)) return absolute(at, dir ?? cwd, home);
+    return dir;
+  }
+  return undefined;
 }
 
 // How many times a command runs `git <sub>` (`git -C dir commit` too), as

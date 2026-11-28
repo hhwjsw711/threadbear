@@ -1828,7 +1828,7 @@ test("end_turn lists only today's form, whichever forms it takes", async () => {
   const h = makeHarness();
   const { thread } = start(h);
   const one = await mcpClient(h, thread.id, true).endTurnShown();
-  assert.deepEqual(Object.keys(one.inputSchema.properties).sort(), ['archive', 'askWhen', 'asks', 'byline', 'findings', 'headline', 'needs', 'next', 'nextPick', 'nextSuggested', 'snooze', 'waitFor']);
+  assert.deepEqual(Object.keys(one.inputSchema.properties).sort(), ['archive', 'askWhen', 'asks', 'byline', 'findings', 'headline', 'needs', 'next', 'nextPick', 'nextSuggested', 'snooze', 'waitFor', 'waitForRuns']);
   assert.ok(!one.inputSchema.required?.length, 'every field is optional');
   const ask = (one.inputSchema.properties.asks as { items: { required: string[]; properties: Record<string, { description?: string; items?: { type?: string } }> } }).items;
   assert.deepEqual(ask.required, ['question']);
@@ -1848,7 +1848,7 @@ test("An end_turn that fits neither form hears today's shape and order in words"
   const one = await mcpClient(h, thread.id, true).endTurn(garbled);
   assert.equal(one.error, true);
   assert.match(one.text, /asks\[0\]\.options\[0\]/);
-  assert.match(one.text, /\{ headline\?, needs\?, asks\?: \{ question, options\?: \{ label, does\? \}\[\], suggested\?, links\? \}\[\], next\?, nextPick\?, nextSuggested\?, archive\?, snooze\?, waitFor\? \}/);
+  assert.match(one.text, /\{ headline\?, needs\?, asks\?: \{ question, options\?: \{ label, does\? \}\[\], suggested\?, links\? \}\[\], next\?, nextPick\?, nextSuggested\?, archive\?, snooze\?, waitFor\?, waitForRuns\? \}/);
   assert.match(one.text, /then write your reply after it/);
   assert.doesNotMatch(one.text, /MCP error/);
   const old = await mcpClient(h, thread.id, false).endTurn({ needs: 'maybe' });

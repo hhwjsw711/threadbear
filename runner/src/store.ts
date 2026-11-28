@@ -1,4 +1,5 @@
 import type { HighlightState } from './highlights.ts';
+import type { CiRunsState } from './ci-runs.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { WaitingForRoom, Ask, AskAnswer, NeedsWho, DesignReview, ReplyButton, ReviewDraft, EffortLevel, MessageOrigin, PanelRequest, PermissionMode, ThreadShare, PersistedEvent, Provider, ArchivedBy, ArchiveVerdict, Subagent, ThreadProject, ThreadSchedule, ThreadStartedBy, ThreadStatus, ImageRef, LooseEnd, ContextUsage, LabReviewLedger, ReviewFinding } from './protocol.ts';
@@ -264,6 +265,12 @@ export type ThreadRecord = {
   // (wait_for_app_restart), not for him: sent as awaitingAppRestart, so the
   // app keeps it under Running. Cleared with the rest of a wait.
   hibernatedForApp?: true;
+  // Hibernating until GitHub workflow runs finish (end_turn's waitForRuns,
+  // runner/ci-runs.ts, waitRuns): the keys of the ciRuns watches it waits
+  // on. Sent as awaitingRuns. Cleared with the rest of a wait.
+  waitingOnRuns?: string[];
+  // GitHub Actions runs this thread set off (ci-runs.ts).
+  ciRuns?: CiRunsState;
   // Its last finished turn (nothing needed, nothing left running) and that
   // turn's reply, for threads waiting on it, including on a runner it
   // moves to (runner/hibernation.ts, reconcileWaits). Cleared by any new

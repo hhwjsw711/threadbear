@@ -40,7 +40,7 @@ export function neutraliseCopied(rec: ThreadRecord, work: string): ThreadRecord 
     'nativeSessionId', 'sessionUsed', 'sessionCostTotal', 'contextUsage', 'turnId',
     'stoppedMidTurn', 'restartCarryOn', 'stoppedWork', 'stoppedWorkWakes',
     'waitingForRoom', 'limitHitTurn', 'autoCarryOn', 'waitingForNetwork', 'netCarryOn',
-    'wakeWhen', 'lateChecks', 'wakeNews', 'waitingOn', 'hibernatedForApp', 'labReviewOwed', 'handoff', 'moved', 'resumeAt',
+    'wakeWhen', 'lateChecks', 'wakeNews', 'waitingOn', 'hibernatedForApp', 'waitingOnRuns', 'ciRuns', 'labReviewOwed', 'handoff', 'moved', 'resumeAt',
     'worktree', 'worktreePending', 'schedule', 'share', 'panelRequest', 'snoozedUntilRestart', 'untilRelease',
   ]) delete r[k];
   rec.queue = [];

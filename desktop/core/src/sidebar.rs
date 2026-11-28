@@ -646,9 +646,13 @@ pub fn wake_row<Tz: TimeZone>(t: &ThreadSummary, now: &DateTime<Tz>) -> Option<(
     Some((topic, format!("{tip}. {who} said \"{}\".", wake.said)))
 }
 
+/// A thread hibernating until its GitHub workflow runs finish, on its row.
+pub const RUNS_WAIT_ROW: &str = "Until its GitHub workflows finish";
+
 /// What a thread waiting on its own work is waiting for, and the tooltip
 /// (`ThreadSummary::waiting_on_work`): threads it waits to hear from, as a
-/// Hibernating row says them, or Mike's app restarting onto what it landed.
+/// Hibernating row says them, GitHub workflows finishing, or Mike's app
+/// restarting onto what it landed.
 pub fn work_wait_row<Tz: TimeZone>(
     t: &ThreadSummary,
     now: &DateTime<Tz>,
@@ -659,6 +663,13 @@ pub fn work_wait_row<Tz: TimeZone>(
         .any(|w| w.get("done").and_then(serde_json::Value::as_bool) != Some(true))
     {
         return wake_row(t, now);
+    }
+    if t.awaiting_runs == Some(true) {
+        let mut tip = "Back when the GitHub workflow runs it waits on finish".to_string();
+        if let Some(time) = wake_time(t) {
+            tip += &format!(", or {} at the latest", until_words(time, now));
+        }
+        return Some((RUNS_WAIT_ROW.to_string(), format!("{tip}.")));
     }
     if t.awaiting_app_restart == Some(true) {
         return Some(("Waiting for the app update".to_string(), "Carries on once Threadbear restarts onto what this thread landed, which it does by itself when you leave it idle.".to_string()));
@@ -1729,6 +1740,26 @@ mod tests {
             (out.text.as_str(), out.kind),
             ("Waiting for the app update", TrailingKind::Background)
         );
+        let for_runs = thread(
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-10T09:00:00Z", "awaitingRuns": true }),
+        );
+        let out = trailing(
+            &for_runs,
+            &RowLook::of(&for_runs, Some("running")),
+            RowMode::Inbox,
+            &now,
+            None,
+        );
+        assert_eq!(
+            (out.text.as_str(), out.kind),
+            (
+                "Until its GitHub workflows finish",
+                TrailingKind::Background
+            )
+        );
+        assert!(out.tip.as_deref().is_some_and(
+            |t| t.starts_with("Back when the GitHub workflow runs it waits on finish, or ")
+        ));
         let landing = thread(
             json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00.000Z", "wakeWhen": { "said": "when the landing finishes", "topic": "the landing has finished", "agent": true }, "looseEnds": { "seq": 4, "ends": [{ "kind": "unlanded", "text": "1 commit on thread/x isn't on main" }] } }),
         );
