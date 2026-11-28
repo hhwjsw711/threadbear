@@ -696,11 +696,14 @@ export const worktreesPart = {
     return removed;
   },
 
-  // Worktrees the sweep can't remove safely, of threads archived at least
-  // ASK_AFTER_MS ago: a thread (in the inbox, so on the phone too) looks at
-  // what each holds and asks whether to drop it. Each branch tip is asked
-  // about once; nothing new is asked while that thread is still open.
-  // Ville asked for this on 20 Nov 2026.
+  // Worktrees the sweep can't prove are already on main by git alone, of
+  // threads archived at least ASK_AFTER_MS ago: a thread checks what each
+  // holds, removes safe leftovers (already on main in another form,
+  // superseded, obsolete or abandoned) and archives itself, asking the user
+  // only about genuine unlanded work in plain words. Each branch tip is
+  // checked once; nothing new runs while that thread is still open.
+  // Ville asked for the check on 20 Nov 2026; Mike asked on 28 Nov 2026
+  // for safe leftovers to go automatically instead of asking about slots.
   async askAboutStayed(this: Runner, stayed: Stayed[]): Promise<string | undefined> {
     const file = path.join(this.cfg.home, 'runner', 'worktree-question.json');
     let state: { threadId?: string; asked?: string[] } = {};
@@ -724,26 +727,36 @@ export const worktreesPart = {
     const list = fresh.map(({ st, w, reason }) =>
       `- ${w.path} (branch ${w.branch}, in ${w.mainCheckout}), from the thread "${st.rec.title ?? st.rec.id}" (${st.rec.id}), archived ${st.rec.archivedAt!.slice(0, 10)}. It stays because ${reason}.`).join('\n');
     const text =
-      "Threadbear's daily cleanup found worktrees of archived threads that it can't remove safely by itself. " +
-      `Each thread was archived at least ${ASK_AFTER_MS / 86_400_000} days ago, so they look abandoned:\n\n${list}\n\n` +
-      'For each one, work out what removing it would lose. Read git log --oneline main..<branch> and git cherry -v main <branch> in its repo, ' +
-      'and git status --short and git diff --stat in the worktree. Check whether that work is on main in another form. ' +
-      "Don't remove or change anything yet.\n\n" +
-      'Then end the turn with needs "you" and one ask per worktree (or one for all of them, if they are alike). ' +
-      'Each ask says in a line what would be lost, with the options "Remove it" and "Keep it". ' +
-      'Remove only what I say to: git -C <repo> worktree remove --force <path>, then git -C <repo> branch -D <branch>. ' +
-      'Once every one is answered, end the turn with needs "nothing" and archive: true.';
+      "Threadbear's daily cleanup found worktrees of archived threads that git couldn't prove are already on main. " +
+      `Each thread was archived at least ${ASK_AFTER_MS / 86_400_000} days ago:\n\n${list}\n\n` +
+      'For each one, work out whether removing it would lose anything worth keeping. ' +
+      'Read git log --oneline main..<branch> and git cherry -v main <branch> in its repo, ' +
+      'and git status --short and git diff --stat in the worktree. ' +
+      'Check whether that work is already on main in another form (rewritten, squashed, superseded or obsolete), ' +
+      'and read its archived thread if it is unclear whether the work was abandoned on purpose.\n\n' +
+      'Remove every safe leftover right away without asking: anything whose work is already on main in another form, ' +
+      'superseded, obsolete, or intentionally abandoned, with no real uncommitted work. ' +
+      'Before removing one, verify its thread is still archived and the folder is still checked out on <branch> ' +
+      '(git -C <path> rev-parse --abbrev-ref HEAD), then run: ' +
+      'git -C <repo> worktree remove --force <path> && git -C <repo> branch -D <branch>.\n\n' +
+      'If every worktree was safe and removed, end the turn with needs "nothing", archive: true, ' +
+      'and a short byline of what went.\n\n' +
+      'Only if a worktree genuinely holds real unlanded work that was not abandoned (for example a fix whose landing timed out, ' +
+      'or meaningful uncommitted edits not on main), leave that worktree in place and end the turn with needs "you" ' +
+      'and one ask per such item. Describe the work itself in plain terms (what fix or change would be lost, ' +
+      'not slot numbers or branch names), with options to land it or drop it (or keep/drop if it is half-finished). ' +
+      'Act on the answers, then end the turn with needs "nothing" and archive: true.';
     const n = fresh.length;
     const threadId = this.create({
       text,
-      title: n === 1 ? 'Remove a leftover worktree?' : `Remove ${n} leftover worktrees?`,
+      title: n === 1 ? 'Clean up a leftover worktree' : `Clean up ${n} leftover worktrees`,
       cwd: fresh[0].w.mainCheckout,
       worktree: false,
-      startedBy: { kind: 'runner', label: 'Threadbear', why: "archived threads' worktrees that the daily cleanup can't remove safely" },
+      startedBy: { kind: 'runner', label: 'Threadbear', why: "archived threads' worktrees that the daily cleanup can't remove by git alone" },
     }).thread.id;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ threadId, asked: [...asked, ...fresh.map((x) => x.key)] }, null, 2) + '\n');
-    this.log.info("started a thread to ask about archived threads' worktrees", { threadId, worktrees: fresh.map((x) => x.w.path) });
+    this.log.info("started a thread to clean up archived threads' worktrees", { threadId, worktrees: fresh.map((x) => x.w.path) });
     return threadId;
   },
 

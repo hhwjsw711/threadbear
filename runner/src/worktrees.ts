@@ -2826,14 +2826,21 @@ export async function stillCheckedOut(w: WorktreeRecord): Promise<boolean> {
   return Boolean(checkouts?.some((c) => realpath(c.path) === here && c.branch === w.branch));
 }
 
-// Everything on `branch` is on main: its tip is in main's history, or
-// merging it into main would change no file. The second is for a branch
-// whose commits landed under other ids: tb land rebases and batches, and a
-// thread can cherry-pick another's commit. Before 20 Nov 2026 only the first
-// counted, so those worktrees stayed after their threads were archived
-// (three on Ville's Mac).
+// Everything on `branch` is on main: its tip is in main's history, every
+// commit on it has an equal patch on main (with no merge commits in between,
+// since git cherry skips merges), or merging it into main would change no
+// file. The last two are for branches whose commits landed under other ids:
+// tb land rebases and batches, and a thread can cherry-pick or squash
+// another's commit. `merge-tree` alone misses a rebased branch once main
+// later edits the same lines (28 Nov 2026: 7 of 12 stayed for that).
 export async function landedOnMain(mainCheckout: string, branch: string): Promise<boolean> {
   if ((await git(mainCheckout, ['merge-base', '--is-ancestor', branch, MAIN])).ok) return true;
+  const merges = await git(mainCheckout, ['rev-list', '--merges', '--count', `${MAIN}..${branch}`]);
+  if (merges.ok && merges.stdout.trim() === '0') {
+    const cherry = await git(mainCheckout, ['cherry', MAIN, branch]);
+    const lines = cherry.ok ? cherry.stdout.split('\n').filter(Boolean) : [];
+    if (lines.length > 0 && lines.every((l) => l.startsWith('- '))) return true;
+  }
   const merged = await git(mainCheckout, ['merge-tree', '--write-tree', MAIN, branch]);
   if (!merged.ok) return false; // a conflict, or git couldn't tell
   const main = await gitOut(mainCheckout, ['rev-parse', `${MAIN}^{tree}`]);

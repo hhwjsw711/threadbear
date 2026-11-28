@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { makeHarness, tmpDir } from '../helpers/fakes.ts';
 import { checkSequence, checkSummary } from '../helpers/protocol-check.ts';
 import { automaticTrust, findWorktreePatch } from '../../src/patches.ts';
-import { cleanUpWorktree, git, gitLimits, land, makeWorktree } from '../../src/worktrees.ts';
+import { cleanUpWorktree, git, gitLimits, land, landedOnMain, makeWorktree } from '../../src/worktrees.ts';
 import { PatchTrust } from '../../src/patch-trust.ts';
 import { HUNG_GIT_LIMIT_MS, KEEP, PATCH, TEARDOWN, capture, commit, harness, lines, makeBranch, makeRepo, notes, sh, swapDuringGit, teardowns, threadWithWorktree, trustedTeardownRepo, until, wrapGit, write } from '../helpers/worktrees-harness.ts';
 
@@ -135,11 +135,12 @@ test('a worktree whose work landed under other commit ids goes, at archive or at
   const { main } = makeRepo();
   const h = harness();
   // Landed as a copy (tb land's rebase, or another thread's cherry-pick)
-  // before the archive: removed then.
+  // before the archive, even when main later edits the same file so
+  // merge-tree would conflict: removed then via git cherry.
   const a = await threadWithWorktree(h, main);
   commit(a.w.path, { 'runner/a.ts': 'a\n' }, 'Copied to main');
   sh(main, `git cherry-pick ${sh(a.w.path, 'git rev-parse HEAD')}`);
-  commit(main, { 'README.md': 'moved on\n' }, 'Another landing');
+  commit(main, { 'runner/a.ts': 'a edited later on main\n', 'README.md': 'moved on\n' }, 'Another landing');
   h.runner.update({ threadId: a.id, archived: true });
   await until(() => notes(h, a.id).some((n) => n.startsWith('Removed')), "a's cleanup");
   assert.ok(!fs.existsSync(a.w.path));
@@ -161,10 +162,10 @@ test('a worktree whose work landed under other commit ids goes, at archive or at
   assert.equal(notes(h, b.id).at(-1), `Removed this thread's worktree and its branch ${b.w.branch}: everything on it is on main.`);
   assert.ok(fs.existsSync(c.w.path));
   assert.equal(notes(h, c.id).length, cNotes, 'no second "stays" note');
-  const asks = () => [...h.runner.threads.values()].filter((st) => st.rec.title?.startsWith('Remove a leftover worktree'));
-  assert.equal(asks().length, 0, 'archived just now: not asked about yet');
+  const asks = () => [...h.runner.threads.values()].filter((st) => st.rec.title?.startsWith('Clean up a leftover worktree'));
+  assert.equal(asks().length, 0, 'archived just now: not checked yet');
 
-  // Archived 3 days ago and still unlanded: a thread asks about it, once.
+  // Archived 3 days ago and still unlanded: a cleanup thread checks it, once.
   h.runner.threads.get(c.id)!.rec.archivedAt = new Date(Date.parse(h.runner.isoNow()) - 3 * 86_400_000).toISOString();
   await h.runner.sweepArchivedWorktrees();
   assert.equal(asks().length, 1);
@@ -175,7 +176,9 @@ test('a worktree whose work landed under other commit ids goes, at archive or at
   const first = h.adapter.sessions.find((s) => s.opts.threadId === ask.rec.id)!.sent[0].text;
   assert.ok(first.includes(`- ${c.w.path} (branch ${c.w.branch}, in ${main}), from the thread`), first);
   assert.ok(first.includes(`It stays because ${c.w.branch} has commits that aren't on main.`));
-  assert.ok(fs.existsSync(c.w.path), 'nothing removed without a yes');
+  assert.ok(first.includes('Remove every safe leftover right away without asking'));
+  assert.ok(first.includes('Only if a worktree genuinely holds real unlanded work'));
+  assert.ok(fs.existsSync(c.w.path), 'sweep itself did not drop unlanded work');
   await h.runner.sweepArchivedWorktrees();
   assert.equal(asks().length, 1, 'not asked twice');
   // Even once that thread is archived, the same branch tip isn't asked about again.
@@ -703,4 +706,28 @@ test('a branch a moved checkout is still on is never deleted by the old record`s
   assert.equal(result.removed, true);
   assert.ok(result.removed && result.branchLeft?.includes('a checkout is on it'), JSON.stringify(result));
   assert.equal(sh(moved, 'git rev-parse --abbrev-ref HEAD'), t.branch, 'still on its branch');
+});
+
+test('landedOnMain: counts rebased commits even when main later edits the same file, but never an evil merge', async () => {
+  const { main } = makeRepo();
+
+  // Rebased/cherry-picked commit whose file main later modifies (merge-tree conflicts).
+  const rebased = makeBranch(main);
+  commit(rebased.path, { 'README.md': 'line 1\nline 2\n' }, 'Add line 2');
+  const sha = sh(rebased.path, 'git rev-parse HEAD');
+  commit(main, { 'other.txt': 'x\n' }, 'Diverge main');
+  sh(main, `git cherry-pick ${sha}`);
+  commit(main, { 'README.md': 'line 1\nline 2 revised on main\n' }, 'Revise line 2 on main');
+  assert.equal(await landedOnMain(main, rebased.branch), true);
+
+  // Merge commit whose own resolution changes a file not on main: git cherry skips merges,
+  // so landedOnMain falls back to merge-tree and keeps it.
+  const merged = makeBranch(main, 'efgh5678');
+  const baseMain = sh(main, 'git rev-parse main');
+  commit(main, { 'm.txt': 'from main\n' }, 'Main change');
+  sh(merged.path, `git merge --no-ff --no-commit ${sh(main, 'git rev-parse main')}`);
+  write(merged.path, { 'evil.txt': 'only in merge commit\n' });
+  sh(merged.path, 'git add evil.txt && git commit -m "Evil merge"');
+  assert.notEqual(sh(merged.path, 'git rev-parse HEAD'), baseMain);
+  assert.equal(await landedOnMain(main, merged.branch), false);
 });

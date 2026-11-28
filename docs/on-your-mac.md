@@ -421,10 +421,11 @@ output cannot renew image work. Rejected oversized output imports no images.
   pass over any slot an open thread works in.
 - **Archived worktree sweep** (`runner/src/runner/worktrees.ts`): ten minutes
   after start and then daily, re-runs archive cleanup on archived threads
-  whose worktree stayed (counting branches whose changes are already on
-  `main` under other commit ids). If a worktree still stays two days after
-  its thread was archived, it starts a thread in the inbox asking whether to
-  remove or keep it, tracking asked branch tips in `runner/worktree-question.json`.
+  whose worktree stayed (counting branches whose commits are already on
+  `main` by patch id or merged tree). If a worktree still stays two days after
+  its thread was archived, it starts a cleanup thread that removes safe
+  leftovers automatically and archives itself, asking only about genuine
+  unlanded work, tracking checked branch tips in `runner/worktree-question.json`.
 - **The runner** listens on `127.0.0.1:8797` only, and needs a token
   (`runner/src/config.ts`). It starts the official `claude` and `codex`
   CLIs for your threads. Each thread's CLI gets a key of its own in its
