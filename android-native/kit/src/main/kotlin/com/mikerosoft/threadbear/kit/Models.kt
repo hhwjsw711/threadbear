@@ -70,6 +70,8 @@ sealed class PendingApproval {
         val inputSummary: String?,
         /** On Claude's ExitPlanMode card: the seq of the plan row it waits on (backend API 72). */
         val planSeq: Int? = null,
+        /** What made it ask, in a sentence (backend API 113): Auto's safety check, a rule, a hook. */
+        val reason: String? = null,
     ) : PendingApproval()
 
     data class Questions(override val id: String, val questions: List<Question>) : PendingApproval()
@@ -102,6 +104,7 @@ sealed class PendingApproval {
                     options = (o.strings("options") ?: listOf("allow", "deny")).mapNotNull(ApprovalOption::of),
                     inputSummary = o.str("inputSummary"),
                     planSeq = o.num("planSeq")?.wholeCount(),
+                    reason = o.str("reason")?.takeIf { it.isNotBlank() },
                 )
                 else -> Other(id, kind)
             }

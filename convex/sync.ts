@@ -763,7 +763,7 @@ function fitApproval(p: Record<string, any>, descBytes: number): Record<string, 
   const c = (x: unknown, n: number) => cutBytes(String(x ?? ''), n);
   if (p.kind === 'question') return { ...p, questions: (p.questions ?? []).map((q: any) => ({ ...q, options: (q.options ?? []).map((o: any) => ({ label: o.label, ...(o.description !== undefined && descBytes > 0 ? { description: c(o.description, descBytes) } : {}) })) })) };
   if (p.kind === 'secret') return { ...p, label: c(p.label, 200), reason: c(p.reason, 500), ...(p.placeholder !== undefined ? { placeholder: c(p.placeholder, 100) } : {}) };
-  return { ...p, title: c(p.title, 300), ...(p.inputSummary !== undefined ? { inputSummary: c(p.inputSummary, 300) } : {}) };
+  return { ...p, title: c(p.title, 300), ...(p.inputSummary !== undefined ? { inputSummary: c(p.inputSummary, 300) } : {}), ...(p.reason !== undefined ? { reason: c(p.reason, 500) } : {}) };
 }
 
 // What the phone gets when even that doesn't fit: a card it can't answer

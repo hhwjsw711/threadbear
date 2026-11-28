@@ -63,6 +63,10 @@ test("the open card is the last turn's end, and an approval sits at its own seq"
   const ev = relayEvents(T, rows, asksRow, [{ slot: 13 * SCALE + 1, pending: { approvalId: 'ap1', kind: 'approval', name: 'Bash', title: 'Run it', options: ['allow', 'deny'], inputSummary: 'npm test' } }], false, 'mac-mini');
   const end = ev.find((e) => e.seq === 119)!;
   assert.equal(end.needs, 'you');
+  // No reason on the row: none on the card. One (API 113) comes back on it.
+  assert.equal((ev.find((e) => e.type === 'approval.requested') as { reason?: string }).reason, undefined);
+  const why = relayEvents(T, rows, asksRow, [{ slot: 13 * SCALE + 1, pending: { approvalId: 'ap1', kind: 'approval', name: 'Bash', title: 'Run it', options: ['allow', 'deny'], reason: 'A rule in your settings asks.' } }], false, 'mac-mini');
+  assert.equal((why.find((e) => e.type === 'approval.requested') as { reason?: string }).reason, 'A rule in your settings asks.');
   assert.deepEqual(end.asks, [{ action: 'Pick one', options: ['A', 'B'], ticked: true }]);
   // What each answer does comes through, so the Mac draws rows as it does
   // for its own runner's threads, not plain buttons (8 Nov).

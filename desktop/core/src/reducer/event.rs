@@ -1267,6 +1267,9 @@ pub struct ApprovalRequest {
     pub title: String,
     pub input: Value,
     pub options: Vec<ApprovalOption>,
+    /// What made it ask, in a sentence, when the CLI said (Auto's safety
+    /// check, a rule, a hook): `approval.requested`'s `reason`.
+    pub reason: Option<String>,
 }
 
 impl ApprovalRequest {
@@ -1282,6 +1285,7 @@ impl ApprovalRequest {
                 ApprovalOption::AllowAlways,
                 ApprovalOption::Deny,
             ],
+            reason: None,
         }
     }
 
@@ -1316,6 +1320,9 @@ impl ApprovalRequest {
             } else {
                 known
             },
+            reason: string(c, "reason")
+                .map(|r| r.trim().to_owned())
+                .filter(|r| !r.is_empty()),
         }
     }
 }
@@ -1492,6 +1499,7 @@ impl ApprovalQueue {
                 name: name.unwrap_or_else(|| "Tool".to_owned()),
                 input: any(call, "input").unwrap_or_else(|| json!({})),
                 options: vec![ApprovalOption::Allow, ApprovalOption::Deny],
+                reason: None,
             })
         });
         ApprovalQueue {

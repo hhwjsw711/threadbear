@@ -414,7 +414,9 @@ the mirror back as state. The Mac app doesn't use it.
 - **Messages.** Each persisted `user.message` and `assistant.text` goes
   up as a `messages` row (`threadId, seq, role, text, origin?, at`), text
   cut at 8,000 characters with a note; never a delta, with one row per tool
-  call (`role: "tool"`, one line), and one per `system.note` with `login` or `savedMessage`
+  call (`role: "tool"`, one line), and one per `system.note` with `login` or `savedMessage`,
+  or that is a move to or from Hibernating or the archive (`isPlaceNote` in
+  runner/src/place-notes.ts, the Mac's `is_place_note` list)
   (`role: "note"`, since backend API 78: a thread on another runner changed
   login and nothing on the Mac said so, 13 Nov 2026). `relay:remoteTail` and
   `relay:remoteMessages` give note rows to a runner that asks with
@@ -432,9 +434,12 @@ the mirror back as state. The Mac app doesn't use it.
   `loadEarlier`, with `beforeSeq`) marks up to 50 text messages before that
   seq as paged (`pagedAt`), so `phone:thread` shows them for a day.
 - **Approvals.** An `approval.requested` puts `{ approvalId, kind:
-  "approval", name, title, options, inputSummary? }` on the thread's row
+  "approval", name, title, options, inputSummary?, reason? }` on the thread's row
   (`inputSummary` is one line: the command, the path, or the first string
-  in the input, at most 200 characters, never the whole input). A card that
+  in the input, at most 200 characters, never the whole input; `reason`,
+  from backend API 113, is the event's `reason`, scrubbed as that line is,
+  which the phones, the website and another Mac's relay show under the
+  title as the Mac does). A card that
   line can't show all of (a command over 160 characters or on more than one
   line, a command, path or address with anything but printable ASCII in
   it, as anything else can draw differently from how a shell reads it

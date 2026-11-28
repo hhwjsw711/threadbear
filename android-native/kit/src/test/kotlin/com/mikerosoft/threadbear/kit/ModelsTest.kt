@@ -73,6 +73,11 @@ class ModelsTest {
     @Test fun approvalsSecretsAndUnknownKinds() {
         val a = assertIs<PendingApproval.Approval>(PendingApproval.read(obj("""{"approvalId":"a","options":["allow","later","deny"]}""")))
         assertEquals(listOf(ApprovalOption.ALLOW, ApprovalOption.DENY), a.options)
+        assertEquals(null, a.reason)
+        // What made it ask (backend API 113); a blank one is none.
+        val why = assertIs<PendingApproval.Approval>(PendingApproval.read(obj("""{"approvalId":"a","options":["allow"],"reason":"A rule in your settings asks."}""")))
+        assertEquals("A rule in your settings asks.", why.reason)
+        assertEquals(null, assertIs<PendingApproval.Approval>(PendingApproval.read(obj("""{"approvalId":"a","options":["allow"],"reason":"  "}"""))).reason)
         assertEquals("Permission", a.title)
         assertIs<PendingApproval.Other>(PendingApproval.read(obj("""{"approvalId":"s","kind":"secret","label":"Key"}""")))
         val s = assertIs<PendingApproval.Secret>(PendingApproval.read(obj("""{"approvalId":"s","kind":"secret","label":"Key","key":"k"}""")))

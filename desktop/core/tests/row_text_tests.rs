@@ -1719,3 +1719,28 @@ fn testAnUnreadablePayloadIsUnknownWithItsSeq() {
         EventPayload::Error("Something went wrong".to_owned())
     );
 }
+
+#[test]
+fn testApprovalAskReason() {
+    // What made it ask comes from the event's `reason`, trimmed, under the title.
+    let auto = ApprovalRequest::decode(&json!({
+        "approvalId": "ap1", "name": "Bash", "title": "git push --tags",
+        "input": {"command": "git push --tags"}, "options": ["allow", "deny"],
+        "reason": "  Auto mode's safety check couldn't clear this: pushes tags.  "
+    }))
+    .unwrap();
+    assert_eq!(
+        ApprovalText::ask_reason(&auto).as_deref(),
+        Some("Auto mode's safety check couldn't clear this: pushes tags.")
+    );
+    // None said, an empty one, or one that only repeats the title: nothing.
+    let plain = approval_request("Bash", json!({"command": "ls"}));
+    assert_eq!(ApprovalText::ask_reason(&plain), None);
+    let blank = ApprovalRequest::decode(&json!({"approvalId": "a", "name": "Bash", "title": "t", "reason": "  "})).unwrap();
+    assert_eq!(blank.reason, None);
+    let same = ApprovalRequest::decode(&json!({"approvalId": "a", "name": "Bash", "title": "Run it", "reason": "Run it"})).unwrap();
+    assert_eq!(ApprovalText::ask_reason(&same), None);
+    // A threadbear tool's card says why in its title already (runner_reason).
+    let tb = ApprovalRequest::decode(&json!({"approvalId": "a", "name": "mcp__threadbear__delete_thread", "title": "Delete a thread", "reason": "Threadbear always asks."})).unwrap();
+    assert_eq!(ApprovalText::ask_reason(&tb), None);
+}

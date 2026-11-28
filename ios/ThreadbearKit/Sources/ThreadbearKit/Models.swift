@@ -47,7 +47,9 @@ public struct Question: Codable, Sendable, Hashable {
 public enum PendingApproval: Codable, Sendable, Hashable {
     /// planSeq: on Claude's ExitPlanMode card, the seq of the plan row it
     /// waits on (backend API 72), so the plan shown is that one.
-    case approval(id: String, name: String, title: String, options: [ApprovalOption], inputSummary: String?, planSeq: Int? = nil)
+    /// reason: what made it ask, in a sentence (backend API 113: Auto's
+    /// safety check, a rule, a hook).
+    case approval(id: String, name: String, title: String, options: [ApprovalOption], inputSummary: String?, planSeq: Int? = nil, reason: String? = nil)
     case question(id: String, questions: [Question])
     /// `ask_secret` (docs/protocol/threads.md, "Secrets"): `key` is the runner's
     /// X25519 public key (raw, base64), which the phone seals the value to.
@@ -58,7 +60,7 @@ public enum PendingApproval: Codable, Sendable, Hashable {
 
     public var id: String {
         switch self {
-        case let .approval(id, _, _, _, _, _), let .question(id, _), let .secret(id, _, _, _, _), let .other(id, _): id
+        case let .approval(id, _, _, _, _, _, _), let .question(id, _), let .secret(id, _, _, _, _), let .other(id, _): id
         }
     }
 
@@ -93,7 +95,8 @@ public enum PendingApproval: Codable, Sendable, Hashable {
                 options: raw.compactMap(ApprovalOption.init(rawValue:)),
                 inputSummary: try c.decodeIfPresent(String.self, forKey: .inputSummary),
                 // Convex numbers are float64; one that isn't a whole seq pairs with nothing.
-                planSeq: (try? c.decodeIfPresent(Double.self, forKey: .planSeq)).flatMap { $0 }.flatMap { $0.wholeCount() }
+                planSeq: (try? c.decodeIfPresent(Double.self, forKey: .planSeq)).flatMap { $0 }.flatMap { $0.wholeCount() },
+                reason: (try? c.decodeIfPresent(String.self, forKey: .reason)).flatMap { $0 }.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
             )
         case let kind?:
             self = .other(id: id, kind: kind)
@@ -103,7 +106,7 @@ public enum PendingApproval: Codable, Sendable, Hashable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         switch self {
-        case let .approval(id, name, title, options, inputSummary, planSeq):
+        case let .approval(id, name, title, options, inputSummary, planSeq, reason):
             try c.encode(id, forKey: .approvalId)
             try c.encode("approval", forKey: .kind)
             try c.encode(name, forKey: .name)
@@ -111,6 +114,7 @@ public enum PendingApproval: Codable, Sendable, Hashable {
             try c.encode(options, forKey: .options)
             try c.encodeIfPresent(inputSummary, forKey: .inputSummary)
             try c.encodeIfPresent(planSeq, forKey: .planSeq)
+            try c.encodeIfPresent(reason, forKey: .reason)
         case let .question(id, questions):
             try c.encode(id, forKey: .approvalId)
             try c.encode("question", forKey: .kind)

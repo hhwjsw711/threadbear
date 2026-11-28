@@ -530,4 +530,8 @@
 //    and `sync:finishCommand` keeps the command's `result` for effort-only
 //    updates too. The Mac's runner sends `effort` on remote `threads.update`
 //    only from 112; an older backend refuses it.
-export const API_VERSION = 112;
+// 113: an approval card on a thread's row can carry `reason`, what made it
+//    ask (Auto's safety check, a rule, a hook), which the phones, the website
+//    and another Mac's relay show under its title. A runner sends it only to
+//    a backend of 113 or later; an older phone ignores it.
+export const API_VERSION = 113;

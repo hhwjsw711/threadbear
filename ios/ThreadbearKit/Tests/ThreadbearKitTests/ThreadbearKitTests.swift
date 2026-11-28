@@ -72,7 +72,7 @@ import UniformTypeIdentifiers
           "projects":[{"id":"p1","title":"Threadbear"}]},
          {"threadId":"t2","runnerId":"laptop","title":"B","cwd":"/x","accountId":"a","provider":"codex",
           "status":"somethingNew","needsYou":true,"unread":false,"preview":"","lastActivityAt":1761553399962,
-          "pendingApproval":{"approvalId":"ap","kind":"approval","name":"Bash","title":"Run","options":["allow","deny","later"],"inputSummary":"ls"}}]
+          "pendingApproval":{"approvalId":"ap","kind":"approval","name":"Bash","title":"Run","options":["allow","deny","later"],"inputSummary":"ls","reason":"Ask mode asks before every edit, command and web fetch."}}]
         """
         let rows = try JSONDecoder().decode([PhoneThread].self, from: Data(json.utf8))
         #expect(rows.count == 2)
@@ -83,12 +83,16 @@ import UniformTypeIdentifiers
         #expect(rows[0].placeText == "Threadbear")
         #expect(rows[1].status == .unknown)
         #expect(rows[1].folderName == "x")
-        guard case let .approval(_, _, _, options, summary, _) = rows[1].pendingApproval else {
+        guard case let .approval(_, _, _, options, summary, _, reason) = rows[1].pendingApproval else {
             Issue.record("expected an approval")
             return
         }
         #expect(options == [.allow, .deny])
         #expect(summary == "ls")
+        // What made it ask (backend API 113), and back out the same.
+        #expect(reason == "Ask mode asks before every edit, command and web fetch.")
+        let again = try JSONDecoder().decode(PendingApproval.self, from: JSONEncoder().encode(rows[1].pendingApproval!))
+        #expect(again == rows[1].pendingApproval)
     }
 
     @Test func questionAndMessagesDecode() throws {

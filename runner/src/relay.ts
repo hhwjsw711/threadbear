@@ -266,7 +266,7 @@ function messageWithPictures(threadId: string, r: RelayRow, held: RelayPicture[]
 }
 
 type Pending =
-  | { approvalId: string; kind: 'approval'; seq?: number; name: string; title: string; options: string[]; inputSummary?: string; planSeq?: number }
+  | { approvalId: string; kind: 'approval'; seq?: number; name: string; title: string; options: string[]; inputSummary?: string; planSeq?: number; reason?: string }
   | { approvalId: string; kind: 'question'; seq?: number; questions: unknown[] }
   | { approvalId: string; kind: 'secret'; seq?: number; label: string; reason: string; placeholder?: string; key: string };
 export type RelayThreadRow = {
@@ -576,7 +576,7 @@ export function relayEvents(threadId: string, rows: RelayRow[], row: RelayThread
     const plan = p.kind === 'approval' && p.planSeq !== undefined && planSeqs.has(p.planSeq) ? { itemId: `relay-${p.planSeq}` } : {};
     const body =
       p.kind === 'approval'
-        ? { type: 'approval.requested', approvalId: p.approvalId, ...plan, name: p.name, title: p.title, input: p.inputSummary ? { [inputKey(p.name, p.inputSummary)]: p.inputSummary } : {}, options: p.options }
+        ? { type: 'approval.requested', approvalId: p.approvalId, ...plan, name: p.name, title: p.title, input: p.inputSummary ? { [inputKey(p.name, p.inputSummary)]: p.inputSummary } : {}, options: p.options, ...(typeof p.reason === 'string' && p.reason.trim() ? { reason: p.reason } : {}) }
         : p.kind === 'question'
           ? { type: 'question.requested', approvalId: p.approvalId, questions: p.questions }
           : { type: 'secret.requested', approvalId: p.approvalId, label: p.label, reason: p.reason, ...(p.placeholder ? { placeholder: p.placeholder } : {}) };

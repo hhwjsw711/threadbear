@@ -184,7 +184,7 @@ import Testing
         if let p = t.pendingApproval {
             var a: [String: JSONValue] = ["id": .string(p.id)]
             switch p {
-            case let .approval(_, _, _, options, _, planSeq):
+            case let .approval(_, _, _, options, _, planSeq, _):
                 a["kind"] = .string("approval")
                 a["planSeq"] = n(planSeq)
                 put(&a, "options", list(options) { (o: ApprovalOption) -> [String: JSONValue] in ["": .string(o.rawValue)] })

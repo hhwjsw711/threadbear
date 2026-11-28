@@ -8,12 +8,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toMessageDoc } from '../../src/sync.ts';
+import { archivedNote, hibernatedNote, scheduledNote, unarchivedNote, unscheduledNote, wokenNote } from '../../src/place-notes.ts';
 import { relayEvents, type RelayRow, type RelayThreadRow } from '../../src/relay.ts';
 import { call, load } from '../helpers/convex-memory.ts';
 import { threeWays } from '../helpers/routes.ts';
 
 const MOVED = 'Moved to alex@example.org: alex@example.net hit its 5-hour limit, back at 11:30 am.';
 const at = (s: number) => new Date(Date.parse('2026-11-13T02:00:00Z') + s * 1000).toISOString();
+
+test('a move to or from Hibernating or the archive goes up as a note row too, as the Mac shows it', () => {
+  const note = (text: string) => toMessageDoc('t1', { type: 'system.note', seq: 8, ts: at(0), threadId: 't1', text } as never);
+  for (const text of [
+    hibernatedNote({ who: 'mike', until: 'restart', now: Date.parse(at(0)), timeZone: 'UTC' }),
+    wokenNote({ who: 'agent', now: Date.parse(at(0)), timeZone: 'UTC' }),
+    archivedNote({ by: 'mike', now: Date.parse(at(0)), timeZone: 'UTC' }),
+    unarchivedNote({ who: 'threadbear', now: Date.parse(at(0)), timeZone: 'UTC' }),
+    scheduledNote({ now: Date.parse(at(0)), timeZone: 'UTC' }),
+    unscheduledNote({ now: Date.parse(at(0)), timeZone: 'UTC' }),
+  ]) assert.deepEqual(note(text), { threadId: 't1', seq: 8, role: 'note', text, at: at(0) }, text);
+  assert.equal(note('Resumed session'), undefined);
+});
 
 test("a login's note goes up as a note row, and no other note does", () => {
   const note = (fields: Record<string, unknown>) => toMessageDoc('t1', { type: 'system.note', seq: 7, ts: at(0), threadId: 't1', ...fields } as never, (t) => t.replace('sk-secret', '[key]'));

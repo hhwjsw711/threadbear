@@ -54,6 +54,7 @@ import { withholdReason } from './withhold.ts';
 import { BodyCollector, prepareBody, type BodyDoc, type RawBody } from './full-sync.ts';
 import type { ConvexUse, ConvexUseTally } from './convex-use.ts';
 import { cutSafely } from './safe-cut.ts';
+import { isPlaceNote } from './place-notes.ts';
 import { siteOf } from './convex-admin.ts';
 import { withNetworkCause } from './network-cause.ts';
 import { credentialUrlProblem } from './secure-url.ts';
@@ -174,7 +175,12 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 112;
+export const BACKEND_API_VERSION = 113;
+// From this one an approval card on the thread's row carries `reason`, what
+// made it ask (Auto's safety check, a rule, a hook), so the phones and the
+// website say why as the Mac does (Ville's fork, 16 Nov 2026). An older
+// backend's validator would turn the row down, so it goes without.
+export const APPROVAL_REASON_API_VERSION = 113;
 const ARTIFACTS_API_VERSION = 109;
 export const INDEX_POOL_API_VERSION = 101;
 export const COORDINATORS_API_VERSION = 102;
@@ -513,7 +519,7 @@ export type SyncStatus = {
 // The approval or question a thread is waiting on, as the phone sees it.
 export type PendingApproval =
   // seq: the event's (API 44), for the main Mac's transcript of this thread.
-  | { approvalId: string; kind: 'approval'; seq?: number; name: string; title: string; options: ApprovalOption[]; inputSummary?: string; planSeq?: number }
+  | { approvalId: string; kind: 'approval'; seq?: number; name: string; title: string; options: ApprovalOption[]; inputSummary?: string; planSeq?: number; reason?: string }
   | { approvalId: string; kind: 'question'; seq?: number; questions: Question[] }
   // docs/protocol/threads.md, "Secrets": key is the runner's public key, which the
   // phone seals its answer to.
@@ -1242,7 +1248,7 @@ export function forBackend(d: ThreadDoc, v: number, now: number): ThreadDoc {
   const asks = d.asks !== undefined || d.asksSeq !== undefined || d.next !== undefined;
   const sections = d.needs !== undefined || d.pendingReviews !== undefined || d.waitingForRoom !== undefined;
   const mobilePicker = d.poolId !== undefined || d.modelInUse !== undefined || d.effort !== undefined || d.effortInUse !== undefined;
-  if ((v >= MOBILE_PICKER_API_VERSION || !mobilePicker) && (v >= NEXT_PICK_API_VERSION || (!d.nextPick && d.nextSuggested === undefined)) && (v >= COORDINATORS_API_VERSION || !d.coordinatorProjectId) && (v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= OPTION_NOTES_API_VERSION || !d.asks?.some((a) => a.optionNotes)) && (v >= LOOSE_ENDS_API_VERSION || !d.looseEnds) && (v >= RELAY_CARDS_API_VERSION || (!d.review && !d.cardTurn)) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= KEYWORDS_API_VERSION || !d.keywords) && (v >= WAKE_NOTE_API_VERSION || !d.wakeNote) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= WAIT_STATE_API_VERSION || !d.waitState) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined) && (v >= PLAN_API_VERSION || d.pendingApproval?.kind !== 'approval' || d.pendingApproval.planSeq === undefined)) return d;
+  if ((v >= MOBILE_PICKER_API_VERSION || !mobilePicker) && (v >= NEXT_PICK_API_VERSION || (!d.nextPick && d.nextSuggested === undefined)) && (v >= COORDINATORS_API_VERSION || !d.coordinatorProjectId) && (v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= OPTION_NOTES_API_VERSION || !d.asks?.some((a) => a.optionNotes)) && (v >= LOOSE_ENDS_API_VERSION || !d.looseEnds) && (v >= RELAY_CARDS_API_VERSION || (!d.review && !d.cardTurn)) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= KEYWORDS_API_VERSION || !d.keywords) && (v >= WAKE_NOTE_API_VERSION || !d.wakeNote) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= WAIT_STATE_API_VERSION || !d.waitState) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined) && (v >= PLAN_API_VERSION || d.pendingApproval?.kind !== 'approval' || d.pendingApproval.planSeq === undefined) && (v >= APPROVAL_REASON_API_VERSION || d.pendingApproval?.kind !== 'approval' || d.pendingApproval.reason === undefined)) return d;
   const out = { ...d };
   if (v < MOBILE_PICKER_API_VERSION) {
     delete out.poolId;
@@ -1264,6 +1270,10 @@ export function forBackend(d: ThreadDoc, v: number, now: number): ThreadDoc {
   }
   if (v < PLAN_API_VERSION && out.pendingApproval?.kind === 'approval' && out.pendingApproval.planSeq !== undefined) {
     const { planSeq: _planSeq, ...rest } = out.pendingApproval;
+    out.pendingApproval = rest as PendingApproval;
+  }
+  if (v < APPROVAL_REASON_API_VERSION && out.pendingApproval?.kind === 'approval' && out.pendingApproval.reason !== undefined) {
+    const { reason: _reason, ...rest } = out.pendingApproval;
     out.pendingApproval = rest as PendingApproval;
   }
   if (v < WOKE_API_VERSION) delete out.woke;
@@ -1327,7 +1337,9 @@ export function toMessageDoc(threadId: string, e: PersistedEvent, scrub: (text: 
   // The runner's own words, a line or two: a move to another provider
   // also says which model takes over.
   if (e.type === 'system.note') {
-    const text = e.login || e.savedMessage ? scrub(e.text).trim().slice(0, NOTE_CHARS) : '';
+    // A move to or from Hibernating or the archive too (place-notes.ts), so
+    // the phone says when and who, as the Mac does.
+    const text = e.login || e.savedMessage || isPlaceNote(e.text) ? scrub(e.text).trim().slice(0, NOTE_CHARS) : '';
     return text ? { threadId, seq: e.seq, role: 'note', text, ...turn, at: e.ts } : undefined;
   }
   if (e.type === 'plan.proposed') {
@@ -2943,12 +2955,15 @@ export class ConvexSync {
       const shownAsIs = raw === undefined || this.scrubber.safeText(raw) === raw;
       const whole = shownAsIs && remoteCardShowsAll(e.name, e.input, cwd, e.title);
       const planSeq = e.name === 'ExitPlanMode' && e.itemId ? this.planSeqs.get(`${threadId} ${e.itemId}`) : undefined;
+      const reasonLine = e.reason ? cutSafely(this.scrubber.safeText(e.reason).trim(), 500) : '';
       this.addCard(threadId, {
         approvalId: e.approvalId, kind: 'approval', seq: e.seq, name: e.name,
         title: whole ? e.title : `${e.title}. ${remoteAllowRefused(this.name)}`,
         options: whole ? e.options : e.options.filter((o) => o !== 'allow' && o !== 'allowAlways'),
         ...(summary ? { inputSummary: summary } : {}),
         ...(planSeq !== undefined ? { planSeq } : {}),
+        // What made it ask, scrubbed as its input line is (API 113).
+        ...(reasonLine ? { reason: reasonLine } : {}),
       });
     } else if (e.type === 'question.requested') {
       this.addCard(threadId, { approvalId: e.approvalId, kind: 'question', seq: e.seq, questions: e.questions });

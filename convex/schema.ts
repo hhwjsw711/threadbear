@@ -211,6 +211,9 @@ export const threadFields = {
         // Claude's ExitPlanMode card: the seq of the plan row it waits on
         // (API 72), so the phone shows that plan and never an older one.
         planSeq: v.optional(v.number()),
+        // What made it ask, in a sentence (API 113): Auto's safety check,
+        // a rule, a hook.
+        reason: v.optional(v.string()),
       }),
       v.object({
         approvalId: v.string(),

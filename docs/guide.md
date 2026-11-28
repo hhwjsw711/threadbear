@@ -903,7 +903,7 @@ is deleted or paused. A thread Quiet inbox archived says so, with the
 model's reason, and hovering the line says what Quiet inbox is; one brought
 back because Quiet inbox shouldn't have hidden it says that, and whether you
 or an agent brought it back. These lines never fold into the turn's work
-above them. They are on the Mac only.
+above them. The phone app shows them too, and so does another Mac.
 
 When a thread is done, archive it: press ⌘E, hover its row and press the
 box, or swipe the row left with two fingers on the trackpad (right with

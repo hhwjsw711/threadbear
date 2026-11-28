@@ -9,7 +9,7 @@ public enum Plans {
 
     /// Whether a thread's open card is a plan waiting for Go ahead.
     public static func waiting(_ pending: PendingApproval?) -> Bool {
-        if case let .approval(_, name, _, _, _, _) = pending { return name == toolName }
+        if case let .approval(_, name, _, _, _, _, _) = pending { return name == toolName }
         return false
     }
 
@@ -22,19 +22,19 @@ public enum Plans {
     /// come yet: a message now would send that one back, Codex review, 11 Nov).
     public static func canSendBack(_ plan: PhoneMessage, pending: PendingApproval?, in messages: [PhoneMessage]) -> Bool {
         guard latest(in: messages)?.seq == plan.seq else { return false }
-        if waiting(pending), case let .approval(_, _, _, _, _, planSeq?) = pending { return planSeq == plan.seq }
+        if waiting(pending), case let .approval(_, _, _, _, _, planSeq?, _) = pending { return planSeq == plan.seq }
         return true
     }
 
     public static func plan(for pending: PendingApproval?, in messages: [PhoneMessage]) -> PhoneMessage? {
-        guard waiting(pending), case let .approval(_, _, _, _, _, planSeq?) = pending else { return nil }
+        guard waiting(pending), case let .approval(_, _, _, _, _, planSeq?, _) = pending else { return nil }
         return messages.last { $0.plan && $0.seq == planSeq }
     }
 
     /// Whether that card's Go ahead can be given from the phone: the runner
     /// offers only Deny there when the line it shows isn't all of it.
     public static func canGoAhead(_ pending: PendingApproval?) -> Bool {
-        if waiting(pending), case let .approval(_, _, _, options, _, _) = pending { return options.contains(.allow) }
+        if waiting(pending), case let .approval(_, _, _, options, _, _, _) = pending { return options.contains(.allow) }
         return false
     }
 

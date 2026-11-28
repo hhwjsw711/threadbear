@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FakeAccounts, FakeAdapter, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
-import { ConvexSync, forBackend, RELAY_CARDS_API_VERSION, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, NEXT_PICK_API_VERSION, MOBILE_PICKER_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
+import { ConvexSync, forBackend, APPROVAL_REASON_API_VERSION, RELAY_CARDS_API_VERSION, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, NEXT_PICK_API_VERSION, MOBILE_PICKER_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
 import type { ModelChoice, Project, ThreadSummary } from '../../src/protocol.ts';
 import { phoneCommands } from '../../src/handover.ts';
 import { Scheduler, type ScheduleBackend } from '../../src/schedules.ts';
@@ -1093,6 +1093,29 @@ test('plans: an older backend gets the plan as an ordinary reply', async () => {
     assert.equal(out.text, '# Bots');
     await sync.stop();
   }
+});
+
+test('approvals: the row says what made the card ask, for a backend that takes it', async () => {
+  const { h, sync, docs } = (() => {
+    const f = setupFull({ apiVersion: BACKEND_API_VERSION });
+    return { ...f, docs: () => f.calls.filter((c) => c.fn === 'sync:upsertThreads').flatMap((c) => c.args.threads as ThreadDoc[]) };
+  })();
+  sync.start();
+  await sync.flushNow();
+  const t = h.runner.create({ text: 'go', cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  const s = session(h, t.id);
+  s.init();
+  s.out({ kind: 'event', event: { type: 'approval.requested', approvalId: 'ap1', itemId: 'c1', name: 'Bash', title: 'Run a command', input: { command: 'git push --tags' }, options: ['allow', 'deny'], reason: "  Auto mode's safety check couldn't clear this: pushes tags.  " } as never });
+  h.clock.advance(SYNC_COALESCE_MS);
+  await tick();
+  const last = docs().filter((d) => d.threadId === t.id).at(-1)!;
+  const card = last.pendingApproval as { reason?: string };
+  assert.equal(card.reason, "Auto mode's safety check couldn't clear this: pushes tags.");
+  // An older backend's validator would turn the row down: it goes without.
+  assert.equal(BACKEND_API_VERSION >= APPROVAL_REASON_API_VERSION, true);
+  assert.equal((forBackend(last, APPROVAL_REASON_API_VERSION - 1, h.clock.now()).pendingApproval as { reason?: string }).reason, undefined);
+  assert.equal((forBackend(last, APPROVAL_REASON_API_VERSION, h.clock.now()).pendingApproval as { reason?: string }).reason, card.reason);
+  await sync.stop();
 });
 
 test('approvals: the row carries what the thread waits on until it is answered', async () => {

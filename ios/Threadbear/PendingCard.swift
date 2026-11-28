@@ -41,11 +41,19 @@ struct PendingCard: View {
     private var card: some View {
         VStack(alignment: .leading, spacing: 12) {
             switch pending {
-            case let .approval(id, _, _, options, _, _) where plan != nil:
+            case let .approval(id, _, _, options, _, _, _) where plan != nil:
                 planCard(id, plan: plan!, options: options)
-            case let .approval(id, name, title, options, inputSummary, _):
+            case let .approval(id, name, title, options, inputSummary, _, reason):
                 Label(title, systemImage: "hand.raised")
                     .font(.headline)
+                // What made it ask (backend API 113): Auto's safety check, a
+                // rule, a hook. As the Mac's card says it under the title.
+                if let reason, !reason.isEmpty {
+                    Text(reason)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let inputSummary, !inputSummary.isEmpty {
                     // Never cut short: Allow allows all of it. The runner only
                     // offers Allow here for a line of 160 characters or fewer

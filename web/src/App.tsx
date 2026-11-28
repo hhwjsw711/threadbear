@@ -775,6 +775,7 @@ function ApprovalCard({ token, threadId, approval }: { token: string; threadId: 
     return (
       <section className="card">
         <h2>{approval.title || approval.name}</h2>
+        {approval.reason ? <p className="muted">{approval.reason}</p> : null}
         {approval.inputSummary ? <pre className="approval-input">{approval.inputSummary}</pre> : null}
         <div className="ask-links">
           {approval.options.map((o) => (

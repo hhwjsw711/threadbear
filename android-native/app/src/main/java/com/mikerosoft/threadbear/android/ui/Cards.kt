@@ -177,6 +177,8 @@ fun ApprovalCard(card: PendingApproval.Approval, tapped: String?, respond: (Appr
     val signals = LocalSignals.current
     CardFrame(signals.needsYou) {
         Text(card.title, style = MaterialTheme.typography.titleMedium)
+        // What made it ask (backend API 113), as the Mac's card says it under the title.
+        card.reason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         val summary = card.inputSummary
         if (!summary.isNullOrBlank()) {
             // Never cut short: Allow allows all of it.

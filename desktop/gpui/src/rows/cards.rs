@@ -164,6 +164,7 @@ fn approval_title(item: &ApprovalItem, cx: &App) -> Div {
         .map(str::trim)
         .filter(|r| !r.is_empty());
     let runner_reason = ApprovalText::runner_reason(&item.request);
+    let ask_reason = ApprovalText::ask_reason(&item.request);
     v_flex()
         .child(
             title.child(
@@ -189,6 +190,15 @@ fn approval_title(item: &ApprovalItem, cx: &App) -> Div {
                     .text_size(px(size::DETAIL))
                     .line_height(px(19.))
                     .text_color(label)
+                    .child(why),
+            )
+        })
+        .when_some(ask_reason, |d, why| {
+            d.child(
+                div()
+                    .text_size(px(size::DETAIL))
+                    .line_height(px(19.))
+                    .text_color(quiet)
                     .child(why),
             )
         })

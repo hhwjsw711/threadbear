@@ -81,6 +81,18 @@ impl ApprovalText {
         (!title.is_empty()).then(|| Self::shown(title))
     }
 
+    /// What made the CLI ask (`reason`: Auto's safety check, a rule, a
+    /// hook), shown under the title. Not on a threadbear tool's card, whose
+    /// title already says it (runner_reason), nor when it only repeats the
+    /// title.
+    pub fn ask_reason(request: &ApprovalRequest) -> Option<String> {
+        if request.name.starts_with("mcp__threadbear__") {
+            return None;
+        }
+        let reason = request.reason.as_deref()?.trim();
+        (!reason.is_empty() && reason != request.title.trim()).then(|| Self::shown(reason))
+    }
+
     /// The decision in a word or two.
     pub fn decision(decision: ApprovalDecision) -> &'static str {
         match decision {
