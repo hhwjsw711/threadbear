@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { MAX_CARDS, MAX_HELD, MAX_RELAY_SEQ, PICTURE_WAIT_MS, Relay, SCALE, isRelaySeq, mergeTail, relayEvents, type RelayRow, type RelayThreadRow } from '../../src/relay.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
-import type { RemoteThreads } from '../../src/thread-index.ts';
+import type { RemoteThread, RemoteThreads } from '../../src/thread-index.ts';
 import { patiently } from '../helpers/patience.ts';
 
 const T = 'thread-on-mac-mini';
@@ -104,6 +104,7 @@ function harness(opts: HarnessOpts = {}) {
   let uploadN = 0;
   // What was uploaded to Convex, as [upload URL, bytes, type].
   const uploads: [string, string, string][] = [];
+  const moving = new Map<string, RemoteThread['moving']>();
   const relay = new Relay({
     source: () => ({
       key: 'owner',
@@ -153,6 +154,7 @@ function harness(opts: HarnessOpts = {}) {
       },
     }),
     remote: () => remote,
+    movingOf: (id) => moving.get(id),
     // This runner's inbox: what the app's media.import made.
     readPicture: (file) => (file.startsWith('/inbox/') ? { bytes: Buffer.from(`bytes of ${file}`), mediaType: 'image/png' } : { skip: "it isn't in this runner's inbox" }),
     subscribed: (id) => subscribed.has(id),
@@ -160,7 +162,7 @@ function harness(opts: HarnessOpts = {}) {
     clock,
     log: nullLogger,
   });
-  return { relay, calls, subs, published, subscribed, clock, remote, uploads };
+  return { relay, calls, subs, published, subscribed, clock, remote, uploads, moving };
 }
 
 test('it answers only for threads other runners have, and pages in relay seqs', async () => {
@@ -453,10 +455,128 @@ test("a login or model change goes to the thread's runner as one update, once th
   h.subs.get('relay:commandState')![1]!.onUpdate({ state: 'done' });
   await agent;
   assert.deepEqual(h.calls.filter((c) => c.fn === 'relay:queueCommand').at(-1)!.args.args, { model: 'haiku', by: 'agent' });
-  // No row carries effort, so this Mac couldn't show what it became.
-  await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, effort: 'high' }), /isn't possible through Convex yet/);
+  // Effort waits for API 112 (tested below); folder, pool and mode stay refused.
+  await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, effort: 'high' }), /once your Convex backend is updated/);
+  await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, poolId: 'main' }), /isn't possible through Convex yet/);
   await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, accountId: 'claude-2', title: 'x' }), /on its own/);
   await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, model: 'opus', carryOn: true }), /carryOn goes with accountId/);
+});
+
+test('effort changes go to another runner from API 112, publish thread.updated, and stay across list overlays until the row catches up', async () => {
+  const old = harness({ apiVersion: 111 });
+  await assert.rejects(old.relay.call(T, 'threads.update', { threadId: T, effort: 'high' }), /once your Convex backend is updated/);
+  assert.ok(!old.calls.some((c) => c.fn === 'relay:queueCommand'), 'nothing queued on an older backend');
+
+  const h = harness({ apiVersion: 112 });
+  // Open the thread so the watch holds its threads row (with effortInUse / modelInUse).
+  await h.relay.call(T, 'threads.subscribe', { threadId: T, afterSeq: 0 });
+  const rowSub = h.subs.get('relay:remoteThread')![0]!;
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'low', effortInUse: 'low' });
+  const updates = () =>
+    (h.published as { method: string; params: { thread?: Record<string, unknown> } }[])
+      .filter((n) => n.method === 'thread.updated')
+      .map((n) => n.params.thread!);
+  assert.equal(updates().at(-1)!.effort, 'low');
+  assert.equal(updates().at(-1)!.effortInUse, 'low');
+  assert.equal(updates().at(-1)!.modelInUse, 'gpt-6.2-sol');
+  assert.equal((h.relay.overlay(h.remote).threads[0] as Record<string, unknown>).effort, 'low');
+
+  // Invalid effort or mixing effort with title is refused before queueing.
+  await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, effort: 'turbo' }), /effort must be one of/);
+  await assert.rejects(h.relay.call(T, 'threads.update', { threadId: T, effort: 'high', title: 'x' }), /on its own/);
+  assert.equal(h.calls.filter((c) => c.fn === 'relay:queueCommand').length, 0);
+
+  // Set effort to high: queued, remembered, published, and preserved in overlay before w.row catches up.
+  const setHigh = h.relay.call(T, 'threads.update', { threadId: T, effort: 'high' });
+  await new Promise((r) => setImmediate(r));
+  h.subs.get('relay:commandState')![0]!.onUpdate({ state: 'done', result: { accountId: 'claude-1', model: 'gpt-6.2-sol', effort: 'high' } });
+  const { thread: highThread } = (await setHigh) as { thread: { effort?: string; effortInUse?: string; modelInUse?: string } };
+  assert.deepEqual(h.calls.filter((c) => c.fn === 'relay:queueCommand').at(-1)!.args.args, { effort: 'high' });
+  assert.equal(highThread.effort, 'high');
+  assert.equal(updates().at(-1)!.effort, 'high');
+  assert.equal((h.relay.overlay(h.remote).threads[0] as Record<string, unknown>).effort, 'high');
+
+  // Stale w.row still showing low does not clobber high; once w.row catches up, high stays cleanly.
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'low', effortInUse: 'low' });
+  assert.equal((h.relay.overlay(h.remote).threads[0] as Record<string, unknown>).effort, 'high');
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'high', effortInUse: 'low' });
+  assert.equal((h.relay.overlay(h.remote).threads[0] as Record<string, unknown>).effort, 'high');
+
+  // Clearing effort (null) or a remote runner dropping an unsupported effort clears it in thread.updated and overlay.
+  const clear = h.relay.call(T, 'threads.update', { threadId: T, effort: null });
+  await new Promise((r) => setImmediate(r));
+  h.subs.get('relay:commandState')![1]!.onUpdate({ state: 'done', result: { accountId: 'claude-1', model: 'gpt-6.2-sol', effort: null } });
+  const { thread: cleared } = (await clear) as { thread: { effort?: string } };
+  assert.equal(cleared.effort, undefined);
+  assert.equal(updates().at(-1)!.effort, undefined);
+  assert.equal((h.relay.overlay(h.remote).threads[0] as Record<string, unknown>).effort, undefined, 'cleared effort overrides stale w.row until it catches up');
+
+  // Remote runner on API 107-111 omits `effort` from result when dropped while still returning `model`.
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'medium', effortInUse: 'medium' });
+  const dropped = h.relay.call(T, 'threads.update', { threadId: T, effort: 'ultra' });
+  await new Promise((r) => setImmediate(r));
+  h.subs.get('relay:commandState')![2]!.onUpdate({ state: 'done', result: { accountId: 'claude-1', model: 'gpt-6.2-sol' } });
+  const { thread: afterDrop } = (await dropped) as { thread: { effort?: string } };
+  assert.equal(afterDrop.effort, undefined);
+  assert.equal(updates().at(-1)!.effort, undefined);
+
+  // Once w.row catches up (effort cleared), a live update from another client (e.g. phone) wins.
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effortInUse: 'medium' });
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'xhigh', effortInUse: 'medium' });
+  assert.equal(updates().at(-1)!.effort, 'xhigh');
+
+  // Even when the intermediate matching row is skipped (Mac sets max, then phone sets medium
+  // before w.row ever delivers max), the newer remote value wins immediately instead of hiding for 60s.
+  const setMax = h.relay.call(T, 'threads.update', { threadId: T, effort: 'max' });
+  await new Promise((r) => setImmediate(r));
+  h.subs.get('relay:commandState')![3]!.onUpdate({ state: 'done', result: { accountId: 'claude-1', model: 'gpt-6.2-sol', effort: 'max' } });
+  await setMax;
+  assert.equal(updates().at(-1)!.effort, 'max');
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'medium', effortInUse: 'medium' });
+  assert.equal(updates().at(-1)!.effort, 'medium', 'skipped intermediate row does not hide newer phone change');
+
+  // If a remembered override expires in sweep() without w.row ever changing, the authoritative w.row is published.
+  const setLow = h.relay.call(T, 'threads.update', { threadId: T, effort: 'low' });
+  await new Promise((r) => setImmediate(r));
+  h.subs.get('relay:commandState')![4]!.onUpdate({ state: 'done', result: { accountId: 'claude-1', model: 'gpt-6.2-sol', effort: 'low' } });
+  await setLow;
+  assert.equal(updates().at(-1)!.effort, 'low');
+  // Stale row still has medium: stays overridden until CHANGED_MS, then sweep publishes authoritative medium.
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'medium', effortInUse: 'medium' });
+  assert.equal(updates().at(-1)!.effort, 'low');
+  h.clock.advance(61_000);
+  assert.equal(updates().at(-1)!.effort, 'medium');
+
+  // An in-progress move on the remote thread is preserved on relayed thread.updated summaries.
+  h.moving.set(T, { moveId: 'm1', to: 'this-mac', toName: 'This Mac', state: 'packing' });
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'gpt-6.2-sol', effort: 'high', effortInUse: 'medium' });
+  assert.deepEqual(updates().at(-1)!.moving, h.moving.get(T));
+
+  // Oversized modelInUse from a compromised runner key is dropped.
+  rowSub.onUpdate({ runnerId: 'mac-mini', status: 'idle', modelInUse: 'x'.repeat(201), effort: 'high' });
+  assert.equal(updates().at(-1)!.modelInUse, undefined);
+
+  // Re-subscribing (e.g. app relaunch) re-emits the current row settings.
+  const beforeResub = updates().length;
+  await h.relay.call(T, 'threads.subscribe', { threadId: T, afterSeq: 0 });
+  assert.ok(updates().length > beforeResub);
+  assert.equal(updates().at(-1)!.effort, 'high');
+});
+
+test('creating a remote thread with an effort does not pin a guess over the first authoritative row', async () => {
+  const h = harness({ apiVersion: 112 });
+  const made = h.relay.create('mac-mini', { text: 'go', cwd: '/Users/b/x', runnerId: 'mac-mini', effort: 'ultra' });
+  await new Promise((r) => setImmediate(r));
+  h.subs.get('relay:commandState')![0]!.onUpdate({ state: 'done', threadId: 'new-effort' });
+  const created = (await made) as { thread: { id: string; effort?: string } };
+  assert.equal(created.thread.effort, 'ultra');
+  // When the real row arrives with effort dropped (e.g. Claude login dropped ultra), overlay shows real undefined.
+  h.remote.threads.push({ ...h.remote.threads[0]!, threadId: 'new-effort' });
+  await h.relay.call('new-effort', 'threads.subscribe', { threadId: 'new-effort', afterSeq: 0 });
+  h.subs.get('relay:remoteThread')!.at(-1)!.onUpdate({ runnerId: 'mac-mini', status: 'running', modelInUse: 'claude-opus-5-5' });
+  const overlaid = h.relay.overlay(h.remote).threads.find((t) => t.threadId === 'new-effort') as Record<string, unknown>;
+  assert.equal(overlaid.effort, undefined);
+  assert.equal(overlaid.modelInUse, 'claude-opus-5-5');
 });
 
 // 8 Nov: a picture pasted for a thread on Hetzner Cloud was refused with

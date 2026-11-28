@@ -45,7 +45,7 @@ import type { Notification } from './runner.ts';
 import type { RemoteThread, RemoteThreads } from './thread-index.ts';
 import type { Download, Post, Subscribe, Upload } from './sync.ts';
 import { picturesSaid, withoutCountLine } from './pictures.ts';
-import { ErrorCode, RpcError, remoteCreateMode, type Account, type AskAnswer, type LabReviewLedger } from './protocol.ts';
+import { EFFORT_LEVELS, ErrorCode, RpcError, isEffortLevel, remoteCreateMode, type Account, type AskAnswer, type LabReviewLedger } from './protocol.ts';
 import { seal } from './secrets.ts';
 
 export const SCALE = 8;
@@ -129,6 +129,9 @@ const BUTTONS_API = 68;
 // A login or model change for a thread there (convex/relay.ts
 // commandArgs, version.ts 77): an older backend refuses the command.
 const SETTINGS_API = 77;
+// An effort change for a thread there (convex/relay.ts commandArgs,
+// convex/sync.ts finishCommand, version.ts 112).
+const EFFORT_API = 112;
 // The pictures pasted into that runner's messages (convex/relay.ts
 // picturesAtSeqs): an older backend hasn't the query, so messages show as
 // their words alone, as before.
@@ -269,6 +272,10 @@ type Pending =
 export type RelayThreadRow = {
   runnerId: string;
   status: string;
+  // The thread's model in use and effort (backend API 107; not in threadIndex).
+  modelInUse?: string;
+  effort?: string;
+  effortInUse?: string;
   needs?: 'you' | 'nothing';
   pendingApproval?: Pending;
   asks?: { action: string; why?: string; reply?: string; options?: string[]; optionNotes?: string[]; suggested?: number; links?: { title: string; url: string }[]; ticked?: boolean }[];
@@ -321,6 +328,8 @@ type Watch = {
   shareSaid?: string;
   // The loose ends the app was last told of (noteLooseEnds), as JSON.
   endsSaid?: string;
+  // The threads row's modelInUse/effort/effortInUse last told to the app (noteSettings), as JSON.
+  settingsSaid?: string;
   // A recheckPlans read under way.
   rechecking?: boolean;
   // Pictures pasted into its messages, by row seq, in order (readPictures).
@@ -392,6 +401,9 @@ export type RelayDeps = {
   source: () => RelaySource | undefined;
   // Other runners and their threads, as the sidebar has them (thread-index.ts).
   remote: () => RemoteThreads;
+  // An in-progress move this runner knows of for a remote thread (main.ts
+  // remoteMoving), kept on relayed thread.updated summaries so they don't clear it.
+  movingOf?: (threadId: string, runnerId?: string) => RemoteThread['moving'];
   publish: (n: Notification) => void;
   readPicture?: ReadPicture;
   // Whether an app connection is subscribed to the thread (rpc.ts).
@@ -648,6 +660,11 @@ export function wasNotSent(e: unknown): boolean {
   return Boolean(e && typeof e === 'object' && (e as { notSent?: boolean }).notSent);
 }
 
+type RememberedKey = keyof RemoteThread | 'effort';
+type RememberedPatch = Partial<RemoteThread> & { effort?: string };
+type RememberedEntry = { value: unknown; at: number; hadRow?: boolean; was?: unknown };
+type RowSettings = { modelInUse?: string; effort?: string; effortInUse?: string };
+
 export class Relay {
   private deps: RelayDeps;
   private watches = new Map<string, Watch>();
@@ -659,7 +676,7 @@ export class Relay {
   // yet, put the thread back in the app's inbox. Each field goes once the
   // row shows it (so a later change from the phone isn't hidden) or after
   // CHANGED_MS, whichever is first.
-  private changed = new Map<string, Map<keyof RemoteThread, { value: unknown; at: number }>>();
+  private changed = new Map<string, Map<RememberedKey, RememberedEntry>>();
   private sweepTimer?: TimerHandle;
   private reads = 0;
   // What those reads brought back, as JSON bytes (about what Convex bills
@@ -734,9 +751,11 @@ export class Relay {
       lastSeenSeq: 0,
       runnerId: t.runnerId,
     };
-    for (const k of ['poolId', 'model', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'coordinatorProjectId', 'startedBy', 'asked', 'keywords', 'waitState'] as const) {
+    for (const k of ['poolId', 'model', 'modelInUse', 'effort', 'effortInUse', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'coordinatorProjectId', 'startedBy', 'asked', 'keywords', 'waitState'] as const) {
       if (t[k] !== undefined) thread[k] = t[k];
     }
+    const moving = t.moving ?? this.deps.movingOf?.(threadId, t.runnerId);
+    if (moving) thread.moving = moving;
     // Its real access, or "unknown" from a runner that doesn't say: never
     // left out, as an app reads a summary without one as Full access.
     thread.permissionMode = t.permissionMode || 'unknown';
@@ -777,21 +796,66 @@ export class Relay {
     this.deps.publish({ method: 'thread.updated', params: { thread: { ...this.summary(w.threadId), ...(share ? { share } : {}) } } } as unknown as Notification);
   }
 
+  /** The model-in-use and effort fields carried on the watched threads row (API 107). */
+  private rowSettingsOf(w: Watch | undefined): RowSettings {
+    const r = w?.row;
+    if (!r) return {};
+    const out: RowSettings = {};
+    if (typeof r.modelInUse === 'string' && r.modelInUse.length > 0 && r.modelInUse.length <= 200) out.modelInUse = r.modelInUse;
+    if (isEffortLevel(r.effort)) out.effort = r.effort;
+    if (isEffortLevel(r.effortInUse)) out.effortInUse = r.effortInUse;
+    return out;
+  }
+
+  /** The modelInUse/effort/effortInUse values actually present on an emitted summary. */
+  private settingsOf(t: Record<string, unknown>): RowSettings {
+    const out: RowSettings = {};
+    if (typeof t.modelInUse === 'string' && t.modelInUse.length > 0 && t.modelInUse.length <= 200) out.modelInUse = t.modelInUse;
+    if (isEffortLevel(t.effort)) out.effort = t.effort;
+    if (isEffortLevel(t.effortInUse)) out.effortInUse = t.effortInUse;
+    return out;
+  }
+
+  /** A watched thread's modelInUse/effort/effortInUse, said to the app as they change there (thread.updated). */
+  private noteSettings(w: Watch): void {
+    if (!w.row) return;
+    const thread = this.summary(w.threadId);
+    const shown = this.settingsOf(thread);
+    const said = JSON.stringify(shown);
+    if (said === w.settingsSaid) return;
+    const first = w.settingsSaid === undefined;
+    w.settingsSaid = said;
+    if (first && !shown.modelInUse && !shown.effort && !shown.effortInUse) return;
+    const share = toShare(w.row.share);
+    this.deps.publish({ method: 'thread.updated', params: { thread: { ...thread, ...(share ? { share } : {}) } } } as unknown as Notification);
+  }
+
   /** The row with the changes made from here that it doesn't show yet (`changed`). */
-  private withChanges<T extends Partial<RemoteThread>>(threadId: string, row: T | undefined): T {
+  private withChanges<T extends Partial<RemoteThread>>(threadId: string, row: T | undefined): T & RowSettings {
+    const w = this.watches.get(threadId);
+    const rs = this.rowSettingsOf(w);
+    const base: Record<string, unknown> = { ...row, ...rs };
     const kept = this.changed.get(threadId);
-    if (!kept) return { ...row } as T;
+    if (!kept) return base as T & RowSettings;
     const now = this.deps.clock.now();
-    const t: Record<string, unknown> = { ...row };
+    const t: Record<string, unknown> = { ...base };
     for (const [k, c] of kept) {
-      if (now - c.at >= CHANGED_MS || (row && shows(k, row[k], c.value))) kept.delete(k);
+      // effort lives on the watched threads row, never on the sidebar's
+      // threadIndex row: only treat it as caught up once w.row is loaded and
+      // either matches our change or moved off the pre-command value (e.g. a
+      // newer change from the phone whose row skipped ours).
+      const caughtUp = k === 'effort'
+        ? Boolean(w?.row && (shows(k, rs.effort, c.value) || (c.hadRow && rs.effort !== c.was)))
+        : Boolean(row && shows(k, row[k], c.value));
+      if (now - c.at >= CHANGED_MS || caughtUp) kept.delete(k);
+      else if (c.value === undefined) delete t[k];
       else t[k] = c.value === PUT_AWAY ? UNTIL_RESTART : c.value;
     }
     if (!kept.size) this.changed.delete(threadId);
     // The row's state is from before the change: without it the app's own
-    // rule draws the change (Codex's review, 23 Nov).
-    else delete t.waitState;
-    return t as T;
+    // rule draws the change (Codex's review, 23 Nov). Effort never moves waitState.
+    else if ([...kept.keys()].some((k) => k !== 'effort')) delete t.waitState;
+    return t as T & RowSettings;
   }
 
   /**
@@ -801,20 +865,23 @@ export class Relay {
    * row had caught up, put a thread just archived here back in the inbox.
    */
   overlay(remote: RemoteThreads): RemoteThreads {
-    // And a watched thread's loose ends, which its sidebar row doesn't have:
-    // the app makes the summary from that row, so without them here the next
-    // list took them off the done card.
+    // And a watched thread's loose ends and row settings (effort, effortInUse,
+    // modelInUse), which its sidebar row doesn't have: the app makes the
+    // summary from that row, so without them here the next list took them off.
     const ends = new Map<string, unknown>();
+    const watchedSettings = new Set<string>();
     for (const w of this.watches.values()) {
       const e = this.looseEndsOf(w);
       if (e) ends.set(w.threadId, e);
+      const rs = this.rowSettingsOf(w);
+      if (rs.modelInUse || rs.effort || rs.effortInUse) watchedSettings.add(w.threadId);
     }
-    if (!this.changed.size && !ends.size) return remote;
+    if (!this.changed.size && !ends.size && !watchedSettings.size) return remote;
     return {
       ...remote,
       threads: remote.threads.map((t) => {
-        const row = this.changed.has(t.threadId) ? this.withChanges(t.threadId, t) : t;
-        return ends.has(t.threadId) ? ({ ...row, looseEnds: ends.get(t.threadId) } as RemoteThread) : row;
+        const row = this.changed.has(t.threadId) || watchedSettings.has(t.threadId) ? this.withChanges(t.threadId, t) : t;
+        return ends.has(t.threadId) ? ({ ...row, looseEnds: ends.get(t.threadId) } as RemoteThread) : (row as RemoteThread);
       }),
     };
   }
@@ -866,10 +933,13 @@ export class Relay {
   }
 
   /** A change the other runner has done, for replies until its row shows it (`changed`). */
-  private remember(threadId: string, patch: Partial<RemoteThread>): void {
+  private remember(threadId: string, patch: RememberedPatch, before?: { hadRow: boolean; effort?: string }): void {
     const at = this.deps.clock.now();
-    const kept = this.changed.get(threadId) ?? new Map();
-    for (const [k, value] of Object.entries(patch)) kept.set(k as keyof RemoteThread, { value, at });
+    const kept = this.changed.get(threadId) ?? new Map<RememberedKey, RememberedEntry>();
+    for (const [k, value] of Object.entries(patch)) {
+      const entry: RememberedEntry = k === 'effort' && before?.hadRow ? { value, at, hadRow: true, was: before.effort } : { value, at };
+      kept.set(k as RememberedKey, entry);
+    }
     this.changed.set(threadId, kept);
   }
 
@@ -931,6 +1001,7 @@ export class Relay {
     w.row = row;
     this.noteShare(w);
     this.noteLooseEnds(w);
+    this.noteSettings(w);
     const running = row ? RUNNING.has(row.status) : true;
     // Ends its turn once its last messages have had a moment to arrive.
     if (!running && wasRunning && live) this.settle(w);
@@ -1204,8 +1275,18 @@ export class Relay {
   private sweep(): void {
     const now = this.deps.clock.now();
     for (const [id, kept] of this.changed) {
-      for (const [k, c] of kept) if (now - c.at >= CHANGED_MS) kept.delete(k);
+      let effortExpired = false;
+      for (const [k, c] of kept) {
+        if (now - c.at >= CHANGED_MS) {
+          kept.delete(k);
+          if (k === 'effort') effortExpired = true;
+        }
+      }
       if (!kept.size) this.changed.delete(id);
+      if (effortExpired) {
+        const w = this.watches.get(id);
+        if (w?.row) this.noteSettings(w);
+      }
     }
     for (const [id, w] of this.watches) {
       if (this.deps.subscribed(id)) {
@@ -1624,6 +1705,7 @@ export class Relay {
         const after = num(p.afterSeq) ?? 0;
         const seen = relaySeen(p.relaySeen, after);
         const said = w.shareSaid;
+        const settingsSaid = w.settingsSaid;
         await this.load(w);
         this.retryGap(w);
         await this.readPictures(w);
@@ -1641,11 +1723,15 @@ export class Relay {
         if (!w.given.size) w.given.add(after);
         this.live(w);
         // An app subscribing may be new (relaunched) and not know the share
-        // the watch said before: said again, if it's shared (unless reading
-        // the row just now said it).
+        // or settings the watch said before: said again, if set (unless
+        // reading the row just now said them).
         if (w.shareSaid === said) {
           w.shareSaid = undefined;
           this.noteShare(w);
+        }
+        if (w.settingsSaid === settingsSaid) {
+          w.settingsSaid = undefined;
+          this.noteSettings(w);
         }
         return { events, inProgress: [] };
       }
@@ -1722,20 +1808,25 @@ export class Relay {
           const s = p.snoozedUntil;
           changes.push(s === null ? [{ wake: true }, { snoozedUntil: undefined }] : s === 'restart' ? [{ snooze: { untilRestart: true } }, { snoozedUntil: UNTIL_RESTART }] : [{ snooze: { until: String(s) } }, { snoozedUntil: String(s) }]);
         }
-        // A login or model change (the composer's pickers, the limit box's
-        // Continue now on): one command, on its own, as that runner's
-        // threads.update takes them together. A folder, pool, mode or effort
-        // change still isn't possible this way (no row carries effort, so
-        // this Mac couldn't show what it became).
-        const settings = ['accountId', 'model', 'carryOn'] as const;
+        // A login, model or effort change (the composer's pickers, /effort,
+        // the limit box's Continue now on): one command, on its own, as that
+        // runner's threads.update takes them together. A folder, pool or mode
+        // change still isn't possible this way.
+        const settings = ['accountId', 'model', 'effort', 'carryOn'] as const;
         const known = new Set(['threadId', 'title', 'archived', 'verdict', 'archivedBy', 'starred', 'snoozedUntil', ...settings, 'byAgent', 'unconfine']);
-        if (Object.keys(p).some((k) => !known.has(k) && p[k] !== undefined)) this.unsupported(w, 'Changing its folder, pool, mode or effort');
+        if (Object.keys(p).some((k) => !known.has(k) && p[k] !== undefined)) this.unsupported(w, 'Changing its folder, pool or mode');
         if (settings.some((k) => p[k] !== undefined)) {
-          if (changes.length) throw new RpcError(ErrorCode.badParams, `Change ${this.runnerName(w.runnerId)}'s thread's login or model on its own, not with anything else.`);
-          this.needsBackend(w, SETTINGS_API, 'Changing its login or model');
+          if (changes.length) throw new RpcError(ErrorCode.badParams, `Change ${this.runnerName(w.runnerId)}'s thread's login, model or effort on its own, not with anything else.`);
+          if (p.effort !== undefined) {
+            if (p.effort !== null && !isEffortLevel(p.effort)) throw new RpcError(ErrorCode.badParams, `effort must be one of ${EFFORT_LEVELS.join(', ')} or null`);
+            this.needsBackend(w, EFFORT_API, 'Changing its effort');
+          } else {
+            this.needsBackend(w, SETTINGS_API, 'Changing its login or model');
+          }
           const change: Record<string, unknown> = {};
           if (p.accountId !== undefined) change.accountId = reqStr(p.accountId, 'accountId');
           if (p.model !== undefined) change.model = p.model === null ? null : reqStr(p.model, 'model');
+          if (p.effort !== undefined) change.effort = p.effort;
           if (p.carryOn === true) {
             if (change.accountId === undefined) throw new RpcError(ErrorCode.badParams, 'carryOn goes with accountId');
             change.carryOn = true;
@@ -1743,19 +1834,31 @@ export class Relay {
           // An agent's (rpc.ts: byAgent, or unconfine false from an older
           // draining runner): that runner starts no turn for it.
           if (p.byAgent === true || p.unconfine === false) change.by = 'agent';
+          const hadRow = Boolean(w.row);
+          const beforeEffort = hadRow ? this.rowSettingsOf(w).effort : undefined;
           const done = await this.command(w.runnerId, threadId, 'update', change, { done: true });
           // What that runner applied (sync.ts apply), not what was asked:
           // it may put its login's default in place of a model that login
-          // can't run, and a remembered request would hide that for a minute.
-          // Without its answer, the login alone, which it can't change.
-          const applied = (done.result && typeof done.result === 'object' ? done.result : {}) as { accountId?: unknown; model?: unknown };
-          const patch: Partial<RemoteThread> = {};
+          // can't run, or drop an effort the model doesn't support, and a
+          // remembered request would hide that for a minute. Without its
+          // answer, the login alone, which it can't change.
+          const applied = (done.result && typeof done.result === 'object' ? done.result : {}) as { accountId?: unknown; model?: unknown; effort?: unknown };
+          const patch: RememberedPatch = {};
           if (typeof applied.accountId === 'string') patch.accountId = applied.accountId;
           else if (typeof change.accountId === 'string') patch.accountId = change.accountId;
           if (change.accountId !== undefined) patch.poolId = undefined;
           if ('model' in applied) patch.model = typeof applied.model === 'string' ? applied.model : undefined;
-          this.remember(threadId, patch);
-          return { thread: this.summary(threadId) };
+          if ('effort' in applied) patch.effort = isEffortLevel(applied.effort) ? applied.effort : undefined;
+          // sync.ts omits `effort` from `result` when undefined while always
+          // sending `model`: treat absence alongside `model` as cleared.
+          else if ('model' in applied) patch.effort = undefined;
+          else if (change.effort !== undefined) patch.effort = typeof change.effort === 'string' ? change.effort : undefined;
+          this.remember(threadId, patch, { hadRow, effort: beforeEffort });
+          const thread = this.summary(threadId);
+          if (w.row) w.settingsSaid = JSON.stringify(this.settingsOf(thread));
+          const share = w.row ? toShare(w.row.share) : undefined;
+          this.deps.publish({ method: 'thread.updated', params: { thread: { ...thread, ...(share ? { share } : {}) } } } as unknown as Notification);
+          return { thread };
         }
         // Kept as each is done, so one failing after another went through
         // doesn't lose the one that did.
@@ -1873,6 +1976,7 @@ export class Relay {
         accountId: typeof p.accountId === 'string' ? p.accountId : '',
         provider: typeof p.provider === 'string' ? p.provider : 'claude',
         ...(typeof p.model === 'string' ? { model: p.model } : {}),
+        ...(isEffortLevel(p.effort) ? { effort: p.effort } : {}),
         status: 'starting',
         needsYou: false,
         createdAt: now,
@@ -1985,7 +2089,7 @@ function toShare(s: RelayThreadRow['share']): Share | undefined {
 
 // Whether the other runner's row already shows a change made from here:
 // its own times for archiving and starring, so only whether it's set.
-function shows(k: keyof RemoteThread, row: unknown, kept: unknown): boolean {
+function shows(k: RememberedKey, row: unknown, kept: unknown): boolean {
   if (kept === PUT_AWAY) return typeof row === 'string';
   if (k === 'archivedAt' || k === 'starredAt') return (row !== undefined) === (kept !== undefined);
   if (k === 'snoozedUntil' && typeof row === 'string' && typeof kept === 'string') return Date.parse(row) === Date.parse(kept);

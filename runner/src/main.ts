@@ -872,6 +872,15 @@ async function main(): Promise<void> {
   // 30 minutes.
   const REMOTE_MOVING_MS = 35 * 60_000;
   const remoteMoving = new Map<string, { moving: ThreadMoving; from: string; until: number }>();
+  const remoteMovingOf = (id: string, runnerId?: string): ThreadMoving | undefined => {
+    const m = remoteMoving.get(id);
+    if (!m) return undefined;
+    if (m.until < Date.now() || (runnerId && runnerId !== m.from) || runner.threads.has(id)) {
+      remoteMoving.delete(id);
+      return undefined;
+    }
+    return m.moving;
+  };
   const dressRemote = (r: RemoteThreads): RemoteThreads => {
     const o = relayRef?.overlay(r) ?? r;
     if (!remoteMoving.size) return o;
@@ -881,7 +890,7 @@ async function main(): Promise<void> {
       const t = o.threads.find((x) => x.threadId === id);
       if (m.until < now || (t && t.runnerId !== m.from) || runner.threads.has(id)) remoteMoving.delete(id);
     }
-    return { ...o, threads: o.threads.map((t) => (remoteMoving.has(t.threadId) ? { ...t, moving: remoteMoving.get(t.threadId)!.moving } : t)) };
+    return { ...o, threads: o.threads.map((t) => { const m = remoteMovingOf(t.threadId, t.runnerId); return m ? { ...t, moving: m } : t; }) };
   };
   const republishRemote = () => runner.publish({ method: 'remoteThreads.updated', params: dressRemote(sync.remoteThreads()) });
   // Set once moves are made, further down; sync leaves out what's moved away.
@@ -1555,6 +1564,7 @@ async function main(): Promise<void> {
   const relay = (relayRef = new Relay({
     source: () => sync.relaySource(),
     remote: () => sync.remoteNow(),
+    movingOf: remoteMovingOf,
     // Pictures for another runner's thread: only what media.import put in the inbox.
     readPicture: (file) => readShareImage(file, paths.inbox(cfg.home)),
     subscribed: (threadId) => rpcServer?.isSubscribed(threadId) ?? false,

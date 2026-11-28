@@ -525,4 +525,9 @@
 // 110: hosted HTML artifacts use file storage up to 10 MiB, allow inline
 //    scripts in an opaque offline sandbox, and support private/public visibility.
 // 111: optional per-pool backup choices on shared members and usage pools.
-export const API_VERSION = 111;
+// 112: an `update` command from the main Mac can also change a thread's
+//    `effort` (a known effort level, or null for the model's own level),
+//    and `sync:finishCommand` keeps the command's `result` for effort-only
+//    updates too. The Mac's runner sends `effort` on remote `threads.update`
+//    only from 112; an older backend refuses it.
+export const API_VERSION = 112;

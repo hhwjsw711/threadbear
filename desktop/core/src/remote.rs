@@ -221,6 +221,18 @@ fn summary(row: &Value) -> Option<ThreadSummary> {
             .as_str()
             .filter(|s| !s.is_empty())
             .map(str::to_owned),
+        model_in_use: row["modelInUse"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 200)
+            .map(str::to_owned),
+        effort: row["effort"]
+            .as_str()
+            .filter(|s| matches!(*s, "low" | "medium" | "high" | "xhigh" | "max" | "ultra"))
+            .map(str::to_owned),
+        effort_in_use: row["effortInUse"]
+            .as_str()
+            .filter(|s| matches!(*s, "low" | "medium" | "high" | "xhigh" | "max" | "ultra"))
+            .map(str::to_owned),
         status,
         needs_you: row["needsYou"].as_bool().unwrap_or(false),
         preview: text("preview"),
@@ -662,6 +674,31 @@ mod tests {
         assert!(rows.threads[0].is_coordinator());
         assert!(!rows.threads[1].is_coordinator());
         assert!(!rows.threads[2].is_coordinator());
+    }
+
+    #[test]
+    fn a_rows_effort_and_model_in_use_reach_the_summary() {
+        let oversized = "x".repeat(201);
+        let list = decode_remote_threads(&json!({
+            "runners": [{ "id": "r", "name": "Hetzner Cloud" }],
+            "threads": [
+                { "runnerId": "r", "threadId": "t1", "status": "idle", "createdAt": "2026-11-09T01:00:00.000Z",
+                  "modelInUse": "gpt-6.2-sol", "effort": "high", "effortInUse": "low" },
+                { "runnerId": "r", "threadId": "t2", "status": "idle", "createdAt": "2026-11-09T01:00:00.000Z",
+                  "modelInUse": "", "effort": "", "effortInUse": "" },
+                { "runnerId": "r", "threadId": "t3", "status": "idle", "createdAt": "2026-11-09T01:00:00.000Z",
+                  "modelInUse": oversized, "effort": "turbo", "effortInUse": "bogus" },
+            ],
+        }));
+        assert_eq!(list.threads[0].model_in_use.as_deref(), Some("gpt-6.2-sol"));
+        assert_eq!(list.threads[0].effort.as_deref(), Some("high"));
+        assert_eq!(list.threads[0].effort_in_use.as_deref(), Some("low"));
+        assert_eq!(list.threads[1].model_in_use, None);
+        assert_eq!(list.threads[1].effort, None);
+        assert_eq!(list.threads[1].effort_in_use, None);
+        assert_eq!(list.threads[2].model_in_use, None);
+        assert_eq!(list.threads[2].effort, None);
+        assert_eq!(list.threads[2].effort_in_use, None);
     }
 
     #[test]

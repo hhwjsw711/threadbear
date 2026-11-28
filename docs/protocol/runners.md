@@ -265,15 +265,18 @@ only way the app opens another runner's thread.
   other runner's key from its row, as the phone seals it, so the value
   never reaches the backend in the clear), `threads.markSeen` (only when
   the row is unread), `threads.update` (`title`, `archived` with its `verdict`, `starred`,
-  `snoozedUntil`; or, from backend API 77 and on their own, `accountId`
-  and `model`, with `carryOn` beside `accountId`, which go as one `update`
-  command that runner applies through its own `threads.update`, with
-  `byAgent` when `by: "agent"` (an agent's change, which starts no turn), and
-  finishes with the login and model it applied as the command's `result`,
-  which the answer's `{ thread }` shows; only the main Mac's commands,
-  `from: "mac"`, can carry them; an older backend's runner says it works
-  once the backend is updated; a folder, pool, mode or effort change is
-  `-32000`, as no row carries effort), `threads.hibernateWhen` (an
+  `snoozedUntil`; or, on their own, `accountId` and `model` from backend
+  API 77 with `carryOn` beside `accountId`, and `effort` (an `EffortLevel`
+  or `null`) from backend API 112, which go as one `update` command that
+  runner applies through its own `threads.update`, with `byAgent` when
+  `by: "agent"` (an agent's change, which starts no turn), and finishes
+  with the login, model and effort it applied as the command's `result`,
+  which the answer's `{ thread }` and a `thread.updated` show; only the
+  main Mac's commands, `from: "mac"`, can carry them; an older backend's
+  runner says it works once the backend is updated; a folder, pool or mode
+  change is `-32000`; a watched thread's `effort`, `effortInUse` and
+  `modelInUse` come from its `threads` row, API 107+, and are carried on
+  `thread.updated`, `remoteThreads.list` and `remoteThreads.updated`), `threads.hibernateWhen` (an
   `update` with `snooze: { said }`; that runner puts the thread away at once
   and the command is done once its model has said when, so the answer is
   `{ thread }` from the row, without `until`, `topic` or `why`, or the

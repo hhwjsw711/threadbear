@@ -221,6 +221,8 @@ export const remoteThread = query({
 // so a message it sends isn't marked as the phone's (phone.ts never sets it).
 // The modes a new thread can start on (runner/src/protocol.ts, PERMISSION_MODES).
 const PERMISSION_MODES = ['full', 'ask', 'auto', 'plan'] as const;
+// The effort levels a thread update may set (runner/src/protocol.ts, EFFORT_LEVELS).
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 // press and slashCommands (API 68): a reply button and the slash command
 // list, as the phone sends them (phone.ts press, slashCommands).
 const KINDS = ['send', 'respond', 'update', 'create', 'interrupt', 'call', 'share', 'press', 'slashCommands'] as const;
@@ -291,15 +293,19 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
       out = pick(a, ['approvalId', 'decision', 'message', 'answers', 'secret', 'sealed']);
       break;
     case 'update':
-      // A login or model change (API 77): the composer's pickers and the
-      // limit box's Continue now on, for a thread on another runner. They
-      // go together, as one threads.update there, since a model picked from
-      // another provider's column moves the login with it, and only with
-      // nothing else, so it reads as the one change it is. Not effort: the
-      // rows don't carry it, so the Mac couldn't show what it became.
-      if (['accountId', 'model', 'carryOn'].some((k) => a[k] !== undefined)) {
-        out = pick(a, ['accountId', 'model']);
+      // A login, model or effort change (API 77; effort from API 112): the
+      // composer's pickers and the limit box's Continue now on, for a thread
+      // on another runner. They go together, as one threads.update there,
+      // since a model picked from another provider's column moves the login
+      // with it, and only with nothing else, so it reads as the one change
+      // it is.
+      if (['accountId', 'model', 'effort', 'carryOn'].some((k) => a[k] !== undefined)) {
+        out = pick(a, ['accountId', 'model', 'effort']);
         for (const [k, x] of Object.entries(out)) {
+          if (k === 'effort') {
+            if (x !== null && !(typeof x === 'string' && EFFORT_LEVELS.includes(x as never))) throw bad(`effort must be one of ${EFFORT_LEVELS.join(', ')} or null`);
+            continue;
+          }
           // null puts the model back to the login's default.
           if (!(typeof x === 'string' && x.length > 0 && x.length <= 200) && !(x === null && k !== 'accountId')) throw bad(`${k} must be a short string`);
         }
