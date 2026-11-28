@@ -2167,15 +2167,68 @@ impl TranscriptModel {
             })
             .unwrap_or(turn.len());
         // One reply: the agent's message after end_turn is the reply, and
-        // nothing else the turn wrote competes with it. One between the
-        // fresh answer's start and its last card belongs to a card that was
-        // replaced after a wake.
-        let finals: Vec<usize> = (0..turn.len())
-            .filter(|&p| text(turn[p]).is_some_and(|t| t.is_final) && !(fresh..end).contains(&p))
+        // nothing else the turn wrote competes with it. Earlier replies before
+        // a steered message (`0..fresh`) stay visible above that message, while
+        // one between the fresh answer's start and its last card (`fresh..end`)
+        // belongs to a card that was replaced after a wake. If the fresh part
+        // wrote no final text of its own, keep earlier finals and still pick
+        // the fresh answer below instead of folding it away.
+        let mut out: HashSet<usize> = (0..fresh)
+            .filter(|&p| text(turn[p]).is_some_and(|t| t.is_final))
             .map(|p| turn[p])
             .collect();
-        if !finals.is_empty() {
-            return finals.into_iter().collect();
+        let reply_in_tail = |after: &[usize]| -> Vec<usize> {
+            let steps: Vec<usize> = after
+                .iter()
+                .copied()
+                .filter(|&k| {
+                    matches!(self.items[k].content, RowContent::User(_))
+                        || Self::is_real_step(&self.items[k])
+                })
+                .collect();
+            let last_result = steps
+                .iter()
+                .filter_map(|&k| self.result_seqs.get(&self.items[k].id).copied())
+                .max()
+                .unwrap_or(i64::MIN);
+            let last_step = steps.last().copied();
+            let words: Vec<usize> = after
+                .iter()
+                .copied()
+                .filter(|&k| {
+                    text(k).is_some_and(|t| !t.is_summary && !t.is_narration)
+                        && last_step.is_none_or(|last| k > last)
+                        && self.items[k].seq > last_result
+                })
+                .collect();
+            if !words.is_empty() {
+                words
+            } else {
+                after
+                    .iter()
+                    .rev()
+                    .find(|&&k| text(k).is_some_and(|t| !t.is_summary))
+                    .copied()
+                    .into_iter()
+                    .collect()
+            }
+        };
+        let fresh_finals: Vec<usize> = (end..turn.len())
+            .filter(|&p| text(turn[p]).is_some_and(|t| t.is_final))
+            .collect();
+        if let Some(&last_final_pos) = fresh_finals.last() {
+            out.extend(fresh_finals.iter().map(|&p| turn[p]));
+            // A queued CLI part whose user message arrived before Part 1's
+            // end_turn writes non-final text after Part 1's final reply when
+            // it ends without end_turn; keep that answer visible too.
+            let after = &turn[last_final_pos + 1..];
+            if after
+                .iter()
+                .any(|&k| text(k).is_some_and(|t| !t.is_summary))
+            {
+                out.extend(reply_in_tail(after));
+            }
+            return out;
         }
         let before_end = &turn[..end];
         // After the last step's row and after its result, as a message can
@@ -2207,12 +2260,30 @@ impl TranscriptModel {
             .collect();
         // The last card's own summary: one a wake replaced says what was true
         // before it (from Codex's review).
-        let summary_scope = if end < turn.len() { &turn[end..] } else { turn };
-        if let Some(&summary) = summary_scope
+        let summary_start = if end < turn.len() { end } else { fresh };
+        if let Some(summary_offset) = turn[summary_start..]
             .iter()
-            .rev()
-            .find(|&&k| text(k).is_some_and(|t| t.is_summary))
+            .rposition(|&k| text(k).is_some_and(|t| t.is_summary))
         {
+            let summary_pos = summary_start + summary_offset;
+            let summary = turn[summary_pos];
+            let after_summary = &turn[summary_pos + 1..];
+            let has_step_after = after_summary
+                .iter()
+                .any(|&k| Self::is_real_step(&self.items[k]));
+            // A queued CLI part (or later work) that ran steps after a bullets
+            // summary writes its own reply after its last step; keep both the
+            // summary and that reply visible instead of letting the length rule
+            // hide it or sweeping in pre-tool commentary.
+            if has_step_after
+                && after_summary
+                    .iter()
+                    .any(|&k| text(k).is_some_and(|t| !t.is_summary))
+            {
+                out.insert(summary);
+                out.extend(reply_in_tail(after_summary));
+                return out;
+            }
             // A narration block is only a paraphrase, so it never beats the bullets.
             let mut words: Vec<usize> = final_words
                 .iter()
@@ -2241,11 +2312,12 @@ impl TranscriptModel {
             } else {
                 text(summary).map_or(0, |t| super::text::count(&t.text))
             };
-            return if said > bar {
-                words.into_iter().collect()
+            if said > bar {
+                out.extend(words);
             } else {
-                HashSet::from([summary])
-            };
+                out.insert(summary);
+            }
+            return out;
         }
         // Words win over a narration paraphrase of them.
         let words: Vec<usize> = final_words
@@ -2254,15 +2326,17 @@ impl TranscriptModel {
             .filter(|&k| text(k).is_some_and(|t| !t.is_narration))
             .collect();
         if !words.is_empty() {
-            return words.into_iter().collect();
+            out.extend(words);
+            return out;
         }
         if !final_words.is_empty() {
-            return final_words.into_iter().collect();
+            out.extend(final_words);
+            return out;
         }
-        match turn.iter().rev().find(|&&k| text(k).is_some()) {
-            Some(&k) => HashSet::from([k]),
-            None => HashSet::new(),
+        if let Some(&k) = turn.iter().rev().find(|&&k| text(k).is_some()) {
+            out.insert(k);
         }
+        out
     }
 
     fn text_item(&self, k: usize) -> Option<&TextItem> {

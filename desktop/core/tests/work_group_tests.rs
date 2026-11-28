@@ -1217,3 +1217,170 @@ fn testATurnWithNoEditsHasNoCard() {
     ]);
     assert!(model.row("cf:t1").is_none());
 }
+
+#[test]
+fn testSteeredAnswerWithoutEndTurnStaysVisibleAfterEarlierFinalReply() {
+    let model = from_events(vec![
+        user(1, "First request"),
+        started(2),
+        end_turn_call(3, "e1"),
+        result_text(4, "e1", "Noted: this thread is done. Now write your reply.").with_turn("t1"),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "m1", "text": "First part finished.", "final": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            6,
+            "user.message",
+            json!({"text": "Also check staging"}),
+            Some("t1"),
+        ),
+        event_turn(
+            7,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Staging build failed; should I fix it?"}),
+            Some("t1"),
+        ),
+        done(8),
+    ]);
+    assert!(
+        model.row("a:m1").is_some(),
+        "earlier final reply stays visible above the steered message"
+    );
+    assert!(
+        model.row("a:m2").is_some(),
+        "steered answer without end_turn must not fold into Worked for"
+    );
+}
+
+#[test]
+fn testQueuedAnswerWithoutEndTurnStaysVisibleWhenMessagePrecededPart1EndTurn() {
+    let model = from_events(vec![
+        user(1, "First request"),
+        started(2),
+        event_turn(
+            3,
+            "user.message",
+            json!({"text": "Also check staging"}),
+            Some("t1"),
+        ),
+        end_turn_call(4, "e1"),
+        result_text(5, "e1", "Noted: this thread is done. Now write your reply.").with_turn("t1"),
+        event_turn(
+            6,
+            "assistant.text",
+            json!({"itemId": "m1", "text": "First part finished.", "final": true}),
+            Some("t1"),
+        ),
+        call(7, "c2").with_turn("t1"),
+        result(8, "c2").with_turn("t1"),
+        event_turn(
+            9,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Staging build failed; should I fix it?"}),
+            Some("t1"),
+        ),
+        done(10),
+    ]);
+    assert!(
+        model.row("a:m1").is_some(),
+        "Part 1 final reply stays visible"
+    );
+    assert!(
+        model.row("a:m2").is_some(),
+        "Part 2 non-final answer after Part 1 final stays visible"
+    );
+    assert!(
+        model.row("t:c2").is_none(),
+        "Part 2 tool call still folds into Worked for"
+    );
+}
+
+#[test]
+fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
+    // Part 2 runs a tool step after Part 1's long bullets summary and writes a shorter reply:
+    // both Part 1's summary and Part 2's reply stay visible, while pre-tool commentary folds.
+    let model = from_events(vec![
+        user(1, "First request"),
+        started(2),
+        event_turn(
+            3,
+            "user.message",
+            json!({"text": "Also check staging"}),
+            Some("t1"),
+        ),
+        end_turn_call(4, "e1"),
+        result_text(5, "e1", "Noted: this thread is done.").with_turn("t1"),
+        event_turn(
+            6,
+            "assistant.text",
+            json!({"itemId": "e1.summary", "text": "- Completed the full first request with detailed verification across all packages.", "summary": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            7,
+            "assistant.text",
+            json!({"itemId": "pre", "text": "Checking staging logs..."}),
+            Some("t1"),
+        ),
+        call(8, "c2").with_turn("t1"),
+        result(9, "c2").with_turn("t1"),
+        event_turn(
+            10,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Staging failed; fix it?"}),
+            Some("t1"),
+        ),
+        done(11),
+    ]);
+    assert!(
+        model.row("a:e1.summary").is_some(),
+        "Part 1 summary stays visible"
+    );
+    assert!(
+        model.row("a:m2").is_some(),
+        "shorter Part 2 reply after tool step stays visible"
+    );
+    assert!(
+        model.row("a:pre").is_none(),
+        "Part 2 pre-tool commentary stays folded"
+    );
+    assert!(model.row("t:c2").is_none(), "Part 2 tool call stays folded");
+
+    // A single-part folded steer in bullets mode with a short "Done." sign-off still folds "Done.".
+    let folded = from_events(vec![
+        user(1, "First request"),
+        started(2),
+        event_turn(
+            3,
+            "user.message",
+            json!({"text": "Also tidy the readme"}),
+            Some("t1"),
+        ),
+        end_turn_call(4, "e1"),
+        result_text(5, "e1", "Noted. Now write your final answer.").with_turn("t1"),
+        event_turn(
+            6,
+            "assistant.text",
+            json!({"itemId": "e1.summary", "text": "- Handled both requests and tidied the readme.", "summary": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            7,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Done."}),
+            Some("t1"),
+        ),
+        done(8),
+    ]);
+    assert!(
+        folded.row("a:e1.summary").is_some(),
+        "summary stays visible"
+    );
+    assert!(
+        folded.row("a:m2").is_none(),
+        "short sign-off after folded steer still folds"
+    );
+}

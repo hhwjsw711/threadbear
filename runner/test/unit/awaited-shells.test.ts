@@ -508,3 +508,144 @@ test("another runner message queued behind the nudge doesn't lose it at a stop, 
   assert.equal(st.rec.queue.some((m) => /weren't woken/.test(m.text)), false, 'the nudge is out of the queue');
   assert.equal(st.rec.stoppedWork?.what.length, 1, 'and left for the next runner to tell');
 });
+
+test('a dev server left after end_turn does not become awaited when a message steers in', async () => {
+  for (const folded of [false, true]) {
+    const h = makeHarness();
+    const { id, s } = start(h, 'Start the dev server');
+    s.out({ kind: 'tasks', tasks: [{ ...SHELL, description: 'npm run dev' }] });
+    s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: 'Noted: this thread is done. Now write your reply.', truncated: false, images: [] } });
+    s.text('m1', 'Dev server is up.');
+    h.runner.send(id, 'What port is it on?');
+    const [firstId, secondId] = s.sent.map((m) => m.id!);
+    if (folded) {
+      s.text('m2', 'Port 5173.');
+      s.result('completed', undefined, undefined, { answered: [firstId, secondId], answers: secondId, queuedTurns: 0 });
+    } else {
+      s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 1 });
+      s.text('m2', 'Port 5173.');
+      s.result('completed', undefined, undefined, { answered: [secondId], answers: secondId, queuedTurns: 0 });
+    }
+    await tick();
+    const t = h.runner.get(id);
+    assert.equal(h.runner.threads.get(id)!.rt.awaitedShells, undefined, `folded=${folded}: dev server not awaited`);
+    assert.equal(t.needs, undefined, `folded=${folded}: no inherited needs: nothing`);
+    assert.equal(t.needsYou, true, `folded=${folded}: notifies Mike`);
+  }
+});
+
+test('a steer after a refused or in-flight end_turn keeps the running shell awaited', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Run the tests');
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'you', asks: [{ question: 'Ship it?' }] } } });
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: false, text: 'Not ended: a shell job is still running.', truncated: false, images: [] } });
+  h.runner.send(id, 'Wait for the tests to finish');
+  const [firstId, secondId] = s.sent.map((m) => m.id!);
+  s.text('m1', 'Waiting on the tests.');
+  s.result('completed', undefined, undefined, { answered: [firstId, secondId], answers: secondId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(id);
+  assert.equal(t.needsYou, false, 'shell stays awaited after a refused end_turn + steer');
+  assert.deepEqual(h.runner.threads.get(id)!.rt.awaitedShells, ['sh_1']);
+});
+
+test('a dropped steered message notifies Mike even when Part 1 started a shell without end_turn', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Run the tests');
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  h.runner.send(id, 'Also check lint');
+  const [firstId] = s.sent.map((m) => m.id!);
+  s.text('m1', 'Tests running.');
+  s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(id);
+  assert.equal(h.runner.threads.get(id)!.rt.awaitedShells, undefined, 'dropped message is not hidden behind the shell');
+  assert.equal(t.needsYou, true, 'notifies Mike to resend the dropped message');
+});
+
+test('a shell started after a wake reopened end_turn stays awaited when a message steers in', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Start the server');
+  const dev = { ...SHELL, id: 'sh_dev', description: 'npm run dev' };
+  const tests = { ...SHELL, id: 'sh_tests', description: 'npm test' };
+  s.out({ kind: 'tasks', tasks: [dev] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  // A background job finishes while e1 runs, so e1's result hands the notice over.
+  s.out({ kind: 'event', event: { type: 'system.note', text: 'Background command "Build" completed (exit code 0)', wake: true } });
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: 'Noted: this thread is done. Now write your reply.', truncated: false, images: [] } });
+  s.text('m1', 'Server up.');
+  // The tool call reads the wake notice (moving reply phase to open) and starts a new test shell.
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'b1', name: 'Bash', kind: 'command', title: 'npm test', input: { command: 'npm test' } } });
+  assert.equal(h.runner.threads.get(id)!.rt.turn?.ended, undefined, 'wakeRead reopened the turn');
+  s.out({ kind: 'tasks', tasks: [dev, tests] });
+  h.runner.send(id, 'Keep watching the tests');
+  const [firstId, secondId] = s.sent.map((m) => m.id!);
+  s.text('m2', 'Still watching the tests.');
+  s.result('completed', undefined, undefined, { answered: [firstId, secondId], answers: secondId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(id);
+  assert.deepEqual(h.runner.threads.get(id)!.rt.awaitedShells, ['sh_tests'], 'only the post-wake shell is awaited, not the dev server');
+  assert.equal(t.needsYou, false);
+});
+
+test('a queued rollover after a JOBS_NUDGE-refused end_turn keeps Part 1 shell awaited', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Run the tests');
+  h.runner.send(id, 'Wait for the tests to finish');
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'you', asks: [{ question: 'Ship it?' }] } } });
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: false, text: 'Not ended: a shell job is still running.', truncated: false, images: [] } });
+  const [firstId, secondId] = s.sent.map((m) => m.id!);
+  s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 1 });
+  s.text('m2', 'Waiting on the tests.');
+  s.result('completed', undefined, undefined, { answered: [secondId], answers: secondId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(id);
+  assert.deepEqual(h.runner.threads.get(id)!.rt.awaitedShells, ['sh_1']);
+  assert.equal(t.needsYou, false);
+});
+
+test('a dev server started before an in-flight end_turn does not become awaited if steer lands before its accepted result', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Start the server');
+  const dev = { ...SHELL, id: 'sh_dev', description: 'npm run dev' };
+  s.out({ kind: 'tasks', tasks: [dev] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  // Mike steers before the adapter delivers e1's accepted tool.result.
+  h.runner.send(id, 'What port is it on?');
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: 'Noted: this thread is done. Now write your reply.', truncated: false, images: [] } });
+  const [firstId, secondId] = s.sent.map((m) => m.id!);
+  s.text('m2', 'Port 5173.');
+  s.result('completed', undefined, undefined, { answered: [firstId, secondId], answers: secondId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(id);
+  assert.equal(h.runner.threads.get(id)!.rt.awaitedShells, undefined, 'pre-call dev server cleared on accepted result');
+  assert.equal(t.needsYou, true, 'notifies Mike about the answer');
+});
+
+test('a queued rollover after a wake-reopened end_turn keeps the post-wake shell awaited', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h, 'Start the server');
+  const dev = { ...SHELL, id: 'sh_dev', description: 'npm run dev' };
+  const tests = { ...SHELL, id: 'sh_tests', description: 'npm test' };
+  h.runner.send(id, 'Also check staging');
+  s.out({ kind: 'tasks', tasks: [dev] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.out({ kind: 'event', event: { type: 'system.note', text: 'Background command "Build" completed (exit code 0)', wake: true } });
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: 'Noted: this thread is done. Now write your reply.', truncated: false, images: [] } });
+  s.text('m1', 'Server up.');
+  // A wake reopens Part 1 (moving reply phase to open) and it starts a test shell without another end_turn.
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'b1', name: 'Bash', kind: 'command', title: 'npm test', input: { command: 'npm test' } } });
+  assert.equal(h.runner.threads.get(id)!.rt.turn?.ended, undefined, 'wakeRead reopened Part 1');
+  s.out({ kind: 'tasks', tasks: [dev, tests] });
+  const [firstId, secondId] = s.sent.map((m) => m.id!);
+  s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 1 });
+  s.text('m2', 'Staging checked; tests are still running.');
+  s.result('completed', undefined, undefined, { answered: [secondId], answers: secondId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(id);
+  assert.deepEqual(h.runner.threads.get(id)!.rt.awaitedShells, ['sh_tests'], 'post-wake shell survives queued rollover');
+  assert.equal(t.needsYou, false);
+});

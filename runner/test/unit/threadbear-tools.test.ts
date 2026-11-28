@@ -1106,8 +1106,149 @@ test('a message after end_turn takes back an archive it asked for', async () => 
   s.text('m1', 'Sure, what is it?');
   s.result('completed', undefined, undefined, { answered: [secondId], answers: secondId, queuedTurns: 0 });
   await tick();
-  assert.equal(h.runner.get(thread.id).status, 'idle', 'the turn is over');
-  assert.equal(h.runner.get(thread.id).archivedAt, undefined);
+  const t = h.runner.get(thread.id);
+  assert.equal(t.status, 'idle', 'the turn is over');
+  assert.equal(t.archivedAt, undefined);
+  assert.equal(t.needs, undefined, 'does not inherit the earlier needs: nothing');
+  assert.equal(t.needsYou, true, 'notifies Mike about the queued answer');
+});
+
+test('queued CLI turn after an earlier end_turn does not inherit needs nothing, headline, or next', async () => {
+  for (const steerBeforeEndTurn of [false, true]) {
+    const h = makeHarness();
+    const { thread, s } = start(h);
+    const { call } = tools(h, thread.id, undefined, () => true);
+    if (steerBeforeEndTurn) h.runner.send(thread.id, 'Also check the staging build');
+    const first = { headline: 'First part done', needs: 'nothing', next: ['Old follow-up'] };
+    toolCall(s, 'e1', END_TURN, first);
+    const r = await call('end_turn', first);
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: r.text, truncated: false, images: [] } });
+    s.text('m1', 'First part finished.');
+    if (!steerBeforeEndTurn) h.runner.send(thread.id, 'Also check the staging build');
+    const [firstId, secondId] = s.sent.map((m) => m.id!);
+    s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 1 });
+    // Second CLI turn answers the queued message without calling end_turn.
+    s.text('m2', 'Staging build failed on tests; should I fix it?');
+    s.result('completed', undefined, undefined, { answered: [secondId], answers: secondId, queuedTurns: 0 });
+    await tick();
+    const t = h.runner.get(thread.id);
+    assert.equal(t.status, 'idle');
+    assert.equal(t.needs, undefined, `steerBeforeEndTurn=${steerBeforeEndTurn}: no inherited needs: nothing`);
+    assert.equal(t.needsYou, true, `steerBeforeEndTurn=${steerBeforeEndTurn}: notifies Mike`);
+    assert.equal(t.waitState, 'needsYou');
+    const done = h.events(thread.id).filter((e) => e.type === 'turn.completed').at(-1) as { next?: string[] };
+    assert.equal(done.next, undefined, 'no inherited follow-ups');
+    assert.equal(t.preview, 'Staging build failed on tests; should I fix it?');
+    const m2 = h.events(thread.id).find((e) => e.type === 'assistant.text' && e.itemId === 'm2');
+    assert.equal(m2?.type === 'assistant.text' && m2.final, undefined, 'queued turn text before end_turn is not marked final');
+  }
+});
+
+test('a steered message folded into the same CLI turn after end_turn does not inherit needs nothing or archive', async () => {
+  const h = makeHarness();
+  const { thread, s } = start(h);
+  const { call } = tools(h, thread.id, undefined, () => true);
+  const first = { headline: 'Done', needs: 'nothing', archive: true, next: ['Old follow-up'] };
+  toolCall(s, 'e1', END_TURN, first);
+  const r = await call('end_turn', first);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: r.text, truncated: false, images: [] } });
+  s.text('m1', 'Done with the first request.');
+  h.runner.send(thread.id, 'Hold on, check auth too');
+  // CLI folds the steered message into the same CLI turn; agent replies without calling end_turn again.
+  s.text('m2', 'Found an auth bug; want me to patch it?');
+  const [firstId, secondId] = s.sent.map((m) => m.id!);
+  s.result('completed', undefined, undefined, { answered: [firstId, secondId], answers: secondId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(thread.id);
+  assert.equal(t.status, 'idle');
+  assert.equal(t.archivedAt, undefined);
+  assert.equal(t.needs, undefined);
+  assert.equal(t.needsYou, true);
+  const done = h.events(thread.id).filter((e) => e.type === 'turn.completed').at(-1) as { next?: string[] };
+  assert.equal(done.next, undefined);
+  assert.equal(t.preview, 'Found an auth bug; want me to patch it?');
+});
+
+test('a steered message dropped by the CLI after end_turn notifies instead of inheriting needs nothing or archiving', async () => {
+  const h = makeHarness();
+  const { thread, s } = start(h);
+  const { call } = tools(h, thread.id, undefined, () => true);
+  h.runner.send(thread.id, "Wait, don't archive");
+  const first = { headline: 'Done', needs: 'nothing', archive: true };
+  toolCall(s, 'e1', END_TURN, first);
+  const r = await call('end_turn', first);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: r.text, truncated: false, images: [] } });
+  s.text('m1', 'All done.');
+  const [firstId] = s.sent.map((m) => m.id!);
+  // CLI finishes only the first message with queuedTurns: 0, dropping the second.
+  s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 0 });
+  await tick();
+  const t = h.runner.get(thread.id);
+  assert.equal(t.archivedAt, undefined, 'not archived when a steered message was dropped');
+  assert.equal(t.needs, undefined);
+  assert.equal(t.needsYou, true, 'notifies Mike that his message was dropped');
+  assert.match(String(t.preview), /dropped by the CLI/, 'preview shows the drop note, not the stale Done headline');
+  assert.ok(h.events(thread.id).some((e) => e.type === 'system.note' && /dropped by the CLI/.test(String(e.text))));
+});
+
+test('queued CLI turn after steer-before-end_turn can call end_turn cleanly without ALREADY_ENDED or ARCHIVE_ADDED', async () => {
+  // Part 2 asks Mike (previously refused as ALREADY_ENDED because takenEndTurn saw Part 1's call after user.message).
+  {
+    const h = makeHarness();
+    const { thread, s } = start(h);
+    const { call } = tools(h, thread.id, undefined, () => true);
+    h.runner.send(thread.id, 'Also check staging');
+    const first = { headline: 'First part done', needs: 'nothing' };
+    toolCall(s, 'e1', END_TURN, first);
+    const r1 = await call('end_turn', first);
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: !r1.error, text: r1.text, truncated: false, images: [] } });
+    s.text('m1', 'First part done.');
+    const [firstId, secondId] = s.sent.map((m) => m.id!);
+    s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 1 });
+    // Part 2 answers the queued message and calls end_turn with asks.
+    const second = { headline: 'Deploy staging?', needs: 'you', asks: [{ question: 'Deploy staging now?', options: [{ label: 'Yes' }, { label: 'No' }] }] };
+    toolCall(s, 'e2', END_TURN, second);
+    const r2 = await call('end_turn', second);
+    assert.equal(r2.error, false, r2.text);
+    assert.match(r2.text, /^Noted: this thread will wait in Needs you/);
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e2', ok: true, text: r2.text, truncated: false, images: [] } });
+    s.text('m2', 'Staging is ready to deploy.');
+    s.result('completed', undefined, undefined, { answered: [secondId], answers: secondId, queuedTurns: 0 });
+    await tick();
+    const t = h.runner.get(thread.id);
+    assert.equal(t.needs, 'you');
+    assert.equal(t.needsYou, true);
+    assert.deepEqual(t.asks?.map((a: { action: string }) => a.action), ['Deploy staging now?']);
+    assert.equal(t.preview, 'Deploy staging?');
+  }
+  // Part 2 archives with headline/next (previously returned ARCHIVE_ADDED and dropped headline/next).
+  {
+    const h = makeHarness();
+    const { thread, s } = start(h);
+    const { call } = tools(h, thread.id, undefined, () => true);
+    h.runner.send(thread.id, 'Archive once done');
+    const first = { headline: 'First part done', needs: 'nothing' };
+    toolCall(s, 'e1', END_TURN, first);
+    const r1 = await call('end_turn', first);
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: !r1.error, text: r1.text, truncated: false, images: [] } });
+    s.text('m1', 'First part done.');
+    const [firstId, secondId] = s.sent.map((m) => m.id!);
+    s.result('completed', undefined, undefined, { answered: [firstId], answers: firstId, queuedTurns: 1 });
+    const second = { headline: 'All archived', needs: 'nothing', archive: true, next: ['Check prod metrics later'] };
+    toolCall(s, 'e2', END_TURN, second);
+    const r2 = await call('end_turn', second);
+    assert.equal(r2.error, false, r2.text);
+    assert.match(r2.text, /^Noted: this thread is done/, 'taken as a fresh end_turn, not ARCHIVE_ADDED');
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e2', ok: true, text: r2.text, truncated: false, images: [] } });
+    s.text('m2', 'Archived.');
+    s.result('completed', undefined, undefined, { answered: [secondId], answers: secondId, queuedTurns: 0 });
+    await tick();
+    const t = h.runner.get(thread.id);
+    assert.ok(t.archivedAt);
+    assert.equal(t.preview, 'All archived');
+    const done = h.events(thread.id).filter((e) => e.type === 'turn.completed').at(-1) as { next?: string[] };
+    assert.deepEqual(done.next, ['Check prod metrics later']);
+  }
 });
 
 test('a repeat end_turn with no new message: archive is added and the card stands, anything else is refused and changes nothing', async () => {

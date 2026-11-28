@@ -29,11 +29,11 @@
 //             asked for (`rewrite`: to write that reply again, for dead links):
 //             text is dropped as after any end_turn; the next taken end_turn is
 //             that card, and its reply is written again under it.
-//   open      an end_turn taken, then the turn opened again: Mike wrote into
-//             it, the agent read a background job's notice, or Codex's bullets
-//             form took one with "Noted. Now write your final answer". Text is
-//             ordinary again (still the reply after a one-reply end_turn,
-//             `replyAfter`), and another end_turn is no repeat.
+//   open      an end_turn taken, then the turn opened again: the agent read a
+//             background job's notice, or Codex's bullets form took one with
+//             "Noted. Now write your final answer". Text is ordinary again
+//             (still the reply after a one-reply end_turn, `replyAfter`), and
+//             another end_turn is no repeat.
 //   odd       fields together that no move writes, kept as found; every event
 //             on it is refused (reply-phase.test.ts shows no walk reaches one).
 //
@@ -52,7 +52,8 @@
 //     added     ARCHIVE_ADDED, SNOOZE_ADDED   (data: the call before, plus archive or snooze)
 //   text        own assistant.text            kept      dropped*  reply     dropped*  kept (reply if replyAfter)
 //   reasoning   own thinking                  kept      dropped   kept      dropped   kept
-//   message     Mike (or anyone) steered in   working   open      open+     open      open (archive, snooze, waitFor off)
+//   message     Mike (or anyone) steered in,  working   working   working   working   working (fresh working; only `by` stays)
+//               or a queued CLI turn starts
 //   wakeRead    a job's notice read           working   open      open+     open+r    open (headline, summary marks off)
 //   nudge       the Stop hook sent it back    working   reopened  reopened  reopened  open   (reopened only with reopen)
 //
@@ -268,18 +269,15 @@ export function moveReply(s: ReplyState, e: ReplyEvent): ReplyMove {
       return text(s, e);
     case 'reasoning':
       return ok(s, { route: hasEnded(s) && !replyAfter(s) ? 'dropped' : 'kept' });
-    case 'message': {
-      // He wrote again, so the turn owes him another reply; a card it was
-      // sent back for gives way to this message's own; and an archive,
-      // snooze or wait it asked for before reading this is off ("wait, one
-      // more thing" shouldn't send the thread away). It can ask again. The
-      // call before too: a call written before the message is refused for it
-      // (UNREAD_MESSAGE), which puts those arguments back.
-      const off = (a: Record<string, unknown> | undefined) => (a ? { ...a, archive: false, snooze: undefined, waitFor: undefined } : undefined);
-      const c = { call: { ...s.call, input: off(s.call.input), before: off(s.call.before) }, said: s.said };
-      if (s.kind === 'working') return ok({ kind: 'working', ...c });
-      return ok({ kind: 'open', ...(replyAfter(s) ? { replyAfter: true } : {}), ...c, ...finals(s) });
-    }
+    case 'message':
+      // A new message (steered into the turn, or waiting for the next CLI
+      // turn in it) starts a fresh reply phase: any end_turn, card, headline,
+      // summary, reply or Stop-hook nudge from before it belonged to the
+      // earlier message and mustn't carry into the turn's end (otherwise an
+      // answer without a new end_turn inherits needs: "nothing" and never
+      // notifies Mike). Only `by` stays: the least access across this turn's
+      // end_turn calls.
+      return ok({ kind: 'working', call: s.call.by ? { by: s.call.by } : {}, said: {} });
     case 'wakeRead': {
       // Read a background job's notice after an end_turn: the work after it
       // is the turn's latest, so its text is kept and is the preview, and the
@@ -290,14 +288,16 @@ export function moveReply(s: ReplyState, e: ReplyEvent): ReplyMove {
       return ok({ kind: 'open', ...(replyAfter(s) ? { replyAfter: true } : {}), ...reopened, call: s.call, said, ...finals(s) });
     }
     case 'nudge': {
-      const said: Said = { ...s.said, nudged: true };
       // Sent back for a card under a reply already written: that reply
       // stands, so words from here are dropped like any after end_turn.
-      if (e.reopen && hasEnded(s)) {
+      // When nothing is ended (e.g. a message cleared it), a reopen nudge
+      // has nothing to reopen and mustn't mark the fresh turn as nudged.
+      if (e.reopen) {
+        if (!hasEnded(s)) return ok(s);
         const owed = s.kind === 'replying' ? undefined : s.owed;
-        return ok({ kind: 'reopened', ...(e.rewrite ? { rewrite: true } : {}), ...(owed !== undefined ? { owed } : {}), call: s.call, said, ...finals(s) });
+        return ok({ kind: 'reopened', ...(e.rewrite ? { rewrite: true } : {}), ...(owed !== undefined ? { owed } : {}), call: s.call, said: { ...s.said, nudged: true }, ...finals(s) });
       }
-      return ok({ ...s, said });
+      return ok({ ...s, said: { ...s.said, nudged: true } });
     }
     default:
       return unreachable(e);

@@ -94,7 +94,7 @@ import type { Models } from './models/index.ts';
 import { LATE_CHECK_LOST, LATE_CHECK_QUEUED, LATE_NEWS_KEPT_MS, localWhen } from './wake-when.ts';
 import { parseWhen } from './when.ts';
 import { SERVER_NAME } from './threadbear-mcp.ts';
-import { archiveFromTool, bylineFromTool, END_TURN_TOOL, openAskState, runsFromTool, snoozeFromTool, waitForFromTool, WakeRead } from './needs.ts';
+import { archiveFromTool, bylineFromTool, END_TURN_TOOL, endTurnTaken, needsFromText, openAskState, runsFromTool, snoozeFromTool, waitForFromTool, WakeRead } from './needs.ts';
 import { dropsStream, replyTurn, turnNeeds, type ReplyEvent, type ReplyMove, type ReplyOut } from './reply-phase.ts';
 import { cliHears, cliOf, cliRuntime, runningSession, STALE, type CliEvent, type CliMove } from './cli-session.ts';
 import type { Needs } from './needs.ts';
@@ -325,6 +325,10 @@ export type Turn = {
   // Shell jobs the CLI started during this turn, by id, so one it ends
   // without end_turn to wait for them stays unfinished (awaitedShells).
   shellsStarted?: Set<string>;
+  // Snapshot of shellsStarted at each own end_turn call, by itemId, so an
+  // accepted result still clears pre-call shells even if steer() cleared
+  // endTurnCall before the result arrived (Codex's review, round 3).
+  endTurnShells?: Map<string, Set<string>>;
   // A message in it was more than the runner carrying an earlier turn on
   // (isCarryOn): new work, from Mike, a schedule, another thread or the
   // runner's own reports (settleInstructionsNews).
@@ -433,6 +437,10 @@ export type Turn = {
   // Whether the agent has read a background task's notification that came
   // into the turn (needs.ts, WakeRead).
   wake?: WakeRead;
+  // Event seq where an earlier CLI part of this turn ended with queued
+  // messages still to answer: MCP's end_turn checks only events after this so
+  // the earlier part's end_turn cannot trigger ALREADY_ENDED for the next.
+  replyResetSeq?: number;
 };
 
 export type TurnHold = 'save' | 'setup' | 'broken' | 'token' | 'handover';
@@ -2033,10 +2041,16 @@ export class Runner {
   cardReopened(threadId: string): boolean {
     return this.threads.get(threadId)?.rt.turn?.cardReopened === true;
   }
-  // For end_turn's handler: whether the running turn was sent back to fix
-  // dead file links in its reply, so it's asked for a new one whole.
+  // ...for dead file links in its reply: the reply written doesn't stand.
   replyRewrite(threadId: string): boolean {
     return this.threads.get(threadId)?.rt.turn?.replyRewrite === true;
+  }
+
+  // For end_turn's handler: event seq where an earlier CLI part of this turn
+  // ended with queued messages left to answer (so events at or before it
+  // belong to the earlier part, not this one).
+  replyResetSeq(threadId: string): number | undefined {
+    return this.threads.get(threadId)?.rt.turn?.replyResetSeq;
   }
 
   // For end_turn's handler: whether a message sent into the running turn is
@@ -2635,9 +2649,10 @@ export class Runner {
     if (!isCarryOn(msg)) turn.newWork = true;
     if (fromMike(msg.text, msg)) turn.byMike = true;
     if (msg.wakeReason === COORDINATOR_TASK_WAKE) turn.fromCoordinatorTasks = true;
-    // He wrote again, so the turn owes him another reply; a card it was sent
-    // back for (needs.ts, REPLY_ASKS) gives way to this message's own (from
-    // Codex's review); an archive it asked for before reading this is off.
+    // He wrote again, so the turn owes him another reply; any earlier
+    // end_turn, card, headline or archive is cleared so his message can't
+    // inherit it. Shells started before a taken end_turn were already cleared
+    // when that call was taken, so shells started after a wake stay intact.
     this.reply(st, { kind: 'message' });
     this.markDirty(st);
     // A change reaches a running turn too, or a clear could wait out as many
@@ -3225,7 +3240,25 @@ export class Runner {
         let ended: ReplyOut | undefined;
         if (rt.turn) {
           if (ev.type === 'tool.call' && own && ev.name === `mcp__${SERVER_NAME}__${END_TURN_TOOL}`) {
+            (rt.turn.endTurnShells ??= new Map()).set(ev.itemId, new Set(rt.turn.shellsStarted));
             this.reply(st, { kind: 'call', itemId: ev.itemId, input: ev.input, by: leastAuthority(rt.turn.endTurnBy, this.authorityNow(rec.id)) });
+          }
+          if (ev.type === 'tool.result') {
+            const preShells = rt.turn.endTurnShells?.get(ev.itemId);
+            if (preShells !== undefined) {
+              rt.turn.endTurnShells!.delete(ev.itemId);
+              // Shells started before an accepted end_turn (e.g. a dev server
+              // left for Mike) are accounted for by it — even if steer()
+              // cleared endTurnCall while the call was in flight — while any
+              // shell started afterward (e.g. after a wake or steer) stays.
+              if (endTurnTaken(ev)) {
+                if (rt.turn.shellsStarted) {
+                  for (const id of preShells) rt.turn.shellsStarted.delete(id);
+                  if (!rt.turn.shellsStarted.size) rt.turn.shellsStarted = undefined;
+                }
+                delete rt.awaitedShells;
+              }
+            }
           }
           if (ev.type === 'tool.result' && ev.itemId === rt.turn.endTurnCall) {
             const res = this.reply(st, { kind: 'result', itemId: ev.itemId, ok: ev.ok, text: ev.text });
@@ -3478,7 +3511,16 @@ export class Runner {
           // wait for an answer that won't come.
           const unsaved = turn.messages.some(id => !turn.startedMessages?.has(id) && !rec.interruptedMessages?.includes(turn.inputs?.get(id) ?? -1) && !turn.requeuedMessages?.has(id));
           turn.messages = [];
-          if (!turn.interruptRequested || unsaved) this.emit(st, { type: 'system.note', text: 'A message sent during this turn was dropped by the CLI. Send it again.' }, turn.turnId);
+          if (!turn.interruptRequested || unsaved) {
+            const droppedNote = 'A message sent during this turn was dropped by the CLI. Send it again.';
+            this.emit(st, { type: 'system.note', text: droppedNote }, turn.turnId);
+            rec.preview = oneLine(droppedNote, LIMITS.previewChars);
+            // A dropped message must always reach Mike, never stay hidden behind
+            // an earlier end_turn or an awaited shell.
+            turn.shellsStarted = undefined;
+            delete rt.awaitedShells;
+            this.reply(st, { kind: 'message' });
+          }
         }
         // Still something to answer: a turn the CLI ran by itself while
         // this thread's message waited in its queue, or a message sent
@@ -3490,15 +3532,22 @@ export class Runner {
           rt.inProgress.clear();
           // Any end_turn taken by the CLI turn that just finished happened
           // before the queued message(s) ran, so clear it for the next turn.
-          // Its shells go with it: one it had its say over isn't awaited,
-          // and one it left without one still is (Gemini's review, round 3).
+          // Its shells go with it: shells before an accepted end_turn were
+          // already cleared on endTurnTaken, while any remaining shell is
+          // awaited unless the part ended with a say (ended, or — when not
+          // reopened by wakeRead — replyNeeds or a closing text section).
+          const reopenedByWake = Boolean(turn.tookEndTurn && !turn.ended);
+          const hadSay = Boolean(turn.ended || (!reopenedByWake && (turn.replyNeeds || (!turn.command && turn.lastText && needsFromText(turn.lastText)))));
           if (turn.shellsStarted?.size) {
-            if (r.outcome === 'completed' && !turnNeeds(turn) && this.wakes(st)) rt.awaitedShells = [...new Set([...(rt.awaitedShells ?? []), ...turn.shellsStarted])];
+            if (r.outcome === 'completed' && !hadSay && this.wakes(st)) rt.awaitedShells = [...new Set([...(rt.awaitedShells ?? []), ...turn.shellsStarted])];
             turn.shellsStarted = undefined;
           }
-          if (r.outcome === 'completed' && turnNeeds(turn)) delete rt.awaitedShells;
+          if (r.outcome === 'completed' && hadSay) delete rt.awaitedShells;
+          turn.endTurnShells = undefined;
           this.reply(st, { kind: 'message' });
+          turn.wake = undefined;
           if (r.outcome === 'failed' && r.error) this.emit(st, { type: 'error', message: r.error }, turn.turnId);
+          turn.replyResetSeq = rec.lastSeq;
           break;
         }
         this.completeTurn(st, r);

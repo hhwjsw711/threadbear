@@ -102,15 +102,15 @@ function byHand(t: T, e: ReplyEvent): Outcome {
       if (ev.type === 'assistant.text') o.ev = ev;
       return o;
     }
-    case 'message':
-      t.ended = false;
-      t.owedReply = undefined;
-      t.cardReopened = false;
-      t.replyRewrite = false;
-      if (t.endTurn) t.endTurn = { ...t.endTurn, archive: false, snooze: undefined, waitFor: undefined };
-      // Fixed with reply-phase.ts: the call before loses them too (below).
-      if (t.endTurnBefore) t.endTurnBefore = { ...t.endTurnBefore, archive: false, snooze: undefined, waitFor: undefined };
+    case 'message': {
+      // Fixed with reply-phase.ts: a new message resets the reply phase to a
+      // fresh working state, keeping only endTurnBy (the least access across
+      // calls), so the answer cannot inherit an earlier end_turn's needs/card.
+      const by = t.endTurnBy;
+      for (const k of REPLY_FIELDS) delete t[k];
+      if (by !== undefined) t.endTurnBy = by;
       return o;
+    }
     case 'wakeRead':
       if (!(t.ended || t.tookEndTurn)) return o;
       t.ended = false;
@@ -120,12 +120,15 @@ function byHand(t: T, e: ReplyEvent): Outcome {
       t.narrationItem = undefined;
       return o;
     case 'nudge':
-      t.endTurnNudged = true;
-      if (e.reopen && t.ended) {
+      if (e.reopen) {
+        if (!t.ended) return o;
+        t.endTurnNudged = true;
         t.cardReopened = true;
         t.replyAfter = false;
         t.replyRewrite = e.rewrite;
+        return o;
       }
+      t.endTurnNudged = true;
       return o;
   }
 }
@@ -221,6 +224,8 @@ const STATES: Record<string, () => T> = {
   workingRefusedCall: () => walk('call.archive', 'result.refused'),
   workingNudged: () => walk('text.plain', 'nudge'),
   workingAfterMessage: () => walk('call.snooze', 'result.refused', 'message'),
+  workingAfterBulletsMessage: () => walk('call.bullets', 'result.bulletsDone', 'message'),
+  workingAfterReplyMessage: () => walk('call.oneReply', 'result.replyNext', 'text.plain', 'message'),
   ended: () => walk('text.plain', 'call.bullets', 'result.bulletsDone'),
   endedOwed: () => walk('call.bullets', 'result.bulletsOwed'),
   endedOwedAny: () => walk('text.narration', 'call.bullets', 'result.bulletsNarration'),
@@ -233,8 +238,6 @@ const STATES: Record<string, () => T> = {
   reopened: () => walk('call.oneReply', 'result.replyNext', 'text.plain', 'nudgeReopen'),
   reopenedRewrite: () => walk('call.oneReply', 'result.replyNext', 'text.long', 'nudgeRewrite'),
   reopenedOwed: () => walk('call.bullets', 'result.bulletsOwed', 'nudgeReopen'),
-  openMessage: () => walk('call.bullets', 'result.bulletsDone', 'message'),
-  openReply: () => walk('call.oneReply', 'result.replyNext', 'text.plain', 'message'),
   openWake: () => walk('call.oneReply', 'result.replyNext', 'text.plain', 'wakeRead'),
   openReopened: () => walk('call.oneReply', 'result.replyNext', 'text.plain', 'nudgeReopen', 'wakeRead'),
   codexNoted: () => walk('call.bullets', 'result.codexNoted'),
@@ -242,11 +245,12 @@ const STATES: Record<string, () => T> = {
 };
 
 const PHASES: Record<string, string> = {
-  fresh: 'working', working: 'working', workingNarration: 'working', workingRefusedCall: 'working', workingNudged: 'working', workingAfterMessage: 'working',
+  fresh: 'working', working: 'working', workingNarration: 'working', workingRefusedCall: 'working', workingNudged: 'working',
+  workingAfterMessage: 'working', workingAfterBulletsMessage: 'working', workingAfterReplyMessage: 'working',
   ended: 'ended', endedOwed: 'ended', endedOwedAny: 'ended', endedStands: 'ended', endedHeadline: 'ended', endedArchived: 'ended',
   replying: 'replying', replyingWrote: 'replying', replyingAsks: 'replying',
   reopened: 'reopened', reopenedRewrite: 'reopened', reopenedOwed: 'reopened',
-  openMessage: 'open', openReply: 'open', openWake: 'open', openReopened: 'open', codexNoted: 'open', codexNotedAfterEnd: 'ended',
+  openWake: 'open', openReopened: 'open', codexNoted: 'open', codexNotedAfterEnd: 'ended',
 };
 
 test('each phase reads as its kind', () => {
@@ -344,31 +348,50 @@ test('a second end_turn that adds archive or snooze keeps the card taken', () =>
   assert.equal(replyOf(t).kind, 'replying');
 });
 
-// Found by the table: Mike writes while the agent's second end_turn is being
-// written, and that call is refused for it (UNREAD_MESSAGE), which put back
-// the first call's arguments, archive and all. A turn that then ended with no
-// other end_turn archived the thread he had just written to.
-test('a message cancels the archive of a call refused for it, not just the latest', () => {
+// A new message resets the reply phase to working so an answer that finishes
+// without another end_turn can't inherit the earlier end_turn's needs/archive,
+// nor let an in-flight pre-message call's result restore them. Only endTurnBy
+// stays (least access across the turn's end_turn calls).
+test('a message clears the earlier end_turn and ignores an in-flight pre-message result, keeping only endTurnBy', () => {
   const t = walk('call.archive', 'result.bulletsDone');
-  replyTurn(t as unknown as Turn, { kind: 'call', itemId: 'c2', input: { needs: 'nothing', next: ['More'] }, by: { mode: 'full' } });
+  replyTurn(t as unknown as Turn, { kind: 'call', itemId: 'c2', input: { needs: 'nothing', next: ['More'] }, by: { mode: 'ask' } });
   replyTurn(t as unknown as Turn, { kind: 'message' });
+  assert.equal(replyOf(t).kind, 'working');
+  assert.equal(t.endTurn, undefined);
+  assert.deepEqual(t.endTurnBy, { mode: 'ask' }, 'least access stays across the turn');
   replyTurn(t as unknown as Turn, { kind: 'result', itemId: 'c2', ...RESULTS.unread });
-  assert.equal(t.endTurn?.archive, false);
-  for (const [n, input] of [['snooze', CALLS.snooze], ['archive', CALLS.archive]] as const) {
+  assert.equal(t.endTurn, undefined);
+  for (const [n] of [['snooze', CALLS.snooze], ['archive', CALLS.archive]] as const) {
     const u = walk(`call.${n}`, 'result.bulletsDone', 'call.next');
     replyTurn(u as unknown as Turn, { kind: 'message' });
     replyTurn(u as unknown as Turn, { kind: 'result', itemId: 'c-next', ...RESULTS.repeat });
-    assert.deepEqual(u.endTurn, { ...input, archive: false, snooze: undefined, waitFor: undefined });
+    assert.equal(u.endTurn, undefined);
   }
+  // An in-flight pre-message call whose accepted result lands after the message
+  // must not end the turn or drop words written for the new message.
+  const v = walk('call.oneReply');
+  replyTurn(v as unknown as Turn, { kind: 'message' });
+  replyTurn(v as unknown as Turn, { kind: 'result', itemId: 'c-oneReply', ...RESULTS.bulletsDone });
+  assert.equal(replyOf(v).kind, 'working');
+  assert.equal(v.endTurn, undefined);
+  const w = replyTurn(v as unknown as Turn, { kind: 'text', itemId: 'x1', text: 'Answering the new message.' });
+  assert.ok(w.ok && w.out.route === 'kept');
+  // A stale reopen/rewrite nudge arriving after a message reset must not mark
+  // the fresh working turn as nudged (which would make end_turn keep a dead reply).
+  const n = walk('call.oneReply', 'result.replyNext', 'message');
+  replyTurn(n as unknown as Turn, { kind: 'nudge', reopen: true, rewrite: true });
+  assert.equal(n.endTurnNudged, undefined);
+  assert.equal(n.cardReopened, undefined);
+  assert.equal(n.replyRewrite, undefined);
 });
 
 // From Gemini's review: the repeat was taken as adding archive, and Mike's
-// message landed before its result, which put archive back on.
+// message landed before its result, which must not put archive back on.
 test('a message before a repeat\'s ARCHIVE_ADDED result keeps the archive off', () => {
   const t = walk('call.next', 'result.bulletsDone', 'call.archive');
   replyTurn(t as unknown as Turn, { kind: 'message' });
   replyTurn(t as unknown as Turn, { kind: 'result', itemId: 'c-archive', ...RESULTS.archiveAdded });
-  assert.equal(t.endTurn?.archive, false);
+  assert.equal(t.endTurn, undefined);
   const u = walk('call.next', 'result.bulletsDone', 'call.archive', 'result.archiveAdded');
   assert.equal(u.endTurn?.archive, true);
 });

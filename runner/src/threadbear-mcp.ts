@@ -78,6 +78,9 @@ export type ThreadControl = {
   cardReopened?: (threadId: string) => boolean;
   // ...for dead file links in its reply: the reply written doesn't stand.
   replyRewrite?: (threadId: string) => boolean;
+  // Event seq where an earlier CLI part of this turn ended with queued
+  // messages left to answer (Runner.replyResetSeq).
+  replyResetSeq?: (threadId: string) => number | undefined;
   // A message the agent can't have read when it wrote this end_turn
   // (needs.ts, UNREAD_MESSAGE). Asking counts as a refusal for it.
   unreadMessage?: (threadId: string) => boolean;
@@ -337,18 +340,19 @@ export function buildThreadbearTools(
   };
 
   // The current turn's events, oldest first: back a page at a time until
-  // its turn.started.
+  // its turn.started (or the queued-part reset boundary, if later).
   const turnEvents = async (): Promise<PersistedEvent[]> => {
+    const since = control.replyResetSeq?.(selfId);
     const out: PersistedEvent[] = [];
     let before: number | undefined;
     for (let pages = 0; pages < 20; pages++) {
       const page = await control.events(selfId, { beforeSeq: before, limit: 500 });
       const evs = page.events as PersistedEvent[];
       out.unshift(...evs);
-      if (!evs.length || page.firstSeq <= 1 || evs.some((e) => e.type === 'turn.started')) break;
+      if (!evs.length || page.firstSeq <= 1 || (since !== undefined && page.firstSeq <= since) || evs.some((e) => e.type === 'turn.started')) break;
       before = page.firstSeq;
     }
-    return out;
+    return since !== undefined ? out.filter((e) => e.seq > since) : out;
   };
 
   // The thread's events back to its last few finished turns, oldest
@@ -390,7 +394,7 @@ export function buildThreadbearTools(
   // an ACP adapter that drops or delays error text would otherwise loop on the
   // same refusal (Antigravity/Neon, 26 Nov 2026).
   const notedInTurn = new Map<string, number>();
-  const turnSeqOf = (events: PersistedEvent[]): number | undefined => events.findLast((e) => e.type === 'turn.started')?.seq;
+  const turnSeqOf = (events: PersistedEvent[]): number | undefined => control.replyResetSeq?.(selfId) ?? events.findLast((e) => e.type === 'turn.started')?.seq;
   const alreadyNoted = (key: string, events: PersistedEvent[], inEvents: boolean): boolean => {
     if (inEvents) return true;
     const seq = turnSeqOf(events);

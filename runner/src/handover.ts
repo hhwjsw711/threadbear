@@ -929,6 +929,10 @@ export class ThreadRouter implements ThreadControl {
     return this.runner.replyRewrite(threadId);
   }
 
+  replyResetSeq(threadId: string): number | undefined {
+    return this.runner.replyResetSeq(threadId);
+  }
+
   openSubagentCards(threadId: string): string[] {
     return this.runner.openSubagentCards(threadId);
   }
