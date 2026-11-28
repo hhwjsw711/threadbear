@@ -62,6 +62,7 @@ unsafe extern "C" {
         pad: f64,
         gen: u64,
     );
+    fn tb_popup_reveal(panel_ns_view: *mut c_void, gen: u64);
     fn tb_popup_hide(panel_ns_view: *mut c_void);
 }
 
@@ -203,25 +204,47 @@ fn dispatch_menu_key(gen: u64, kind: u32, cx: &mut App) {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RevealState {
+    Measuring,
+    Sized { tries: u8 },
+    Shown,
+}
+
+#[cfg(target_os = "macos")]
 struct ActivePopup {
     gen: u64,
+    tag: &'static str,
     owner: AnyWindowHandle,
     anchor: Bounds<Pixels>,
     menu: Entity<PopupMenu>,
     _dismissed: Subscription,
     panel_size: Size<Pixels>,
+    reveal: RevealState,
 }
 
 #[cfg(target_os = "macos")]
 struct PopupHostView {
     active: Option<ActivePopup>,
+    /// Last measured panel size per dropdown tag so re-opens already start at
+    /// the exact final size with zero resize frames.
+    cached_sizes: std::collections::HashMap<&'static str, Size<Pixels>>,
 }
 
 #[cfg(target_os = "macos")]
 impl PopupHostView {
     fn new() -> Self {
-        Self { active: None }
+        Self {
+            active: None,
+            cached_sizes: std::collections::HashMap::new(),
+        }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn sizes_close(a: Size<Pixels>, b: Size<Pixels>, tol: f32) -> bool {
+    (f32::from(a.width) - f32::from(b.width)).abs() <= tol
+        && (f32::from(a.height) - f32::from(b.height)).abs() <= tol
 }
 
 #[cfg(target_os = "macos")]
@@ -238,7 +261,7 @@ impl Render for PopupHostView {
         let pad = gpui_kit::px(SHADOW_PAD);
         let box_el = div().relative().flex_none().child(menu).child(
             canvas(
-                move |bounds, _window, cx| {
+                move |bounds, window, cx| {
                     let w = f32::from(bounds.size.width);
                     let h = f32::from(bounds.size.height);
                     if w < 1. || h < 1. {
@@ -248,19 +271,49 @@ impl Render for PopupHostView {
                         gpui_kit::px((w + 2. * SHADOW_PAD).ceil()),
                         gpui_kit::px((h + 2. * SHADOW_PAD).ceil()),
                     );
-                    let needs_resize = view.upgrade().is_some_and(|v| {
-                        v.read(cx).active.as_ref().is_some_and(|a| {
-                            a.gen == gen
-                                && ((f32::from(a.panel_size.width) - f32::from(target.width)).abs()
-                                    > 1.
-                                    || (f32::from(a.panel_size.height) - f32::from(target.height))
-                                        .abs()
-                                        > 1.)
-                        })
+                    let viewport = window.viewport_size();
+                    let Some(v) = view.upgrade() else {
+                        return;
+                    };
+                    let action = v.read(cx).active.as_ref().and_then(|a| {
+                        if a.gen != gen {
+                            return None;
+                        }
+                        if !sizes_close(a.panel_size, target, 1.0) {
+                            return Some(0u8);
+                        }
+                        match a.reveal {
+                            RevealState::Shown => None,
+                            RevealState::Measuring => {
+                                if sizes_close(viewport, target, 2.5) {
+                                    Some(1u8)
+                                } else {
+                                    Some(0u8)
+                                }
+                            }
+                            RevealState::Sized { tries } => {
+                                if sizes_close(viewport, target, 2.5) || tries >= 2 {
+                                    Some(1u8)
+                                } else {
+                                    Some(2u8)
+                                }
+                            }
+                        }
                     });
-                    if needs_resize {
-                        let view = view.clone();
-                        cx.defer(move |cx| reposition_active(view, gen, target, cx));
+                    match action {
+                        Some(0) => {
+                            let view = view.clone();
+                            cx.defer(move |cx| reposition_active(view, gen, target, cx));
+                        }
+                        Some(1) => {
+                            let view = view.clone();
+                            cx.defer(move |cx| reveal_active(view, gen, target, cx));
+                        }
+                        Some(2) => {
+                            let view = view.clone();
+                            cx.defer(move |cx| bump_reveal_wait(view, gen, cx));
+                        }
+                        _ => {}
                     }
                 },
                 |_, _, _, _| {},
@@ -360,10 +413,17 @@ fn reposition_active(
     let Some(view) = view.upgrade() else {
         return;
     };
-    let info = view.update(cx, |host, _| {
+    let info = view.update(cx, |host, cx| {
         let active = host.active.as_mut().filter(|a| a.gen == gen)?;
         active.panel_size = target;
-        Some((active.owner, active.anchor))
+        if active.reveal != RevealState::Shown {
+            active.reveal = RevealState::Sized { tries: 0 };
+        }
+        let tag = active.tag;
+        let out = (active.owner, active.anchor);
+        host.cached_sizes.insert(tag, target);
+        cx.notify();
+        Some(out)
     });
     let Some((owner_handle, anchor)) = info else {
         return;
@@ -398,6 +458,63 @@ fn reposition_active(
             SHADOW_PAD as f64,
             gen,
         );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn bump_reveal_wait(view: WeakEntity<PopupHostView>, gen: u64, cx: &mut App) {
+    if ACTIVE_GEN.load(Ordering::SeqCst) != gen {
+        return;
+    }
+    let Some(view) = view.upgrade() else {
+        return;
+    };
+    view.update(cx, |host, cx| {
+        if let Some(active) = host.active.as_mut().filter(|a| a.gen == gen) {
+            if let RevealState::Sized { tries } = &mut active.reveal {
+                *tries = tries.saturating_add(1);
+                cx.notify();
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_active(view: WeakEntity<PopupHostView>, gen: u64, target: Size<Pixels>, cx: &mut App) {
+    if ACTIVE_GEN.load(Ordering::SeqCst) != gen {
+        return;
+    }
+    let Some(view) = view.upgrade() else {
+        return;
+    };
+    let should_reveal = view.update(cx, |host, _| {
+        let Some(active) = host.active.as_mut().filter(|a| a.gen == gen) else {
+            return false;
+        };
+        if active.reveal == RevealState::Shown {
+            return false;
+        }
+        active.reveal = RevealState::Shown;
+        let tag = active.tag;
+        host.cached_sizes.insert(tag, target);
+        true
+    });
+    if !should_reveal {
+        return;
+    }
+    let host_window = HOST.with(|h| h.borrow().as_ref().map(|host| host.window));
+    let Some(host_window) = host_window else {
+        return;
+    };
+    let panel_view = host_window
+        .update(cx, |_, w, _| crate::web_panels::native_view(w))
+        .ok()
+        .flatten();
+    if let Some(panel_view) = panel_view {
+        // SAFETY: `panel_view` is the live popup window's NSView on the main thread.
+        unsafe {
+            tb_popup_reveal(panel_view, gen);
+        }
     }
 }
 
@@ -493,10 +610,17 @@ pub(crate) fn open_menu(
             return false;
         };
         let gen = NEXT_GEN.fetch_add(1, Ordering::SeqCst);
-        let initial_size = size(
-            gpui_kit::px((f32::from(min_width).max(200.) + 2. * SHADOW_PAD).ceil()),
-            gpui_kit::px((220. + 2. * SHADOW_PAD).ceil()),
-        );
+        let initial_size = host_view
+            .read(cx)
+            .cached_sizes
+            .get(tag)
+            .copied()
+            .unwrap_or_else(|| {
+                size(
+                    gpui_kit::px((f32::from(min_width).max(200.) + 2. * SHADOW_PAD).ceil()),
+                    gpui_kit::px((220. + 2. * SHADOW_PAD).ceil()),
+                )
+            });
         let mut build = Some(build);
         let placed = host_window.update(cx, |_, popup_window, cx| {
             let build = build.take()?;
@@ -508,11 +632,13 @@ pub(crate) fn open_menu(
                 });
                 host.active = Some(ActivePopup {
                     gen,
+                    tag,
                     owner: owner_handle,
                     anchor,
                     menu,
                     _dismissed: dismissed,
                     panel_size: initial_size,
+                    reveal: RevealState::Measuring,
                 });
                 cx.notify();
             });

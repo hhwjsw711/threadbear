@@ -258,6 +258,7 @@ static void tb_popup_style_panel(NSWindow *panel, NSView *panelView,
   panel.opaque = NO;
   panel.backgroundColor = [NSColor clearColor];
   panel.hasShadow = NO;
+  panel.animationBehavior = NSWindowAnimationBehaviorNone;
   [panel invalidateShadow];
   [panel setReleasedWhenClosed:NO];
   panel.level = owner ? owner.level : NSPopUpMenuWindowLevel;
@@ -296,6 +297,8 @@ void tb_popup_place(void *panel_ns_view, void *owner_ns_view, double anchor_x,
 
   // Defer styleMask/setFrame/ordering to the next main-queue turn so AppKit's
   // synchronous resize callbacks run after GPUI releases its &mut App borrow.
+  // Keep alphaValue = 0 while GPUI measures and paints the final exact size so
+  // the user never sees a stretched first frame or macOS pop-in animation.
   __weak NSWindow *weakPanel = panel;
   __weak NSView *weakPanelView = panelView;
   __weak NSWindow *weakOwner = owner;
@@ -307,6 +310,7 @@ void tb_popup_place(void *panel_ns_view, void *owner_ns_view, double anchor_x,
     NSWindow *o = weakOwner;
     if (!p || !o || !o.isVisible) return;
     tb_popup_style_panel(p, pv, o);
+    p.alphaValue = 0.0;
     NSRect frame = tb_popup_screen_frame(o, anchor_x, anchor_y, anchor_w,
                                          anchor_h, width, height, pad);
     [p setFrame:frame display:YES];
@@ -344,12 +348,28 @@ void tb_popup_reposition(void *panel_ns_view, void *owner_ns_view,
   });
 }
 
+void tb_popup_reveal(void *panel_ns_view, uint64_t gen) {
+  if (!panel_ns_view) return;
+  NSView *panelView = (__bridge NSView *)panel_ns_view;
+  NSWindow *panel = panelView.window;
+  if (!panel) return;
+  __weak NSWindow *weakPanel = panel;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    TBPopupMonitor *monitor = [TBPopupMonitor shared];
+    if (monitor.activeGen != gen) return;
+    NSWindow *p = weakPanel;
+    if (!p) return;
+    p.alphaValue = 1.0;
+  });
+}
+
 void tb_popup_hide(void *panel_ns_view) {
   [[TBPopupMonitor shared] stop];
   if (!panel_ns_view) return;
   NSView *panelView = (__bridge NSView *)panel_ns_view;
   NSWindow *panel = panelView.window;
   if (!panel) return;
+  panel.alphaValue = 0.0;
   if (panel.parentWindow) {
     [panel.parentWindow removeChildWindow:panel];
   }
