@@ -59,6 +59,9 @@ struct ThreadView: View {
     /// they're sent; the composer sends them along with what's typed.
     @State private var picks: [Int: Int] = [:]
     @State private var pickedFor: Double?
+    /// The card of asks' Add details box: sent after the picks, before
+    /// anything typed in the composer, and kept if the send's refused.
+    @State private var askNote = ""
     /// Follow-ups ticked on the done card, and the reply it's under.
     @State private var nextPicks: Set<Int> = []
     @State private var nextPickedFor: Int?
@@ -284,12 +287,12 @@ struct ThreadView: View {
                         // still work, with their line above it, as on the Mac.
                         // The working line alone hid it on 26 Nov.
                         if let working = thread.working { WorkingLine(text: working) }
-                        AsksCard(asks: asks, picks: $picks, busy: sendingCard) {
+                        AsksCard(asks: asks, picks: $picks, note: $askNote, busy: sendingCard) {
                             sendCard(thread, lastSeq: messages.last?.seq)
                         }
                         .onChange(of: thread.asksSeq, initial: true) {
                             // A new card starts with nothing picked.
-                            if pickedFor != thread.asksSeq { picks = [:]; pickedFor = thread.asksSeq }
+                            if pickedFor != thread.asksSeq { picks = [:]; askNote = ""; pickedFor = thread.asksSeq }
                         }
                         .transition(Juice.cardGoes)
                     } else if thread.status == .error {
@@ -777,8 +780,11 @@ struct ThreadView: View {
         // Only while the card they were ticked on is the last reply's.
         let lastSeq = (history.live?.messages ?? detail?.messages)?.last?.seq
         let followUps = nextPickedFor == lastSeq ? next.indices.filter { nextPicks.contains($0) }.map { next[$0] } : []
+        // The card's Add details, then what's typed in the composer.
+        let parts: [String] = [askNote, text].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let extra: String = parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
         let message = !followUps.isEmpty ? AskAnswer.followUpMessage(followUps, extra: text)
-            : answers.isEmpty ? text : AskAnswer.message(asks: asks, picks: picks, extra: text)
+            : answers.isEmpty ? text : AskAnswer.message(asks: asks, picks: picks, extra: extra)
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty else { return false }
         do {
             let images = try await model.upload(photos)
@@ -786,6 +792,7 @@ struct ThreadView: View {
             model.sent(photos)
             sent = (id, nil)
             picks = [:]
+            if !answers.isEmpty { askNote = "" }
             nextPicks = []
             return true
         } catch {

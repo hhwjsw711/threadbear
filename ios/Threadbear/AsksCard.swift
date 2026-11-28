@@ -4,11 +4,13 @@ import ThreadbearKit
 /// What a finished turn needs from Mike (its end_turn asks, backend API 14),
 /// under the reply, as the Mac's Needs you card: each ask as one paragraph,
 /// its links, and its likely answers as buttons. With one ask a tap sends
-/// it; with several he picks, then sends. Anything else goes in the composer,
-/// which sends the picks along with it.
+/// it; with several he picks, then sends. Add details under the answers goes
+/// with the picks, after them, as the Mac's message box does; the composer
+/// sends the picks along with what's typed there too.
 struct AsksCard: View {
     let asks: [PhoneAsk]
     @Binding var picks: [Int: Int]
+    @Binding var note: String
     /// Its answer is on its way: spinning, and nothing more to press.
     var busy: Bool
     var send: () -> Void
@@ -24,6 +26,15 @@ struct AsksCard: View {
         VStack(alignment: .leading, spacing: 16) {
             ForEach(Array(asks.enumerated()), id: \.offset) { index, ask in
                 askView(ask, index: index)
+            }
+            // Under the answers, so a tap on one (a single ask's tap sends) takes it along.
+            if asks.contains(where: { $0.ticked != true && !$0.choices.isEmpty }) {
+                TextField(asks.count == 1 ? "Add details, then pick an answer" : "Add details", text: $note, axis: .vertical)
+                    .lineLimit(1...6)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .disabled(busy)
             }
             if asks.count > 1, !picks.isEmpty {
                 Button {

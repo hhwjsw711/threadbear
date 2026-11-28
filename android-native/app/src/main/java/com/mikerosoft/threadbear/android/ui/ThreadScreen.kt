@@ -548,6 +548,8 @@ private fun StatusCard(vm: ThreadViewModel, thread: PhoneThread, messages: List<
         thread.waitState?.section != PhoneSection.RUNNING &&
         Turns.lastShown(messages)?.role == Role.ASSISTANT && nothingOnItsWay && answeredDone != lastSeq
     var picks by remember(thread.asksSeq) { mutableStateOf(mapOf<Int, Int>()) }
+    // The card's Add details box: kept if the send's refused, as the card comes back.
+    var note by remember(thread.asksSeq) { mutableStateOf("") }
     var ticked by remember(lastSeq, thread.nextPick) { mutableStateOf(setOf<Int>()) }
     val plan = remember(pending, messages) { Plans.plan(pending, messages) }
     when {
@@ -572,7 +574,8 @@ private fun StatusCard(vm: ThreadViewModel, thread: PhoneThread, messages: List<
         showsAsks -> AsksCard(
             asks, picks, busy = answeredAsks == thread.asksSeq,
             pick = { i, c -> picks = if (c == null) picks - i else picks + (i to c) },
-            send = { vm.sendAsks(thread, picks) },
+            send = { vm.sendAsks(thread, picks, note) },
+            note = note, onNote = { note = it },
         )
         thread.status == ThreadStatus.ERROR -> Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Line.Alert, null, Modifier.size(16.dp), tint = signals.failed)

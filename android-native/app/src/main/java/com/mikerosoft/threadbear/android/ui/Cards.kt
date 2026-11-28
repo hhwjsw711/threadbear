@@ -281,7 +281,11 @@ fun SecretCard(card: PendingApproval.Secret, verdict: RunnerKeyPins.Verdict, tap
     }
 }
 
-/** The card of asks from the agent's end_turn: each ask, its answers and links. */
+/**
+ * The card of asks from the agent's end_turn: each ask, its answers and links,
+ * then an Add details box whose words go with the picks, after them, as the
+ * Mac's message box does (Decisions.message).
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AsksCard(
@@ -290,6 +294,8 @@ fun AsksCard(
     busy: Boolean,
     pick: (Int, Int?) -> Unit,
     send: () -> Unit,
+    note: String = "",
+    onNote: (String) -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     // Through the thread's links, so another app's link asks first (LinkGate), as on the iPhone.
@@ -342,6 +348,10 @@ fun AsksCard(
                     }
                 }
             }
+        }
+        // Under the answers, so a tap on one (a single ask's tap sends) takes it along.
+        if (asks.any { it.ticked != true && it.choices.isNotEmpty() }) {
+            Field(note, onNote, if (asks.size == 1) "Add details, then pick an answer" else "Add details", enabled = !busy)
         }
         if (asks.size > 1 && picks.isNotEmpty()) {
             Pill("Send", send, Modifier.fillMaxWidth(), filled = true, spinning = busy)
