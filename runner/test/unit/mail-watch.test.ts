@@ -461,16 +461,42 @@ test('mailWatch: automated CI build emails are recognised, while human GitHub/Gi
     isBuildEmail({ id: 'g:gh:6', from: 'Alice <notifications@github.com>', subject: '[org/repo] Run failed: parser crashes (Issue #42)' }),
     false,
   );
-  const [longIssue] = parseEmails(
+  const [longIssue, longIssueWithHash, longGitlabIssue, longGhBuild, longGitlabBuild] = parseEmails(
     JSON.stringify([
       {
         id: 'g:gh:9',
         from: 'Alice <notifications@github.com>',
         subject: `[mikecann/${'r'.repeat(50)}] Run failed: ${'x'.repeat(230)} (Issue #42)`,
       },
+      {
+        id: 'g:gh:10',
+        from: 'Alice <notifications@github.com>',
+        subject: `[mikecann/${'r'.repeat(50)}] Run failed: ${'x'.repeat(216)} (deadbee) (Issue #42)`,
+      },
+      {
+        id: 'g:gl:9',
+        from: 'Alice <gitlab@mg.gitlab.com>',
+        subject: `Data | Failed pipeline for ${'x'.repeat(260)} | deadbeef (#12)`,
+      },
+      {
+        id: 'g:gh:11',
+        from: 'notifications@github.com',
+        subject: `[mikecann/threadbear] Run failed: ${'x'.repeat(260)} - main (db906a8)`,
+      },
+      {
+        id: 'g:gl:10',
+        from: 'GitLab <gitlab@mg.gitlab.com>',
+        subject: `Data | Failed pipeline for ${'x'.repeat(260)} | 05900d8f`,
+      },
     ]),
   );
   assert.equal(isBuildEmail(longIssue), false);
+  assert.equal(isBuildEmail(longIssueWithHash), false);
+  assert.equal(isBuildEmail(longGitlabIssue), false);
+  assert.equal(isBuildEmail(longGhBuild), true);
+  assert.equal(isBuildEmail(longGitlabBuild), true);
+  assert.ok((longGhBuild.subject?.length ?? 0) <= 300);
+  assert.ok((longIssueWithHash.subject?.length ?? 0) <= 300);
   assert.equal(
     isBuildEmail({ id: 'g:gh:7', from: 'GitHub <noreply@github.com>', subject: 'Your token expires in 7 days' }),
     false,
@@ -508,11 +534,28 @@ test('mailWatch: automated CI build emails are recognised, while human GitHub/Gi
 test('mailWatch: build emails already sitting in the persisted pile are dropped before the next digest', async () => {
   const home = tmpDir();
   fs.mkdirSync(path.join(home, 'runner'), { recursive: true });
+  // Includes both normal build emails and pre-upgrade copies whose subjects were end-truncated before the hash.
+  const oldTruncatedGh: Email = {
+    id: 'g:gh:old',
+    from: 'Mike Cann <notifications@github.com>',
+    subject: `[mikecann/threadbear] Run failed: ${'x'.repeat(267)}`,
+    text: '[mikecann/threadbear] CI workflow run\n\nRepository: mikecann/threadbear\nWorkflow: CI\nDuration: 3m',
+  };
+  const oldTruncatedGl: Email = {
+    id: 'g:gl:old',
+    from: 'GitLab <gitlab@mg.gitlab.com>',
+    subject: `Data | Failed pipeline for ${'x'.repeat(273)}`,
+    text: 'Pipeline #3096995664 has failed!\n\nProject: Data ( https://gitlab.com/mikecann/fdroiddata )',
+  };
   fs.writeFileSync(
     path.join(home, 'runner', 'mail-watch.json'),
     JSON.stringify({
-      seen: [GH_RUN_FAILED.id],
-      pile: [{ email: GH_RUN_FAILED, action: 'Fix CI', at: '2026-11-28T01:00:00Z' }],
+      seen: [GH_RUN_FAILED.id, oldTruncatedGh.id, oldTruncatedGl.id],
+      pile: [
+        { email: GH_RUN_FAILED, action: 'Fix CI', at: '2026-11-28T01:00:00Z' },
+        { email: oldTruncatedGh, action: 'Fix CI', at: '2026-11-28T01:05:00Z' },
+        { email: oldTruncatedGl, action: 'Fix pipeline', at: '2026-11-28T01:10:00Z' },
+      ],
       done: [],
       digest: { slot: '2026-11-28 09:00' },
       acts: { count: 0 },

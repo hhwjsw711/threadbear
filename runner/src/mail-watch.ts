@@ -27,7 +27,7 @@ import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import type { ModelResult } from './models/index.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
-import { cutSafely } from './safe-cut.ts';
+import { cutSafely, tailSafely } from './safe-cut.ts';
 
 export const MAIL_WATCH = 'mailWatch';
 
@@ -433,6 +433,18 @@ class GaveUp extends Error {}
 type SortedAct = { what: string; decision: string; thread?: string };
 type Sorted = { wake: string[]; tell: string[]; act?: SortedAct; pile?: string };
 
+// Keeps both the start and end of a long field (subject, From) within `max`
+// chars so trailing suffixes — commit hashes, "(Issue #42)", "<addr@host>" —
+// survive parsing without splitting secrets.
+function cutMiddleSafely(text: string, max: number, tailMax: number): string {
+  if (text.length <= max) return text;
+  const tail = tailSafely(text, tailMax).trimStart();
+  const head = cutSafely(text, Math.max(0, max - tail.length - 1)).trimEnd();
+  if (!head) return tail || cutSafely(text, max);
+  if (!tail) return head;
+  return `${head}…${tail}`;
+}
+
 export function parseEmails(text: string): Email[] {
   const t = text.trim();
   if (!t) return [];
@@ -443,13 +455,23 @@ export function parseEmails(text: string): Email[] {
   for (const raw of list) {
     if (!raw || typeof raw !== 'object') continue;
     const r = raw as Record<string, unknown>;
-    const str = (k: string, max: number) => (typeof r[k] === 'string' && (r[k] as string).trim() ? cutSafely((r[k] as string).trim(), max) : undefined);
+    const rawStr = (k: string) => (typeof r[k] === 'string' && (r[k] as string).trim() ? (r[k] as string).trim() : undefined);
+    const str = (k: string, max: number) => {
+      const val = rawStr(k);
+      return val ? cutSafely(val, max) : undefined;
+    };
+    const mid = (k: string, max: number, tailMax: number) => {
+      const val = rawStr(k);
+      return val ? cutMiddleSafely(val, max, tailMax) : undefined;
+    };
     const id = str('id', 300);
-    const from = str('from', 300);
-    const subject = str('subject', 300);
+    const from = mid('from', 300, 80);
+    const subject = mid('subject', 300, 60);
     if (!id || (!from && !subject)) continue;
     const e: Email = { id };
-    for (const [k, max] of [['account', 200], ['from', 300], ['to', 300], ['subject', 300], ['date', 100], ['url', 500], ['threadId', 200]] as const) {
+    if (from) e.from = from;
+    if (subject) e.subject = subject;
+    for (const [k, max] of [['account', 200], ['to', 300], ['date', 100], ['url', 500], ['threadId', 200]] as const) {
       const val = str(k, max);
       if (val) e[k] = val;
     }
@@ -471,6 +493,11 @@ function senderAddress(from?: string): string {
   return (m ? m[1] : from).trim().toLowerCase();
 }
 
+const GH_BUILD_SUBJECT = /^\[[^\]]+\]\s+(?:(?:(?:PR|Workflow)\s+)?Run\s+(?:failed|cancelled|canceled|succeeded|skipped)|Some jobs were not successful)\s*:/i;
+const GH_BUILD_BODY = /^\[[^\]]+\]\s+.+\bworkflow run\b[\s\S]{0,200}\r?\nRepository:\s+\S+\s*\r?\nWorkflow:\s+/i;
+const GL_BUILD_SUBJECT = /(?:^|\|\s*)(?:Failed|Fixed|Successful|Canceled|Cancelled)\s+pipeline\s+for\s+/i;
+const GL_BUILD_BODY = /^Pipeline\b[^\r\n]{0,120}\b(?:failed|passed|canceled|cancelled)![\s\S]{0,120}\r?\nProject:\s+/i;
+
 // Automated CI/build run notifications (GitHub Actions, GitLab pipelines):
 // dropped before sorting so they never wake threads, pile up as held mail,
 // or land on the twice-daily list. Human GitHub/GitLab discussions, issues,
@@ -478,19 +505,16 @@ function senderAddress(from?: string): string {
 export function isBuildEmail(e: Email): boolean {
   const addr = senderAddress(e.from);
   const subject = (e.subject ?? '').trim();
+  const body = (e.text ?? '').trimStart();
   if (!addr || !subject) return false;
-  if (
-    addr === 'notifications@github.com' &&
-    /^\[[^\]]+\]\s+(?:(?:(?:PR|Workflow)\s+)?Run\s+(?:failed|cancelled|canceled|succeeded|skipped)|Some jobs were not successful)\s*:.*\([0-9a-f]{7,40}\)\s*$/i.test(subject)
-  ) {
-    return true;
+  if (addr === 'notifications@github.com' && GH_BUILD_SUBJECT.test(subject)) {
+    if (/\([0-9a-f]{7,40}\)\s*$/i.test(subject)) return true;
+    // Fallback for pre-upgrade queued copies whose subject was end-truncated before the hash.
+    if (!/\((?:Issue|PR|Discussion)\s+#\d+\)\s*$/i.test(subject) && GH_BUILD_BODY.test(body)) return true;
   }
-  if (
-    addr.startsWith('gitlab@') &&
-    !/^(?:re|fwd?)\s*:/i.test(subject) &&
-    /(?:^|\|\s*)(?:Failed|Fixed|Successful|Canceled|Cancelled)\s+pipeline\s+for\s+.+\|\s*[0-9a-f]{7,40}\s*$/i.test(subject)
-  ) {
-    return true;
+  if (addr.startsWith('gitlab@') && !/^(?:re|fwd?)\s*:/i.test(subject) && GL_BUILD_SUBJECT.test(subject)) {
+    if (/\|\s*[0-9a-f]{7,40}\s*$/i.test(subject)) return true;
+    if (!/\([#!&]\d+\)\s*$/.test(subject) && GL_BUILD_BODY.test(body)) return true;
   }
   return false;
 }
