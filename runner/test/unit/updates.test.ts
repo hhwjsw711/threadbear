@@ -621,6 +621,9 @@ test('two failed starts on a version send one warning', () => {
   t.u.sessionStarted('claude', '2.1.312', true);
   t.u.sessionStarted('claude', '2.1.312', false);
   assert.equal(t.notices.length, 1, 'a success in between resets the count');
+  t.u.sessionStarted('antigravity', '1.4.5', false);
+  t.u.sessionStarted('antigravity', '1.4.5', false);
+  assert.equal(t.notices[1], 'Antigravity 1.4.5 failed to start twice.');
 });
 
 test('updates.ndjson keeps the last 500 lines and 10 KB of output each', () => {

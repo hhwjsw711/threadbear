@@ -2,7 +2,7 @@
 // newline-delimited JSON-RPC 2.0 over its stdio, in its own process group.
 import type { ChildProcess } from 'node:child_process';
 import { LineReader, MAX_LINE_BYTES, type OversizedLine } from '../codex/appserver.ts';
-import { asAgent } from '../../background.ts';
+import { asAgent, backgroundPid, type BackgroundPidOptions, type BackgroundPidResult } from '../../background.ts';
 import { RUNNER_VERSION } from '../../config.ts';
 import type { Logger } from '../../log.ts';
 import { groupAlive, groupSpawner, killGroup, type ProcessRegistry } from '../../proc.ts';
@@ -172,7 +172,7 @@ export type InitializeResult = {
 
 export type AcpTimings = {
   requestMs: number; // an ordinary request
-  sessionMs: number; // session/new, load and resume, which start MCP servers
+  sessionMs: number; // initialize, session/new, load and resume (cold boot and MCP servers)
   closeWaitMs: number; // after closing stdin, before killing the group
 };
 export const DEFAULT_ACP_TIMINGS: AcpTimings = { requestMs: 30_000, sessionMs: 90_000, closeWaitMs: 2_000 };
@@ -193,6 +193,12 @@ export type AcpProcessOptions = {
   // priority (asAgent). The model list and small jobs run nothing, so they
   // start as they are, kept clear of their timeouts on a busy Mac.
   lowered?: boolean;
+  // With lowered: start niced so cold boot isn't disk-throttled by macOS
+  // taskpolicy -b, then enter background priority right after initialize
+  // (before session/new or any child process/tool starts).
+  lowerAfterInit?: boolean;
+  // Test hook for deferred backgrounding.
+  backgroundPid?: (pid: number, opts?: BackgroundPidOptions) => Promise<BackgroundPidResult>;
 };
 
 // The ACP version this client speaks; initialize's answer must match it.
@@ -211,6 +217,7 @@ export class AcpProcess {
   private child?: ChildProcess;
   private pid?: number;
   private abort?: AbortController;
+  private bgAbort?: AbortController;
   private nextId = 1;
   private pending = new Map<RequestId, { method: string; resolve: (v: unknown) => void; reject: (e: Error) => void; timer?: NodeJS.Timeout }>();
   private stderrTail: string[] = [];
@@ -240,7 +247,7 @@ export class AcpProcess {
     this.abort = new AbortController();
     const spawn = groupSpawner(opts.registry, opts.log, (line) => this.stderr(line), opts.label);
     // At the job priority, so the builds and tests it runs are too (asAgent).
-    const [command, args] = opts.lowered ? asAgent('acp', opts.binary, opts.args) : [opts.binary, opts.args];
+    const [command, args] = opts.lowered ? asAgent('acp', opts.binary, opts.args, { deferBackground: opts.lowerAfterInit }) : [opts.binary, opts.args];
     const child = spawn({ command, args, cwd: opts.cwd, env: opts.env, signal: this.abort.signal } as never) as unknown as ChildProcess;
     this.child = child;
     this.pid = child.pid;
@@ -295,12 +302,40 @@ export class AcpProcess {
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, ...(opts.forms ? { elicitation: { form: {} } } : {}) },
         clientInfo: { name: 'threadbear', title: 'Threadbear', version: RUNNER_VERSION },
       })
-        .then((init) => {
+        .then(async (init) => {
           if (init?.protocolVersion !== ACP_VERSION) {
             throw new Error(`This agent speaks ACP version ${String(init?.protocolVersion)}, and Threadbear speaks ${ACP_VERSION}.`);
           }
           if (typeof init?.agentInfo?.version === 'string') this.version = init.agentInfo.version;
           else if (typeof init?._meta?.agentVersion === 'string') this.version = init._meta.agentVersion;
+          if (opts.lowered && opts.lowerAfterInit) {
+            if (this.exited) throw new AcpExitedError('The agent exited during startup.');
+            if (this.closing) throw new AcpExitedError('The agent stopped during startup.');
+            const pid = this.pid;
+            if (pid) {
+              const lower = opts.backgroundPid ?? backgroundPid;
+              const bg = new AbortController();
+              this.bgAbort = bg;
+              let outcome: BackgroundPidResult = 'skipped';
+              try {
+                outcome = await lower(pid, { expectedParent: process.pid, signal: bg.signal });
+                if (outcome === 'failed' && !this.exited && !this.closing && !bg.signal.aborted) {
+                  outcome = await lower(pid, { expectedParent: process.pid, signal: bg.signal });
+                }
+              } finally {
+                if (this.bgAbort === bg) this.bgAbort = undefined;
+              }
+              if (this.exited) throw new AcpExitedError('The agent exited during startup.');
+              if (this.closing) throw new AcpExitedError('The agent stopped during startup.');
+              if (outcome === 'failed') {
+                opts.log.warn('could not move ACP agent into background priority after initialize', { threadId: opts.label, pid });
+                throw new Error('Could not move the agent into background priority after startup.');
+              }
+            }
+          }
+          if (this.exited) throw new AcpExitedError('The agent exited during startup.');
+          if (this.closing) throw new AcpExitedError('The agent stopped during startup.');
+          if (settled) return;
           settled = true;
           resolve(init ?? {});
         })
@@ -310,6 +345,7 @@ export class AcpProcess {
 
   private markExited(): void {
     this.exited = true;
+    this.bgAbort?.abort();
     const ws = this.exitWaiters;
     this.exitWaiters = [];
     ws.forEach((w) => w());
@@ -415,10 +451,11 @@ export class AcpProcess {
   }
 
   // timeoutMs null: no timeout (session/prompt, which lasts as long as the
-  // turn does). Left out: requestMs, or sessionMs for the session/ starters.
+  // turn does). Left out: requestMs, or sessionMs for initialize and the
+  // session/ starters.
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number | null): Promise<T> {
     const id = this.nextId++;
-    const starts = method === 'session/new' || method === 'session/load' || method === 'session/resume';
+    const starts = method === 'initialize' || method === 'session/new' || method === 'session/load' || method === 'session/resume';
     const ms = timeoutMs === undefined ? (starts ? this.t.sessionMs : this.t.requestMs) : timeoutMs;
     return new Promise<T>((resolve, reject) => {
       if (this.exited) return reject(new AcpExitedError('The agent is not running.'));
@@ -472,6 +509,7 @@ export class AcpProcess {
   // that second half.
   async close(): Promise<void> {
     this.closing = true;
+    this.bgAbort?.abort();
     if (this.exited) return;
     this.child?.stdin?.end();
     if (await this.waitExit(this.t.closeWaitMs)) return;
@@ -484,6 +522,7 @@ export class AcpProcess {
   // Stops the process group straight away (SIGTERM, then SIGKILL).
   kill(error?: Error): void {
     this.closing = true;
+    this.bgAbort?.abort();
     if (error) {
       for (const p of this.pending.values()) {
         if (p.timer) clearTimeout(p.timer);

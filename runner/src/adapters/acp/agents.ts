@@ -76,6 +76,11 @@ export type AcpAgent = {
   // runner gave it (Codex's review, 26 Nov 2026), so there they ask as any
   // other server's tools do.
   trustsRunnerMcp?: boolean;
+  // Cold boot is heavy enough to stall past 30 s under macOS taskpolicy -b
+  // (Antigravity's 171 MB Python PAR unpacks modules before answering
+  // initialize) and spawns no children until session/new: start niced and
+  // move into background priority right after initialize.
+  lowerAfterInit?: boolean;
   // Whether the agent trusts this folder, read once as a process starts.
   trusts?(cwd: string): boolean;
   // The agent writes into the folder its session opens in (Antigravity's
@@ -403,6 +408,7 @@ const ANTIGRAVITY_READ_KEYS: ReadonlyMap<string, 'string' | 'number'> = new Map(
 const ANTIGRAVITY: AcpAgent = {
   provider: 'antigravity',
   movesAskedCalls: true,
+  lowerAfterInit: true,
   accountId: 'antigravity-main',
   title: 'Gemini',
   configDir: (home) => path.join(geminiHome(home), 'antigravity-acp'),

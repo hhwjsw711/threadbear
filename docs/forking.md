@@ -106,7 +106,9 @@ gone from your fork, not just quiet.
   times slower, and timing tests can fail under it
   (`runner/src/background.ts`). A thread's ACP agent (Antigravity, Grok,
   OpenCode and the rest) starts at that priority too, so what it runs
-  inherits it;
+  inherits it (Antigravity starts `nice`d and enters background right after
+  `initialize`, before `session/new`, so its Python PAR cold boot isn't
+  starved by `taskpolicy -b`);
   Codex starts at it but never below `nice`, as background would slow the
   browsers and dev servers it runs. Claude starts as it is.
 - Once main's `desktop/` changes, the GPUI app waits until it has stayed

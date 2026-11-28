@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { defaultHome, expandHome, peekRunnerJson } from './config.ts';
@@ -80,10 +81,55 @@ export function asAgent(
   kind: AgentKind,
   bin: string,
   args: string[],
-  opts: { platform?: NodeJS.Platform; exists?: (p: string) => boolean; priority?: JobPriority } = {},
+  opts: { platform?: NodeJS.Platform; exists?: (p: string) => boolean; priority?: JobPriority; deferBackground?: boolean } = {},
 ): [string, string[]] {
   const priority = opts.priority ?? jobPriority();
-  return inBackground(bin, args, { ...opts, priority: kind === 'codex' && priority === 'background' ? 'low' : priority });
+  const defer = opts.deferBackground === true && kind === 'acp';
+  return inBackground(bin, args, { ...opts, priority: (kind === 'codex' || defer) && priority === 'background' ? 'low' : priority });
+}
+
+export type BackgroundPidResult = 'applied' | 'skipped' | 'failed';
+export type BackgroundPidOptions = {
+  platform?: NodeJS.Platform;
+  exists?: (p: string) => boolean;
+  priority?: JobPriority;
+  // Require the target process's current parent PID to match before applying
+  // taskpolicy, guarding against a recycled PID if the child was reaped mid-flight.
+  expectedParent?: number;
+  signal?: AbortSignal;
+  run?: (file: string, args: string[], o: { timeout: number; signal?: AbortSignal }) => Promise<void>;
+};
+
+// Moves an already-running process into macOS background priority (taskpolicy
+// -b -p <pid>) when the job priority is background. Used for Antigravity,
+// whose 171 MB Python PAR cold boot gets starved past 30 s under taskpolicy -b
+// (E-cores + IOPOL_THROTTLE) while builds or runner restarts run; it spawns no
+// children until session/new, so lowering it right after initialize keeps boot
+// fast while still putting localharness_external and every tool it runs into
+// background priority.
+export async function backgroundPid(pid: number, opts: BackgroundPidOptions = {}): Promise<BackgroundPidResult> {
+  const platform = opts.platform ?? process.platform;
+  const exists = opts.exists ?? fs.existsSync;
+  const priority = opts.priority ?? jobPriority();
+  if (priority !== 'background' || platform !== 'darwin' || !exists(TASKPOLICY)) return 'skipped';
+  if (!Number.isInteger(pid) || pid <= 0) return 'skipped';
+  if (opts.signal?.aborted) return 'failed';
+  const run =
+    opts.run ??
+    ((file, args, o) =>
+      new Promise<void>((resolve, reject) => {
+        execFile(file, args, { timeout: o.timeout, signal: o.signal }, (err) => (err ? reject(err) : resolve()));
+      }));
+  const [file, args]: [string, string[]] =
+    opts.expectedParent !== undefined && Number.isInteger(opts.expectedParent) && opts.expectedParent > 0
+      ? ['/bin/sh', ['-c', '[ "$(/bin/ps -o ppid= -p "$1" 2>/dev/null)" -eq "$2" ] 2>/dev/null && exec /usr/sbin/taskpolicy -b -p "$1"', '_', String(pid), String(opts.expectedParent)]]
+      : [TASKPOLICY, ['-b', '-p', String(pid)]];
+  try {
+    await run(file, args, { timeout: 10_000, signal: opts.signal });
+    return 'applied';
+  } catch {
+    return 'failed';
+  }
 }
 
 // The program a command from inBackground or asAgent runs: what the process

@@ -277,7 +277,7 @@ export class CliUpdates {
       const message =
         p === 'claude'
           ? `Claude Code ${version} failed to start twice. To go back: claude install ${this.lastClaude ?? '<version>'}`
-          : `Codex ${version} failed to start twice.${prev ? ` Go back to ${prev} in Usage.` : ''}`;
+          : `${cliName(p)} ${version} failed to start twice.${prev ? ` Go back to ${prev} in Usage.` : ''}`;
       this.d.notice?.('warning', message);
       this.history.append({ at: this.iso(), provider: p, action: 'notice', ok: false, version, message });
     }
