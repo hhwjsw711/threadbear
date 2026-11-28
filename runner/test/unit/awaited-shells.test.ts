@@ -490,3 +490,21 @@ test('a CLI that falls over with one awaited shell finished and another still ru
   const sent = h.adapter.sessions.filter((x) => x.opts.threadId === id).flatMap((x) => x.sent.map((m) => m.text));
   assert.match(sent.at(-1) ?? '', /^A background shell .* has finished.*:\n\n- tb land\n\n/s);
 });
+
+// Round 4 of the review.
+test("another runner message queued behind the nudge doesn't lose it at a stop, and a schedule's doesn't take it back", async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  await h.runner.beginDrain([id], { onHandedOver: () => {}, ready: () => false });
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(91_000);
+  await tick();
+  const st = h.runner.threads.get(id)!;
+  h.runner.sendTo(st, 'A schedule says hello', [], { origin: 'schedule', queue: true });
+  h.runner.sendTo(st, 'A child thread reports back', [], { origin: 'runner', queue: true });
+  assert.equal(st.rec.queue.length, 3, 'the nudge stays, with both behind it');
+  await h.runner.shutdown();
+  assert.equal(st.rec.queue.some((m) => /weren't woken/.test(m.text)), false, 'the nudge is out of the queue');
+  assert.equal(st.rec.stoppedWork?.what.length, 1, 'and left for the next runner to tell');
+});

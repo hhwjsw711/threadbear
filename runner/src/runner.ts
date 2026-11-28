@@ -1630,15 +1630,19 @@ export class Runner {
     // either, so the next runner tells the thread, as for work the stop
     // kills, and a done card held for it isn't settled on the waiting turn
     // (Codex's and Gemini's review, 28 Nov 2026). Only where a nudge could
-    // go: in the Inbox, nothing else queued or left unread by Mike.
+    // go: in the Inbox, nothing left unread by Mike, nothing queued but
+    // other automatic messages (recovery clears those anyway) for a queued
+    // nudge, nothing at all for a grace, and one the next runner would act
+    // on: under the cap, which a queued nudge already counted itself within.
+    // A queued nudge comes out either way, or recovery could keep it (a
+    // coordinator's) to run, stale, much later.
     const nudges = rec.queue.filter(isUnreadShellsNudge).length;
     const unread = !rt.turn && rt.wakeTimer && this.adapters[rt.sessionProvider ?? rec.provider]?.nudgesUnreadShells ? this.unreadAwaited(st) : [];
-    // And one the next runner would act on: under the cap, which a queued
-    // nudge already counted itself within (withdrawn below, uncounted).
-    const tell = (unread.length > 0 || nudges > 0) && this.bucket(rec) === 'inbox' && !rec.interruptedMessages?.length && rec.queue.length === nudges && !this.coordinators?.dispatchRefusal(rec.id) && (nudges > 0 || (rec.stoppedWorkWakes ?? 0) < STOPPED_WORK_WAKES);
+    const queueOk = nudges > 0 ? rec.queue.every(isAutomaticInput) : rec.queue.length === 0;
+    const tell = (unread.length > 0 || nudges > 0) && this.bucket(rec) === 'inbox' && !rec.interruptedMessages?.length && queueOk && !this.coordinators?.dispatchRefusal(rec.id) && (nudges > 0 || (rec.stoppedWorkWakes ?? 0) < STOPPED_WORK_WAKES);
+    if (nudges > 0) this.withdrawNudge(st);
     if (tell) {
       const what = rt.finished.filter((t) => unread.includes(t.id)).map((t) => `${t.description || t.type} (it had finished; you hadn't read its result yet)`);
-      this.withdrawNudge(st);
       rec.stoppedWork = { what: [...(rec.stoppedWork?.what ?? []), ...(what.length ? what : ['a background shell that had finished; you hadn\'t read its result yet'])], at: this.isoNow() };
       this.markDirty(st);
     }
@@ -2392,7 +2396,9 @@ export class Runner {
     // Someone else's message answers for the runner's nudge, which would
     // otherwise run after it, over its end_turn. Only once it's accepted:
     // a refused one leaves the nudge (the reviews, 28 Nov 2026).
-    if (opts.origin !== 'runner') this.withdrawNudge(st);
+    // Not a schedule's: automatic, it queues behind the nudge without
+    // overtaking it, and isn't an answer to it.
+    if (!isAutomaticInput(opts)) this.withdrawNudge(st);
     // New work: its last finish no longer says it's done, for threads
     // waiting on it (runner/hibernation.ts).
     delete rec.finished;
