@@ -1116,6 +1116,14 @@ impl ReviewWindow {
         }
     }
 
+    pub(super) fn canvas_stop_playing(&mut self, cx: &mut Context<Self>) {
+        if let Some(c) = self.canvas.as_mut() {
+            c.playing.stop();
+        }
+        self.drop_page(cx);
+        cx.notify();
+    }
+
     // ------------------------------------------------------------ keys
 
     /// The window's keys, outside the reply box, which keeps its own arrows

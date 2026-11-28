@@ -2037,14 +2037,6 @@ impl ReviewWindow {
         cx.notify();
     }
 
-    pub(super) fn canvas_stop_playing(&mut self, cx: &mut Context<Self>) {
-        if let Some(c) = self.canvas.as_mut() {
-            c.playing.stop();
-        }
-        self.drop_page(cx);
-        cx.notify();
-    }
-
     /// The shot playing on the board, while it's in sight.
     pub(super) fn canvas_playing_shot(&self) -> Option<threadbear_core::reducer::ReviewShot> {
         let (option, shot) = self.canvas.as_ref()?.playing.active()?;
