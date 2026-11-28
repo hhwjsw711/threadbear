@@ -3278,6 +3278,8 @@ export class Runner {
         // flags it when it ends. A message the runner already sent waits
         // in the CLI's queue; its turn takes this output too.
         if (!rt.turn) this.openCliTurn(st);
+        // It reads the results that woke it, in a turn of Mike's too.
+        else this.pruneAwaited(st);
         rt.turn!.cliStarted = true;
         if (o.note) this.emit(st, { type: 'system.note', text: o.note }, rt.turn!.turnId);
         break;
@@ -3414,6 +3416,13 @@ export class Runner {
           rt.inProgress.clear();
           // Any end_turn taken by the CLI turn that just finished happened
           // before the queued message(s) ran, so clear it for the next turn.
+          // Its shells go with it: one it had its say over isn't awaited,
+          // and one it left without one still is (Gemini's review, round 3).
+          if (turn.shellsStarted?.size) {
+            if (r.outcome === 'completed' && !turnNeeds(turn) && this.wakes(st)) rt.awaitedShells = [...new Set([...(rt.awaitedShells ?? []), ...turn.shellsStarted])];
+            turn.shellsStarted = undefined;
+          }
+          if (r.outcome === 'completed' && turnNeeds(turn)) delete rt.awaitedShells;
           this.reply(st, { kind: 'message' });
           if (r.outcome === 'failed' && r.error) this.emit(st, { type: 'error', message: r.error }, turn.turnId);
           break;
@@ -3799,6 +3808,9 @@ export class Runner {
         // Since the helper's check: a new turn, Mike has looked, or it's
         // to archive once the threads it started are done.
         if (later && (rt.turn || rec.lastSeenSeq >= rec.lastTurnCompletedSeq || rt.quietOnceChildrenDone !== undefined)) return;
+        // Waiting on a shell it started: the turn that reads it is the one
+        // that's Mike's (Codex's review, round 3).
+        if (this.awaitingShells(st, rec.needs?.seq === rec.lastTurnCompletedSeq)) return;
         rec.forceUnread = true;
         this.markDirty(st);
       };
@@ -3818,6 +3830,9 @@ export class Runner {
     // CLI has the whole grace after the turn to open its own.
     if (rt.finishPending && !rt.wakeTimer) this.settlePendingFinish(st);
     else if (rt.finishPending) this.startWakeGrace(st);
+    // Likewise for an awaited shell that ended before this turn and is
+    // still to be read (Gemini's review, round 3).
+    else if (rt.wakeTimer && !rt.turn && rt.awaitedShells?.some((id) => !rt.tasks.some((t) => t.id === id))) this.startWakeGrace(st);
   }
 
   // A held finish that won't happen: a review the last runner owed, which

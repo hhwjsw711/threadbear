@@ -222,3 +222,20 @@ test('an awaited shell whose grace runs out during the next turn is still awaite
   await tick();
   assert.equal(h.runner.get(id).needsYou, true);
 });
+
+// Round 3: the CLI reading a result while Mike's message waits in its turn
+// took the shell off the list only when it opened a turn of its own.
+test('a wake read during a turn of Mike\'s takes the shell off the awaited list', async () => {
+  const h = makeHarness();
+  const { id, s } = start(h);
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.text('m1', 'Waiting on the tests.');
+  s.result('completed');
+  await tick();
+  s.out({ kind: 'tasks', tasks: [] });
+  h.runner.send(id, 'Anything yet?');
+  await tick();
+  s.out({ kind: 'cliTurn' });
+  await tick();
+  assert.equal(h.runner.threads.get(id)!.rt.awaitedShells, undefined);
+});
