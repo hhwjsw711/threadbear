@@ -25,6 +25,13 @@ export function stoppedWorkMessage(what: string[], last: boolean): string {
   ].join('\n');
 }
 
+// The runner's nudge for such a shell is marked by its wake reason, which
+// the queued message keeps across a handover (Runner.withdrawNudge).
+export const UNREAD_SHELLS_WAKE = 'Its background shell ended';
+export function isUnreadShellsNudge(msg: { origin?: MessageOrigin; wakeReason?: string }): boolean {
+  return msg.origin === 'runner' && msg.wakeReason === UNREAD_SHELLS_WAKE;
+}
+
 // When the CLI never started its own turn for a shell the last turn ended
 // waiting on (Runner.nudgeUnreadShells).
 export function unreadShellsMessage(count: number, what: string[], last: boolean): string {

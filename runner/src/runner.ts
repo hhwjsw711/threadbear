@@ -115,7 +115,7 @@ import {
 import { cutSafely } from './safe-cut.ts';
 import { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS, FOLDER_CACHE_MS, HOOK_TELL_CHARS, HOOK_TELL_LIMIT, LIVE_POLL_MS, LIVE_SHARE_MS, NO_WAKE_TIME, PATCHES_TTL_MS, SAVE_RETRY_MS, UNTIL_RESTART } from './runner/timings.ts';
 export { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS, FOLDER_CACHE_MS, HOOK_TELL_CHARS, HOOK_TELL_LIMIT, LIVE_POLL_MS, LIVE_SHARE_MS, NO_WAKE_TIME, PATCHES_TTL_MS, SAVE_RETRY_MS, UNTIL_RESTART };
-import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_NETWORK, CARRY_ON_RESTART, CARRY_ON_SIGNED_OUT, CARRY_ON_TOKEN, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, WROTE_INSTEAD, isCarryOn, stoppedWorkMessage, unreadShellsMessage } from './runner/carry-on.ts';
+import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_NETWORK, CARRY_ON_RESTART, CARRY_ON_SIGNED_OUT, CARRY_ON_TOKEN, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, UNREAD_SHELLS_WAKE, WROTE_INSTEAD, isCarryOn, isUnreadShellsNudge, stoppedWorkMessage, unreadShellsMessage } from './runner/carry-on.ts';
 export { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_NETWORK, CARRY_ON_RESTART, CARRY_ON_SIGNED_OUT, CARRY_ON_TOKEN, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, WROTE_INSTEAD, isCarryOn, stoppedWorkMessage };
 import { TITLE_PROMPT, askedLine, checkImages, cleanTitle, fromMike, isAutomaticInput, matchAnswers, oneLine, scheduledMessageId, titleFrom, userMessage } from './runner/messages.ts';
 export { TITLE_PROMPT, askedLine, checkImages, cleanTitle, fromMike, isAutomaticInput, matchAnswers, oneLine, scheduledMessageId, titleFrom, userMessage };
@@ -553,10 +553,6 @@ export type Runtime = {
   // until it's read: a wake turn opening drops the ended ones, and so does
   // a wake grace running out with no turn going (pruneAwaited).
   awaitedShells?: string[];
-  // The runner's nudge for an awaited shell the CLI never woke for, while
-  // it waits in the queue (nudgeUnreadShells): the thread is still mid-work,
-  // and a late wake of the CLI's own takes it back out.
-  nudgeTurnId?: string;
   // A done card that would have finished the thread (markFinished, then
   // the quiet-inbox and inbox-guess steps) but for background work that
   // ended during or just before its turn: the turn the CLI may open to read
@@ -1635,9 +1631,11 @@ export class Runner {
     // kills, and a done card held for it isn't settled on the waiting turn
     // (Codex's and Gemini's review, 28 Nov 2026). Only where a nudge could
     // go: in the Inbox, nothing else queued or left unread by Mike.
-    const nudged = Boolean(rt.nudgeTurnId && rec.queue.some((m) => m.turnId === rt.nudgeTurnId));
-    const unread = !rt.turn && (rt.wakeTimer || nudged) && this.adapters[rt.sessionProvider ?? rec.provider]?.nudgesUnreadShells ? this.unreadAwaited(st) : [];
-    const tell = (unread.length > 0 || nudged) && this.bucket(rec) === 'inbox' && !rec.interruptedMessages?.length && rec.queue.length === (nudged ? 1 : 0);
+    const nudges = rec.queue.filter(isUnreadShellsNudge).length;
+    const unread = !rt.turn && rt.wakeTimer && this.adapters[rt.sessionProvider ?? rec.provider]?.nudgesUnreadShells ? this.unreadAwaited(st) : [];
+    // And one the next runner would act on: under the cap, which a queued
+    // nudge already counted itself within (withdrawn below, uncounted).
+    const tell = (unread.length > 0 || nudges > 0) && this.bucket(rec) === 'inbox' && !rec.interruptedMessages?.length && rec.queue.length === nudges && !this.coordinators?.dispatchRefusal(rec.id) && (nudges > 0 || (rec.stoppedWorkWakes ?? 0) < STOPPED_WORK_WAKES);
     if (tell) {
       const what = rt.finished.filter((t) => unread.includes(t.id)).map((t) => `${t.description || t.type} (it had finished; you hadn't read its result yet)`);
       this.withdrawNudge(st);
@@ -2102,7 +2100,7 @@ export class Runner {
     const { rec, rt } = st;
     if (card) return false;
     // Its nudge is queued (a draining runner's goes across first): not Mike's yet.
-    if (rt.nudgeTurnId && rec.queue.some((m) => m.turnId === rt.nudgeTurnId)) return true;
+    if (rec.queue.some(isUnreadShellsNudge)) return true;
     const ids = rt.awaitedShells;
     if (!ids?.length) return false;
     // One still running, or one ended and unread with its wake grace on.
@@ -2368,9 +2366,6 @@ export class Runner {
     // (runner/hibernation.ts, wakeAtTime).
     if (fromMike(text, opts)) delete rec.lateChecks;
     if (opts.origin !== 'runner') {
-      // Their message answers for the nudge, which would otherwise run
-      // after it, over its end_turn (Gemini's review, 28 Nov 2026).
-      this.withdrawNudge(st);
       rt.hookTurns = undefined;
       delete rec.stoppedWorkWakes;
       // A new ask: its change can be reviewed afresh. Not while a review's
@@ -2394,6 +2389,10 @@ export class Runner {
         throw new RpcError(ErrorCode.badParams, (e as Error).message);
       }
     });
+    // Someone else's message answers for the runner's nudge, which would
+    // otherwise run after it, over its end_turn. Only once it's accepted:
+    // a refused one leaves the nudge (the reviews, 28 Nov 2026).
+    if (opts.origin !== 'runner') this.withdrawNudge(st);
     // New work: its last finish no longer says it's done, for threads
     // waiting on it (runner/hibernation.ts).
     delete rec.finished;
@@ -3554,7 +3553,7 @@ export class Runner {
     const what = ended.map((t) => t.description || t.type);
     try {
       rec.stoppedWorkWakes = wakes + 1;
-      rt.nudgeTurnId = this.sendTo(st, unreadShellsMessage(count, what, wakes + 1 >= STOPPED_WORK_WAKES), [], { origin: 'runner', queue: true, wakeReason: 'Its background shell ended' });
+      this.sendTo(st, unreadShellsMessage(count, what, wakes + 1 >= STOPPED_WORK_WAKES), [], { origin: 'runner', queue: true, wakeReason: UNREAD_SHELLS_WAKE });
       this.log.info('nudged a thread whose CLI never woke for its shell', { threadId: rec.id, what });
       return true;
     } catch (e) {
@@ -3571,17 +3570,16 @@ export class Runner {
   }
 
   // Takes back the runner's nudge while it's still queued (the CLI woke
-  // after all, or someone else wrote), uncounted.
-  private withdrawNudge(st: ThreadState): void {
-    const { rec, rt } = st;
-    if (!rt.nudgeTurnId) return;
-    const at = rec.queue.findIndex((m) => m.turnId === rt.nudgeTurnId);
-    if (at >= 0) {
-      rec.queue.splice(at, 1);
-      if (rec.stoppedWorkWakes) rec.stoppedWorkWakes--;
-      this.markDirty(st);
-    }
-    delete rt.nudgeTurnId;
+  // after all, someone else wrote, or the thread was put away), uncounted.
+  // Found by its mark on the queued message, so one a handover carried
+  // across is found too.
+  withdrawNudge(st: ThreadState): void {
+    const { rec } = st;
+    const left = rec.queue.filter((m) => !isUnreadShellsNudge(m));
+    if (left.length === rec.queue.length) return;
+    rec.queue = left;
+    if (rec.stoppedWorkWakes) rec.stoppedWorkWakes--;
+    this.markDirty(st);
   }
 
   openCliTurn(st: ThreadState): void {
@@ -4269,12 +4267,14 @@ export class Runner {
     // Its background work went with it: only now, as the cards closing
     // above can look at the thread (a handover's readiness check) and must
     // still see the work.
-    this.cli(st, { kind: 'stopTasks' });
     // A CLI that fell over in the wake grace of a shell its last turn ended
     // waiting on: a fresh one is nudged to read it, before a held finish or
     // helper run settles on the waiting turn (Gemini's review, 28 Nov 2026).
+    // Read before its tasks go, so a shell the exit killed isn't counted
+    // as one that finished.
     const ended = rt.finished;
     const unread = !released && !rt.turn && rt.wakeTimer && this.adapters[rt.sessionProvider ?? rec.provider]?.nudgesUnreadShells ? this.unreadAwaited(st) : [];
+    this.cli(st, { kind: 'stopTasks' });
     rt.finished = [];
     rt.taskEndedInTurn = false;
     delete rt.awaitedShells;

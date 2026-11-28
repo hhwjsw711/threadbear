@@ -831,6 +831,10 @@ export const hibernationPart = {
     // since, it would bring it back unread when its schedule went. Not on
     // a message, which may sit queued or fail to start (the reviews, 25 Nov 2026).
     if (PUT_AWAY_MOVES.has(e.kind)) delete st.rec.quietWake;
+    // Put away with the runner's nudge for an unread shell still queued: it
+    // would run, stale, whenever the thread next came back (the reviews,
+    // 28 Nov 2026).
+    if (this.bucket(st.rec) !== 'inbox') this.withdrawNudge(st);
     return true;
   },
 };

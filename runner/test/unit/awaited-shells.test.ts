@@ -445,3 +445,48 @@ test('a CLI that falls over in the wake grace: a fresh one is nudged to read the
   assert.ok(t.status === 'starting' || t.status === 'running', t.status);
   assert.equal(t.needsYou, false);
 });
+
+// Round 3 of the review.
+test('archiving a thread with its nudge still queued takes the nudge back', async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  await h.runner.beginDrain([id], { onHandedOver: () => {}, ready: () => false });
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(91_000);
+  await tick();
+  const st = h.runner.threads.get(id)!;
+  assert.equal(st.rec.queue.length, 1);
+  await h.runner.update({ threadId: id, archived: true });
+  await tick();
+  assert.equal(st.rec.queue.length, 0);
+});
+
+test('a stop in the grace of a thread already woken three times settles as before, rather than leaving a wake the next runner refuses', async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  h.runner.threads.get(id)!.rec.stoppedWorkWakes = 3;
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(30_000);
+  await tick();
+  await h.runner.shutdown();
+  assert.equal(h.runner.threads.get(id)!.rec.stoppedWork, undefined);
+});
+
+test('a CLI that falls over with one awaited shell finished and another still running: only the finished one is read as finished', async () => {
+  const h = makeHarness();
+  opencodeLike(h, 90_000);
+  const { id, s } = start(h);
+  const land = { ...SHELL, id: 'sh_land', description: 'tb land' };
+  s.out({ kind: 'tasks', tasks: [land, SHELL] });
+  s.result('completed');
+  await tick();
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  await tick();
+  s.kill();
+  await tick();
+  await tick();
+  const sent = h.adapter.sessions.filter((x) => x.opts.threadId === id).flatMap((x) => x.sent.map((m) => m.text));
+  assert.match(sent.at(-1) ?? '', /^A background shell .* has finished.*:\n\n- tb land\n\n/s);
+});
