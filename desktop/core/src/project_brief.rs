@@ -701,7 +701,7 @@ mod tests {
         let short = "Short project state.";
         assert_eq!(preview_state_text(short, 100, 3), (short.to_owned(), false));
 
-        let long = "The 27 Nov Mac release is live with the coordinator redesign and backend moved to my.threadbear.mikecann.app. Next up is the Usage honey pot rethink and interactive HTML live pages on the comparison canvas.";
+        let long = "The share sheet is live in the beta and the uploader now resumes after a crash. Next up is the nightly report and a faster build on CI for the release branch.";
         let (preview, cut) = preview_state_text(long, 60, 3);
         assert!(cut);
         assert!(preview.ends_with('…'));
