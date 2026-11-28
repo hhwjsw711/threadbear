@@ -284,9 +284,11 @@ Queries:
   reads older pages once, with `beforeSeq` (`web/src/transcript.ts`). The
   iPhone does the same with an 80-row live page and chunks of 200
   (`MessageHistory.swift`), watching `phone:images` from the first row read
-  once for pictures that finish uploading late; builds before 1.0.5 raise `limit` as you scroll
-  back, re-reading up to 2,000 rows for each new message (37.6 MB on 8 Nov),
-  which is why `PAGE_MAX` stays 2,000 until they're gone. `phone:thread` stays as API 1 had it (newest 20 text messages plus
+  once for pictures that finish uploading late. Builds before 1.0.5 raised `limit` as you scrolled
+  back, re-reading the whole page for each new message (37.6 MB on 8 Nov);
+  now that 1.0.5 is out, the live form (no `beforeSeq`) is capped at 200
+  (chunks with `beforeSeq` stay at 200), so older builds stop at the cap
+  rather than costing runaway I/O. `phone:thread` stays as API 1 had it (newest 20 text messages plus
   any paged ones, never tool rows), for phone apps built before.
 - `phone:threadsAt({ token, view })` (API 43) → `{ rows, at }`, a list once;
   `phone:threadsSince({ token, since })` → `{ rows, gone, more? }`, every row

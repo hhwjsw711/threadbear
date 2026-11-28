@@ -46,10 +46,14 @@ const PAGED_BYTES = 4 * 1024 * 1024;
 const THREAD_SCAN = 400;
 // phone:messages page sizes.
 const PAGE_DEFAULT = 50;
-// The website and iPhone keep their live page small and read older rows with
-// beforeSeq, once each. iPhone builds before 1.0.5 still raise limit as you
-// scroll back, and have no other way back, so this stays until they're gone.
-const PAGE_MAX = 2000;
+// The website (30 rows) and iPhone from 1.0.5 (80 rows) keep their live page
+// small and read older rows with beforeSeq in chunks of 200. The live form (no
+// beforeSeq) is capped at 200 (PAGE_MAX_LIVE) so iPhone builds before 1.0.5,
+// which grew limit as they scrolled back, stop there rather than rereading
+// thousands of rows on every new message. Older rows read with beforeSeq stay
+// at their chunk size (200, PAGE_MAX_CHUNK).
+const PAGE_MAX_LIVE = 200;
+const PAGE_MAX_CHUNK = 200;
 // Without tools: true, how many tool rows a page may look past for its text
 // messages. Most rows are one-line tool rows, so a page stops at this many
 // read whatever it found, and says there's more.
@@ -468,7 +472,7 @@ export const messages = query({
   returns: v.object({ messages: v.array(pageMessage), hasMore: v.boolean(), images: v.optional(v.array(phoneImage)) }),
   handler: async (ctx, { token, threadId, beforeSeq, limit, tools, noImages, notes: withNotes }) => {
     await checkPhoneToken(ctx, token);
-    const want = pageLimit(limit, PAGE_DEFAULT, PAGE_MAX);
+    const want = pageLimit(limit, PAGE_DEFAULT, beforeSeq === undefined ? PAGE_MAX_LIVE : PAGE_MAX_CHUNK);
     const out: { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; origin?: string; toolKind?: string; summary?: boolean; turn?: string; buttons?: Doc<'messages'>['buttons']; answers?: Doc<'messages'>['answers']; wakeReason?: string; at: string }[] = [];
     const q = ctx.db
       .query('messages')

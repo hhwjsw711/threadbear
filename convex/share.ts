@@ -19,7 +19,13 @@ import { checkPhoneToken, pageLimit } from './lib';
 import { docBytes } from './runnerAccess';
 
 const PAGE_DEFAULT = 80;
-const PAGE_MAX = 2000;
+// The web share page opens with a live first page of 400 rows and reads older
+// rows with beforeSeq in chunks of 200 (share.tsx). Capped at 400 for the live
+// query (PAGE_MAX_LIVE) and 200 for chunks with beforeSeq (PAGE_MAX_CHUNK), so
+// older clients or pages that grew the live query stop there rather than
+// rereading up to 2,000 rows on every new message.
+const PAGE_MAX_LIVE = 400;
+const PAGE_MAX_CHUNK = 200;
 const PAGE_BYTES = 8 * 1024 * 1024;
 
 const message = v.object({
@@ -181,7 +187,7 @@ export const view = query({
     const shared = t.share.access === 'link';
     const mike = await isMike(ctx, token);
     if (!shared && !mike) return { state: 'gone' as const };
-    const want = pageLimit(limit, PAGE_DEFAULT, PAGE_MAX);
+    const want = pageLimit(limit, PAGE_DEFAULT, beforeSeq === undefined ? PAGE_MAX_LIVE : PAGE_MAX_CHUNK);
     const out: Infer<typeof message>[] = [];
     // At most one more than the page, and PAGE_BYTES of it: a page of big
     // rows stops short, saying there's more, rather than going past what a
