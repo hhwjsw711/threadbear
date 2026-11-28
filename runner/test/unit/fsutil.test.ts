@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { atomicWriteFileSync, removeTempFiles } from '../../src/fsutil.ts';
+import { atomicWriteFileSync, removeTempFiles, removeTempFilesAsync } from '../../src/fsutil.ts';
 import { onlyOnWindows } from '../helpers/platform.ts';
 
 function tmpDir(): string {
@@ -168,4 +168,18 @@ test('a write that makes no progress fails rather than spinning', (t) => {
   shortWrites(t, 'nothing');
   assert.throws(() => atomicWriteFileSync(file, 'something new and longer\n'));
   assert.equal(fs.readFileSync(file, 'utf8'), 'the old list\n');
+});
+
+test('removeTempFilesAsync removes dead temp files and spares living ones', async (t) => {
+  const { dir } = folder(t);
+  const sub = path.join(dir, 'thread-1');
+  fs.mkdirSync(sub, { recursive: true });
+  const dead = path.join(sub, '.thread.json.99999999.deadbeef.tmp');
+  const alive = path.join(sub, `.thread.json.${process.pid}.12345678.tmp`);
+  fs.writeFileSync(dead, 'stale');
+  fs.writeFileSync(alive, 'live');
+  const removed = await removeTempFilesAsync(dir);
+  assert.equal(removed, 1);
+  assert.equal(fs.existsSync(dead), false);
+  assert.equal(fs.existsSync(alive), true);
 });

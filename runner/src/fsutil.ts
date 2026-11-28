@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { IS_WINDOWS } from './platform.ts';
@@ -113,6 +114,36 @@ export function removeTempFiles(...dirs: string[]): number {
     }
   };
   for (const d of dirs) clean(d, 1);
+  return removed;
+}
+
+// Asynchronous version of removeTempFiles for large folders like threads/
+// after the runner is already listening, so sweeping thousands of thread
+// directories doesn't stall startup or block the event loop.
+export async function removeTempFilesAsync(...dirs: string[]): Promise<number> {
+  let removed = 0;
+  const clean = async (dir: string, depth: number): Promise<void> => {
+    let names: fs.Dirent[];
+    try {
+      names = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const d of names) {
+      const p = path.join(dir, d.name);
+      const m = d.isFile() ? /^\..+\.(\d+)\.[0-9a-f]{8}\.tmp$/.exec(d.name) : null;
+      if (m) {
+        if (pidAlive(Number(m[1]))) continue;
+        try {
+          await fsp.unlink(p);
+          removed++;
+        } catch {
+          // gone already
+        }
+      } else if (d.isDirectory() && depth > 0) await clean(p, depth - 1);
+    }
+  };
+  for (const d of dirs) await clean(d, 1);
   return removed;
 }
 

@@ -677,6 +677,9 @@ export type Command = { commandId: string; kind: string; threadId?: string; args
 type Host = {
   onNotification(fn: (n: Notification) => void): () => void;
   list(include: ('inbox' | 'snoozed' | 'archived')[]): ThreadSummary[];
+  // Optional fast paths avoiding full summaries of thousands of archived threads.
+  ids?: () => string[];
+  listShared?: () => ThreadSummary[];
   get(threadId: string): ThreadSummary;
   events(threadId: string, opts: { afterSeq?: number; beforeSeq?: number; limit?: number }): { events: PersistedEvent[] };
   // The seq ranges edits cut out of a thread (docs/protocol/threads.md, "Editing a
@@ -1928,17 +1931,26 @@ export class ConvexSync {
     // stop while sync was off), and the file only holds a digest.
     this.linkSent.clear();
     this.heldForRow.clear();
-    for (const t of this.deps.runner.list(ALL)) {
-      if (!t.share) continue;
-      this.linkSent.set(t.id, LINK_UNKNOWN);
-      this.sent.delete(t.id);
-      this.lastWrite.delete(t.id);
-    }
     if (this.seeded) {
+      const shared = this.deps.runner.listShared ? this.deps.runner.listShared() : this.deps.runner.list(ALL).filter((t) => Boolean(t.share));
+      for (const t of shared) {
+        this.linkSent.set(t.id, LINK_UNKNOWN);
+        this.sent.delete(t.id);
+        this.lastWrite.delete(t.id);
+      }
       this.settling = true;
       this.settleTimer = this.deps.clock.setTimeout(() => this.settled(), SETTLE_MS);
-      for (const t of this.deps.runner.list(ALL)) if (t.share) this.mark(t, true);
-    } else for (const t of this.deps.runner.list(ALL)) this.mark(t);
+      for (const t of shared) this.mark(t, true);
+    } else {
+      const all = this.deps.runner.list(ALL);
+      for (const t of all) {
+        if (!t.share) continue;
+        this.linkSent.set(t.id, LINK_UNKNOWN);
+        this.sent.delete(t.id);
+        this.lastWrite.delete(t.id);
+      }
+      for (const t of all) this.mark(t);
+    }
     this.lists = {
       projects: this.deps.runner.listProjects?.(),
       schedules: this.deps.schedules?.inBackend() ? undefined : this.deps.runner.listSchedules?.(),
@@ -2009,7 +2021,7 @@ export class ConvexSync {
     if (v >= LOGIN_NOTES_API_VERSION && this.heldNotes.length) {
       // Not one whose thread has gone since, or whose place in it an edit
       // cut away: the owner's key would put a row back for it.
-      const live = new Set(this.deps.runner.list(ALL).map((t) => t.id));
+      const live = new Set(this.allIds());
       const kept = this.heldNotes.splice(0).filter((m) => live.has(m.threadId) && !(this.deps.runner.cuts?.(m.threadId) ?? []).some((c) => m.seq >= c.from && m.seq <= c.to));
       this.messages.push(...kept);
       if (kept.length && this.running) this.scheduleFlush();
@@ -2970,6 +2982,7 @@ export class ConvexSync {
   // marked, with what the draining runner says of it now, so a row still
   // showing a card answered before the handover loses it.
   seedCards(found: { thread: ThreadSummary; events: PersistedEvent[] }[]): void {
+    if (!this.running) return;
     for (const { thread, events } of found) {
       // One a draining runner answered in a shape not known here is skipped,
       // not the rest with it (Daybreak 122).
@@ -3000,7 +3013,7 @@ export class ConvexSync {
   // While a handover's cards are read (main.ts): listening, but nothing
   // written, so no row goes up without its card first.
   release(): void {
-    if (!this.holding) return;
+    if (!this.holding || !this.running) return;
     this.holding = false;
     this.scheduleFlush();
   }
@@ -3158,7 +3171,7 @@ export class ConvexSync {
     // listening, as with sync turned off. A start from the file skips the
     // prune a full write does, so it goes now (Daybreak, 6 Nov: a shared
     // thread deleted with sync off stayed public).
-    const here = new Set(this.deps.runner.list(ALL).map((t) => t.id));
+    const here = new Set(this.allIds());
     for (const id of [...this.sent.keys()]) {
       if (here.has(id)) continue;
       if (this.deps.movedAway?.(id)) this.forgetMoved(id);
@@ -3189,7 +3202,7 @@ export class ConvexSync {
 
   private confirmMissing(): void {
     const now = this.deps.clock.now();
-    const here = new Set(this.deps.runner.list(ALL).map((t) => t.id));
+    const here = new Set(this.allIds());
     for (const [id, since] of [...this.missing]) {
       if (here.has(id) || this.deps.elsewhere?.(id)) {
         this.missing.delete(id);
@@ -3310,6 +3323,10 @@ export class ConvexSync {
 
   // ---- What the mirror already has, between starts (sync-cache.ts).
 
+  private allIds(): string[] {
+    return this.deps.runner.ids ? this.deps.runner.ids() : this.deps.runner.list(ALL).map((t) => t.id);
+  }
+
   private seedFromCache(): void {
     this.seeded = false;
     const file = this.deps.cachePath;
@@ -3320,7 +3337,7 @@ export class ConvexSync {
     this.sent = new Map(Object.entries(c.threads));
     this.heads = new Map(Object.entries(c.heads));
     // One that's here after all (handed back) isn't gone.
-    const here = new Set(this.deps.runner.list(ALL).map((t) => t.id));
+    const here = new Set(this.allIds());
     // Peers connect before the sync starts (main.ts), so the kept ones are
     // known by now.
     this.arrivedFrom.clear();
@@ -3827,7 +3844,7 @@ export class ConvexSync {
       if (this.picturesDue && !this.deps.box && (this.backendApiVersion ?? 0) >= ICONS_API_VERSION) await this.sendPictures();
       if (this.full) {
         // And those finishing on the release before: their rows aren't stale.
-        const keep = [...new Set([...this.deps.runner.list(ALL).map((t) => t.id), ...(this.deps.elsewhereIds?.() ?? [])])];
+        const keep = [...new Set([...this.allIds(), ...(this.deps.elsewhereIds?.() ?? [])])];
         // Not a box: its key can't prune (BOX_CALLS), and it has one thread,
         // which the backend keeps to that thread anyway (ownThreadOnly).
         if (!this.deps.box) await this.post('mutation', 'sync:prune', { key, runnerId: this.runnerId, keep });
@@ -4502,7 +4519,7 @@ export class ConvexSync {
         // first write
       }
       // Only threads that still exist, so the file doesn't grow for ever.
-      const live = new Set(this.deps.runner.list(ALL).map((t) => t.id));
+      const live = new Set(this.allIds());
       const histories = { ...(state.histories ?? {}), [this.deps.config.url ?? '']: [...filled].filter((id) => live.has(id)) };
       fs.writeFileSync(this.deps.statePath, JSON.stringify({ histories }, null, 2) + '\n');
     } catch (e) {
@@ -4558,7 +4575,7 @@ export class ConvexSync {
       ...(this.deps.release ? { release: this.deps.release } : {}),
       startedAt: this.deps.startedAt,
       draining: false,
-      threadCount: this.deps.runner.list(ALL).length,
+      threadCount: this.allIds().length,
       ...((this.backendApiVersion ?? 0) >= INDEX_POOL_API_VERSION && this.deps.runner.listPools
         ? { usagePools: this.deps.runner.listPools().pools.map(({ id, title, accountIds, backup }) => ({ id, title, accountIds, ...((this.backendApiVersion ?? 0) >= POOL_BACKUPS_API_VERSION && backup ? { backup } : {}) })) }
         : {}),

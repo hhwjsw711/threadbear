@@ -83,7 +83,7 @@ import { RpcServer } from './rpc.ts';
 import { AppSeen } from './app-seen.ts';
 import { realClock } from './clock.ts';
 import { acquireLock } from './lock.ts';
-import { isDirectory, removeTempFiles } from './fsutil.ts';
+import { isDirectory, removeTempFiles, removeTempFilesAsync } from './fsutil.ts';
 import { Models } from './models/index.ts';
 import { SettingsService, modelMethods, settingsMethods } from './settings.ts';
 import { SelfProfiler, profileMethods, watchStalls } from './self-profile.ts';
@@ -282,8 +282,10 @@ async function main(): Promise<void> {
   if (cfg.sync.urlRefused) log.warn('sync URL refused, so sync is off', { reason: cfg.sync.urlRefused });
   if (cfg.connectorsRefused) log.warn('Connectors gateway URL refused, so it is off', { reason: cfg.connectorsRefused });
 
-  // Temp files from atomic writes a crash interrupted.
-  removeTempFiles(cfg.home, paths.run(cfg.home), paths.threads(cfg.home));
+  // Temp files from atomic writes a crash interrupted. Top-level folders now;
+  // threads/ (potentially thousands of subfolders) sweeps asynchronously once
+  // the server is listening so startup doesn't stall on it.
+  removeTempFiles(cfg.home, paths.run(cfg.home));
 
   const registry = new ProcessRegistry(paths.run(cfg.home), log);
   // The thread keys and ids this runner was started under (a dev runner's,
@@ -317,11 +319,9 @@ async function main(): Promise<void> {
   // `auth status` (sign-in-state.ts); the registry puts it on every account.
   const signIn = new SignInState({ claudePath: cfg.claudePath, accounts: () => accounts.list(), env: (a) => cliEnv(a), clock: realClock, log, file: path.join(cfg.home, REFUSALS_FILE) });
   accounts.signIn = signIn;
-  signIn.start();
   // Year-long token… asked from another Mac (docs/protocol.md, accounts.yearToken).
   const tokenMaker = new YearTokenMaker({ claudePath: cfg.claudePath, env: (a) => cliEnv(a), log });
   const tally = new TokenTally({ dataDir: cfg.home, clock: realClock, log, accounts: () => accounts.list() });
-  if (cfg.tokenTally !== false) tally.start();
   // Every session gets tools for driving Threadbear itself, bound to its
   // own thread. Sessions only start after the runner exists.
   let runner!: Runner;
@@ -627,7 +627,7 @@ async function main(): Promise<void> {
   projects.start(runner);
   const coordinators = new Coordinators({ home: cfg.home, host: runner, projects, clock: realClock, log, enabled: () => !box && experimentOn(cfg.home, 'coordinators'), elsewhere: (id) => peers.find(id) });
   runner.coordinators = coordinators;
-  runner.start({ skip: kept });
+  runner.start({ skip: kept, deferBackground: true });
   // App-restart watches with words from before ceilings: bound now.
   appRestarts.bindOldCeilings((id) => (runner.has(id) ? runner.authoritySaved(id).mode : undefined));
   bootStep('threads');
@@ -710,17 +710,13 @@ async function main(): Promise<void> {
   runner.scheduleChecks = () => scheduler.localChecks();
   // The librarian needs both the loaded projects and the recovered threads.
   const librarian = new Librarian({ host: runner, projects, models, clock: realClock, log, home: cfg.home, pocket: pocketControl });
-  if (!copyOfReal && !box) librarian.start();
   // Background jobs that look stuck get their thread a message.
   const stuckJobs = new StuckJobs({ host: runner, clock: realClock, log, home: cfg.home });
-  stuckJobs.start();
   // A CLI frozen on something only a person can answer says so in its thread.
   const frozenClis = new FrozenClis({ host: runner, clock: realClock, log, machine: cfg.sync.name ?? defaultRunnerName() });
-  frozenClis.start();
   // Keeps the Mac out of idle sleep while threads work, unless Settings
   // turns it off (read each sweep, so the switch needs no restart).
   const keepAwake = new KeepAwake({ busy: () => runner.workingThreads(), on: () => cfg.keepAwake, clock: realClock, log });
-  keepAwake.start();
   // A dialog waiting on this Mac's screen says so, from the installed runner
   // only: a dev runner's Mac is the one you're sat at, and a throwaway data
   // dir shouldn't get a thread about it. THREADBEAR_MAC_SCREEN=on to try it
@@ -729,7 +725,6 @@ async function main(): Promise<void> {
   const macScreen = process.platform === 'darwin' && macScreenSetting !== 'off' && (macScreenSetting === 'on' || readRelease())
     ? new MacScreen({ host: runner, clock: realClock, log, machine: cfg.sync.name ?? defaultRunnerName(), stateFile: path.join(cfg.home, 'mac-screen.json') })
     : undefined;
-  macScreen?.start();
   // The Connectors gateway's /health, for the app's Connectors panel
   // (docs/protocol/panels.md, "Connectors"). Off when there's no gateway.
   const connectors = new ConnectorsMonitor({
@@ -738,7 +733,6 @@ async function main(): Promise<void> {
     log,
     onChange: (s) => runner.publish({ method: 'connectors.updated', params: { connectors: s } }),
   });
-  connectors.start();
   // Projects' task boards in Notion, read through the same gateway
   // (notion-tasks.ts). With no gateway, a project with a Notion page
   // shows why its board is empty.
@@ -950,6 +944,8 @@ async function main(): Promise<void> {
           fn(n);
         }),
       list: (include) => runner.list(include).filter((t) => !movesRef?.gone(t.id)),
+      ids: () => runner.listedIds().filter((id) => !movesRef?.gone(id)),
+      listShared: () => runner.sharedSummaries().filter((t) => !movesRef?.gone(t.id)),
       get: (id) => runner.get(id),
       events: (id, o) => runner.events(id, o),
       cuts: (id) => runner.cuts(id),
@@ -1052,13 +1048,6 @@ async function main(): Promise<void> {
     clock: realClock,
     log,
   });
-  // A handover's draining runner may have threads waiting on a card, asked
-  // for before this runner was listening. The sync listens from here but
-  // writes nothing till they're read and back on their rows: another Mac's
-  // view takes a card gone from the row as answered, and the thread would
-  // sit needing Mike with nothing to answer (13 Nov, Peers.openCards).
-  const handedOver = peers.status().length > 0;
-  sync.start({ hold: handedOver });
   // A Mac waking from sleep, or a box resumed: a new websocket at once,
   // rather than a minute on a dead one (clock-jump.ts).
   const clockJumps = new ClockJumpWatch({
@@ -1068,20 +1057,9 @@ async function main(): Promise<void> {
       // Not a box's save hold: only the backend lets that go (box-save.ts SaveHold).
     },
   });
-  clockJumps.start();
-  if (handedOver) {
-    try {
-      sync.seedCards(await peers.openCards());
-    } catch (e) {
-      log.warn("could not read the draining runners' open cards", { error: String(e) });
-    } finally {
-      sync.release();
-    }
-  }
   // Counts only, and off unless runner.json asks (src/secret-check.ts).
   const secretCheck = new SecretCheck({ home: cfg.home, enabled: cfg.secretCheck === true, log });
   if (secretCheck.on) {
-    secretCheck.start();
     runner.onNotification((n) => {
       if (n.method === 'thread.event') secretCheck.see(n.params.threadId, n.params.event as Parameters<SecretCheck['see']>[1]);
     });
@@ -1249,7 +1227,6 @@ async function main(): Promise<void> {
     ...spareWeekBinding(runner),
   });
   runner.spareWeek = spareWeek;
-  if (!box) spareWeek.start();
   // The email watcher (experiment mailWatch, mail-watch.ts): new emails wake
   // the threads waiting on them, go to the threads they're about, or wait
   // on a pile that comes as one thread at set times. Only the main Mac's
@@ -1278,7 +1255,6 @@ async function main(): Promise<void> {
     generate: (p) => models.generate(p),
     isPrivate: (cwd) => models.isPrivateFolder(cwd),
   });
-  if (!box && !copyOfReal) mailWatch.start();
   // Agent Archive through Threadbear (agent-archive.ts, docs/agent-archive-plan.md).
   const agentArchive = new AgentArchive({
     home: cfg.home,
@@ -1290,7 +1266,6 @@ async function main(): Promise<void> {
     loginDirs: () => accounts.list(),
     settings: () => peekRunnerJson(cfg.home).archive,
   });
-  if (!box && !copyOfReal) agentArchive.start();
   // Recipes (recipes.ts): the main Mac's techniques worth keeping, each set
   // up by a thread of its own and switched on and off from the app.
   const recipes = new Recipes({
@@ -1308,7 +1283,6 @@ async function main(): Promise<void> {
     log: (msg, extra) => log.warn(msg, extra),
   });
   recipesHabits = () => recipes.habits();
-  if (!box && !copyOfReal) recipes.start();
   const upstream = new Upstream({
     home: cfg.home,
     checkout: thisRelease?.checkout,
@@ -1617,7 +1591,6 @@ async function main(): Promise<void> {
   });
   if (!copyOfReal) {
     runner.onAccountsChanged = () => void loginSharer.check();
-    loginSharer.start();
   }
   methods['runners.sharedLogins'] = () => {
     const blocked = loginSharer.blocked();
@@ -1837,13 +1810,11 @@ async function main(): Promise<void> {
   }));
   // The backend's version is known once sync has heard from it: until the
   // watch starts, it's tried again (start does nothing once it has).
-  refreshNames();
   const movesTimer = setInterval(() => {
     refreshNames();
     moves.start();
   }, 30_000);
   movesTimer.unref();
-  moves.start();
   const startedMoves = new Map<string, string>();
   const moveOn = () => {
     if (!sync.ownerKey()) throw new RpcError(ErrorCode.badParams, "Only the main Mac's runner can move a thread.");
@@ -2034,6 +2005,44 @@ async function main(): Promise<void> {
   // Tests read this line to know the runner is up.
   process.stdout.write(`threadbear-runner listening on ${port}\n`);
   tellLaunchListening();
+  // Background services and sync start now that the RPC port is open, so the
+  // app reconnects straight away instead of waiting on sync, draining openCards,
+  // model probes and temp-file sweeps.
+  const handedOver = peers.status().length > 0;
+  sync.start({ hold: handedOver });
+  clockJumps.start();
+  if (handedOver) {
+    void (async () => {
+      try {
+        sync.seedCards(await peers.openCards());
+      } catch (e) {
+        log.warn("could not read the draining runners' open cards", { error: String(e) });
+      } finally {
+        sync.release();
+      }
+    })();
+  }
+  if (secretCheck.on) secretCheck.start();
+  setImmediate(() => {
+    if (stopping || draining) return;
+    runner.startBackground();
+    signIn.start();
+    if (cfg.tokenTally !== false) tally.start();
+    if (!copyOfReal && !box) librarian.start();
+    stuckJobs.start();
+    frozenClis.start();
+    keepAwake.start();
+    macScreen?.start();
+    connectors.start();
+    if (!box) spareWeek.start();
+    if (!box && !copyOfReal) mailWatch.start();
+    if (!box && !copyOfReal) agentArchive.start();
+    if (!box && !copyOfReal) recipes.start();
+    if (!copyOfReal) loginSharer.start();
+    refreshNames();
+    moves.start();
+    void removeTempFilesAsync(paths.threads(cfg.home)).catch(() => {});
+  });
   // Checks start a minute after this; installs never while a restart waits.
   updates.start();
   extraUpdates.start();

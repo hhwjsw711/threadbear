@@ -87,8 +87,8 @@ function listOf(v: unknown, kind: 'object' | 'string' | 'number'): unknown[] | u
   if (!Array.isArray(v)) return undefined;
   return v.filter((x) => (kind === 'object' ? isObject(x) : typeof x === kind));
 }
-export function normaliseRecord(rec: Record<string, unknown>): boolean {
-  const before = JSON.stringify(rec);
+export function normaliseRecord(rec: Record<string, unknown>, trackChanged = true): boolean {
+  const before = trackChanged ? JSON.stringify(rec) : undefined;
   if (!rec.model || (rec.explicitModel !== 'pickerId' && rec.explicitModel !== 'modelId' && rec.explicitModel !== 'unresolved')) delete rec.explicitModel;
   for (const k of OBJECTS) if (rec[k] !== undefined && !isObject(rec[k])) delete rec[k];
   for (const [k, kind] of [...OBJECT_LISTS.map((k) => [k, 'object'] as const), ...STRING_LISTS.map((k) => [k, 'string'] as const), ...NUMBER_LISTS.map((k) => [k, 'number'] as const)]) {
@@ -153,7 +153,7 @@ export function normaliseRecord(rec: Record<string, unknown>): boolean {
     if (!ok) delete rec.wakeNews;
   }
   if (rec.title !== undefined && typeof rec.title !== 'string') rec.title = String(rec.title);
-  return JSON.stringify(rec) !== before;
+  return before !== undefined && JSON.stringify(rec) !== before;
 }
 
 export type ThreadRecord = {
@@ -463,6 +463,8 @@ export type SubagentRecord = Subagent & { sessionId?: string; cwd?: string; acco
 
 // How much of the end of an events.ndjson opening one reads (EventLog).
 const TAIL_BYTES = 64 * 1024;
+// Reused across synchronous openTail() calls so startup doesn't allocate 64 KB per thread.
+const TAIL_BUF = Buffer.allocUnsafe(TAIL_BYTES);
 
 // Append-only events.ndjson with a byte-offset index, so a page of a
 // 4,000-event thread is one read of the bytes it needs. seq N is line N.
@@ -507,7 +509,7 @@ export class EventLog {
       }
       const len = Math.min(total, TAIL_BYTES);
       const at = total - len;
-      const buf = Buffer.alloc(len);
+      const buf = TAIL_BUF.subarray(0, len);
       fs.readSync(fd, buf, 0, len, at);
       const lastNl = buf.lastIndexOf(0x0a);
       if (lastNl < 0) return false;
@@ -684,7 +686,7 @@ export class ThreadStore {
     rec.lastTurnCompletedSeq ??= 0;
     // A folder the runner can't use isn't a thread it can load: rebuilt.
     if (typeof rec.cwd !== 'string') return undefined;
-    normaliseRecord(rec as unknown as Record<string, unknown>);
+    normaliseRecord(rec as unknown as Record<string, unknown>, false);
     return rec;
   }
 
@@ -740,6 +742,10 @@ export class ThreadStore {
     fs.mkdirSync(bin, { recursive: true });
     fs.renameSync(dir, path.join(bin, `${id}-${now}`));
     this.logs.delete(id);
+  }
+
+  hasLog(id: string): boolean {
+    return this.logs.has(id);
   }
 
   log(id: string): EventLog {

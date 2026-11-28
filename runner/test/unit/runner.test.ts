@@ -2718,3 +2718,38 @@ test('carry-on follow-ups survive non-Mike wakes unless replaced, cleared, switc
   assert.equal(lastDone(h2).next, undefined);
 });
 
+test('quiet archived threads defer opening event logs until opened while threadIds and sharedSummaries avoid loading patches', async () => {
+  const root = tmpDir();
+  const project = path.join(root, 'app');
+  fs.mkdirSync(path.join(project, 'convex'), { recursive: true });
+  fs.writeFileSync(path.join(project, '.env.local'), 'CONVEX_DEPLOYMENT=dev:quick-fox-77\n');
+  fs.writeFileSync(path.join(project, 'package.json'), '{}');
+  const h = makeHarness(undefined, {}, { panelsRoot: root });
+  const { thread: active } = create(h, { cwd: project });
+  h.adapter.last.init();
+  h.adapter.last.result();
+  const { thread: archived } = create(h, { cwd: project });
+  h.adapter.last.init();
+  h.adapter.last.result();
+  h.runner.update({ threadId: archived.id, archived: true });
+  h.runner.flush();
+
+  const h2 = h.restart();
+  assert.equal(h2.store.hasLog(active.id), true, 'active thread opens its log on start');
+  assert.equal(h2.store.hasLog(archived.id), false, 'quiet archived thread skips opening its log on start');
+
+  // listedIds() and sharedSummaries() do not trigger patch loads on unshared archived threads.
+  assert.ok(h2.runner.listedIds().includes(archived.id));
+  assert.deepEqual(h2.runner.sharedSummaries(), []);
+  assert.equal(h2.runner.threads.get(archived.id)?.rt.patches, undefined, 'listedIds/sharedSummaries do not load patches');
+
+  // Opening the archived thread opens its log and loads patches/panels normally.
+  const ev = h2.runner.events(archived.id);
+  assert.equal(h2.store.hasLog(archived.id), true);
+  assert.equal(ev.lastSeq, h2.runner.threads.get(archived.id)?.rec.lastSeq);
+  const opened = h2.runner.get(archived.id);
+  assert.ok(opened.panels?.some((p) => p.id === 'convex.dashboard'), 'get() loads panels for archived threads');
+  await h2.runner.patchesIdle();
+  assert.ok(h2.runner.threads.get(archived.id)?.rt.patches?.loaded, 'get() loads patches for archived threads');
+});
+

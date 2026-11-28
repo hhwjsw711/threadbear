@@ -992,7 +992,7 @@ export class Runner {
   //
   // `skip` are threads a draining runner still has (a handover): they stay
   // on disk untouched until it hands them over and adopt() loads them.
-  start(opts: { skip?: ReadonlySet<string> } = {}): void {
+  start(opts: { skip?: ReadonlySet<string>; deferBackground?: boolean } = {}): void {
     this.startedAt = this.clock.now();
     // A login that reads as out gets read again now and then, so a reset
     // made outside Threadbear lifts it (limit-recheck.ts).
@@ -1034,8 +1034,22 @@ export class Runner {
     for (const rec of records) {
       if (opts.skip?.has(rec.id)) continue;
       // thread.json is saved a moment after the event it follows; the log
-      // is the truth for seq.
-      rec.lastSeq = this.store.log(rec.id).lastSeq;
+      // is the truth for seq. Quiet archived threads keep their saved seq
+      // until opened so startup doesn't open thousands of archived logs.
+      const archivedQuiet =
+        Boolean(rec.archivedAt) &&
+        rec.status !== 'running' &&
+        rec.status !== 'starting' &&
+        rec.status !== 'waiting' &&
+        rec.queue.length === 0 &&
+        rec.pendingApprovals.length === 0 &&
+        !rec.stoppedMidTurn &&
+        !rec.stoppedWork &&
+        !rec.reviews?.some((r) => r.status === 'pending') &&
+        typeof rec.lastSeq === 'number' &&
+        Number.isInteger(rec.lastSeq) &&
+        rec.lastSeq >= 0;
+      if (!archivedQuiet) rec.lastSeq = this.store.log(rec.id).lastSeq;
       const st: ThreadState = { rec, rt: newRuntime(Date.parse(rec.lastActivityAt) || 0) };
       // A box's restored thread: nothing starts (recovery, a carry-on, a
       // wake) until its worktree's setup has run (setUpRestored).
@@ -1099,6 +1113,12 @@ export class Runner {
     this.log.info('runner loaded threads', { count: this.threads.size });
     this.accountsShown = accountsKey(this.safeAccounts());
     this.poolsShown = JSON.stringify(this.pools());
+    if (!opts.deferBackground) this.startBackground();
+  }
+
+  // Background probes and watches started once the runner is listening (or at
+  // the end of start() when deferBackground is not set).
+  startBackground(): void {
     void this.probeModels();
     // Usage readings and a rescan that finds another list both reach
     // clients through the same throttle as what the probes learn.
@@ -1931,6 +1951,27 @@ export class Runner {
     return sortByActivity(out);
   }
 
+  // Non-helper thread ids across every bucket without building summaries or
+  // touching patches (used by sync heartbeats, cache seeding and pruning).
+  listedIds(): string[] {
+    const out: string[] = [];
+    for (const st of this.threads.values()) {
+      if (!st.rec.coordinatorHelperFor) out.push(st.rec.id);
+    }
+    return out;
+  }
+
+  // Summaries only for threads that have ever been shared, so cached sync
+  // startup doesn't summarise thousands of unshared archived threads.
+  sharedSummaries(): ThreadSummary[] {
+    const out: ThreadSummary[] = [];
+    for (const st of this.threads.values()) {
+      if (st.rec.coordinatorHelperFor || !st.rec.share) continue;
+      out.push(this.summary(st));
+    }
+    return out;
+  }
+
   // Threads a schedule or the runner itself started since `since` (ms),
   // archived ones too, for Recipes' run counts (recipes.ts): only those are
   // summarised, as it looks every 30 seconds and a runner can have thousands
@@ -2115,6 +2156,7 @@ export class Runner {
     const st = this.mustGet(threadId);
     const log = this.store.log(threadId);
     const last = log.lastSeq;
+    if (st.rec.lastSeq !== last) st.rec.lastSeq = last;
     const limit = Math.min(Math.max(1, opts.limit ?? LIMITS.defaultEventsLimit), 10_000);
     let from: number;
     let to: number;
@@ -2145,6 +2187,7 @@ export class Runner {
     const st = this.mustGet(threadId);
     this.flushDeltas(st);
     const log = this.store.log(threadId);
+    if (st.rec.lastSeq !== log.lastSeq) st.rec.lastSeq = log.lastSeq;
     return {
       events: log.read(afterSeq + 1, log.lastSeq),
       inProgress: [...st.rt.inProgress.values()].filter((i) => i.text),

@@ -249,10 +249,12 @@ export const handoversPart = {
   // still reports goes nowhere.
   async letGo(this: Runner, st: ThreadState): Promise<void> {
     const { rt, rec } = st;
+    const hadSession = runningSession(rt);
+    const hadCleanup = Boolean(rt.cleaning);
     rt.idleTimer?.cancel();
     rt.idleTimer = undefined;
     this.flushDeltas(st);
-    if (runningSession(rt)) {
+    if (hadSession) {
       this.rememberStoppedWork(st);
       this.releaseSession(st);
     }
@@ -274,7 +276,9 @@ export const handoversPart = {
     rt.deltaTimer?.cancel();
     rt.wakeTimer?.cancel();
     this.cli(st, { kind: 'drop', forget: false });
-    this.store.saveIfChanged(rec);
+    if (this.dirty.has(rec.id) || !rec.archivedAt || hadSession || hadCleanup || this.store.hasLog(rec.id)) {
+      this.store.saveIfChanged(rec);
+    }
     rt.deleted = true;
     this.dirty.delete(rec.id);
     this.threads.delete(rec.id);

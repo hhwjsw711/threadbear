@@ -58,9 +58,15 @@ export async function machineIcon(runDir: string, detect: () => Promise<string> 
   const saved = readJsonSync<{ host?: unknown; icon?: unknown }>(file);
   if (saved && saved.host === host && typeof saved.icon === 'string' && saved.icon) {
     const icon = saved.icon;
-    void detect().then((now) => {
-      if (now !== icon) remember(now);
-    });
+    // Check again once startup has settled, rather than forking system_profiler
+    // in the middle of booting.
+    const refresh = () => {
+      void detect().then((now) => {
+        if (now !== icon) remember(now);
+      });
+    };
+    if (detect === detectMachineIcon) setTimeout(refresh, 10_000).unref();
+    else refresh();
     return icon;
   }
   const icon = await detect();
