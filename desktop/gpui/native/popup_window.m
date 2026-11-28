@@ -3,6 +3,7 @@
 // native CEF/WebKit/AVKit child views without hiding them, and forwards
 // Escape/Up/Down/Return plus outside clicks cleanly.
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <stdbool.h>
 #import <stdint.h>
 
@@ -236,17 +237,38 @@ static NSRect tb_popup_screen_frame(NSWindow *owner, double anchor_x,
   return NSMakeRect(floor(x), floor(y), ceil(width), ceil(height));
 }
 
-static void tb_popup_style_panel(NSWindow *panel) {
+static void tb_popup_style_panel(NSWindow *panel, NSView *panelView,
+                                 NSWindow *owner) {
   if ([panel isKindOfClass:[NSPanel class]]) {
     NSPanel *p = (NSPanel *)panel;
     [p setBecomesKeyOnlyIfNeeded:YES];
     [p setFloatingPanel:YES];
   }
-  [panel setOpaque:NO];
-  [panel setBackgroundColor:[NSColor clearColor]];
-  [panel setHasShadow:NO];
+  // Strip AppKit's titled/full-size frame chrome so macOS cannot paint a dark
+  // window frame or enforce a titled minimum size around the transparent popup.
+  NSResponder *responder = panel.firstResponder;
+  if (panel.styleMask != NSWindowStyleMaskNonactivatingPanel) {
+    panel.styleMask = NSWindowStyleMaskNonactivatingPanel;
+  }
+  if (responder && responder != panel && panel.firstResponder != responder) {
+    [panel makeFirstResponder:responder];
+  }
+  panel.titleVisibility = NSWindowTitleHidden;
+  panel.titlebarAppearsTransparent = YES;
+  panel.opaque = NO;
+  panel.backgroundColor = [NSColor clearColor];
+  panel.hasShadow = NO;
+  [panel invalidateShadow];
   [panel setReleasedWhenClosed:NO];
-  [panel setLevel:NSPopUpMenuWindowLevel];
+  panel.level = owner ? owner.level : NSPopUpMenuWindowLevel;
+  if (panel.contentView) {
+    panel.contentView.wantsLayer = YES;
+    panel.contentView.layer.backgroundColor = [NSColor clearColor].CGColor;
+  }
+  if (panelView) {
+    panelView.wantsLayer = YES;
+    panelView.layer.backgroundColor = [NSColor clearColor].CGColor;
+  }
 }
 
 void tb_popup_place(void *panel_ns_view, void *owner_ns_view, double anchor_x,
@@ -259,7 +281,6 @@ void tb_popup_place(void *panel_ns_view, void *owner_ns_view, double anchor_x,
   NSWindow *owner = ownerView.window;
   if (!panel || !owner || !owner.isVisible) return;
 
-  tb_popup_style_panel(panel);
   NSView *content = owner.contentView;
   NSRect bounds = content ? content.bounds : NSZeroRect;
   CGFloat originY = (content && content.isFlipped)
@@ -273,16 +294,19 @@ void tb_popup_place(void *panel_ns_view, void *owner_ns_view, double anchor_x,
                                   gen:gen
                               onEvent:on_event];
 
-  // Defer setFrame/ordering to the next main-queue turn so AppKit's synchronous
-  // windowDidResize callback runs after GPUI releases its &mut App borrow.
+  // Defer styleMask/setFrame/ordering to the next main-queue turn so AppKit's
+  // synchronous resize callbacks run after GPUI releases its &mut App borrow.
   __weak NSWindow *weakPanel = panel;
+  __weak NSView *weakPanelView = panelView;
   __weak NSWindow *weakOwner = owner;
   dispatch_async(dispatch_get_main_queue(), ^{
     TBPopupMonitor *monitor = [TBPopupMonitor shared];
     if (monitor.activeGen != gen) return;
     NSWindow *p = weakPanel;
+    NSView *pv = weakPanelView;
     NSWindow *o = weakOwner;
     if (!p || !o || !o.isVisible) return;
+    tb_popup_style_panel(p, pv, o);
     NSRect frame = tb_popup_screen_frame(o, anchor_x, anchor_y, anchor_w,
                                          anchor_h, width, height, pad);
     [p setFrame:frame display:YES];

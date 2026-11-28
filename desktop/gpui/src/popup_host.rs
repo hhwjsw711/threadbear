@@ -18,8 +18,10 @@ use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "macos")]
 const POPUP_MENU_BIT: u8 = 2;
+/// Transparent margin around the popup menu so `mac_look::shadow` (30 pt blur,
+/// 10 pt y offset) fades out cleanly inside the borderless transparent panel.
 #[cfg(target_os = "macos")]
-const SHADOW_PAD: f32 = 12.0;
+const SHADOW_PAD: f32 = 36.0;
 
 #[cfg(target_os = "macos")]
 const EV_DISMISS: u32 = 0;
@@ -224,7 +226,9 @@ impl PopupHostView {
 
 #[cfg(target_os = "macos")]
 impl Render for PopupHostView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::ActiveTheme as _;
+        window.set_rem_size(cx.theme().font_size);
         let Some(active) = &self.active else {
             return Empty.into_any_element();
         };
@@ -264,8 +268,12 @@ impl Render for PopupHostView {
             .absolute()
             .inset_0(),
         );
+        // No `.bg(...)`: the panel is transparent so only `PopupMenu`'s own
+        // rounded card and drop shadow appear over the web page beneath.
         div()
             .size_full()
+            .font_family(cx.theme().font_family.clone())
+            .text_color(cx.theme().foreground)
             .flex()
             .items_start()
             .p(pad)
@@ -317,9 +325,19 @@ fn ensure_host(cx: &mut App) -> Option<(AnyWindowHandle, Entity<PopupHostView>)>
         is_minimizable: false,
         ..Default::default()
     };
-    let (window, view) =
-        gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| PopupHostView::new())).ok()?;
-    let any_window: AnyWindowHandle = window;
+    // Open directly via `cx.open_window` (not `gpui_kit::open_window`): `Root`
+    // paints an opaque theme background across the window, which showed up as a
+    // dark rectangle around the floating menu.
+    let mut created_view = None;
+    let window = cx
+        .open_window(options, |_, cx| {
+            let v = cx.new(|_| PopupHostView::new());
+            created_view = Some(v.clone());
+            v
+        })
+        .ok()?;
+    let view = created_view?;
+    let any_window: AnyWindowHandle = window.into();
     HOST.with(|h| {
         *h.borrow_mut() = Some(ReusableHost {
             window: any_window,
