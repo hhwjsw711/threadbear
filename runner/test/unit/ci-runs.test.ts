@@ -161,6 +161,7 @@ test('ciRuns: the folder a push ran in comes from its command', () => {
   assert.equal(pushDir('cd sub && git push 2>&1 | tail -2', '/x', '/h'), path.resolve('/x/sub'));
   assert.equal(pushDir('cd /a/b; cd c && git commit -qm x && git push -u origin feat', '/x', '/h'), path.resolve('/a/b/c'));
   assert.equal(pushDir('git -C ~/repo push', '/x', '/h'), path.resolve('/h/repo'));
+  assert.equal(pushDir('git -C ~//repo push', '/x', '/h'), path.resolve('/h/repo'));
   assert.equal(pushDir('git push', '/x', '/h'), undefined);
   assert.equal(pushDir('cd "$W" && git push', '/x', '/h'), undefined);
   assert.equal(pushDir('git push && cd later', '/x', '/h'), undefined);
