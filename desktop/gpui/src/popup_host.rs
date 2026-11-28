@@ -223,9 +223,24 @@ struct ActivePopup {
     reveal: RevealState,
 }
 
+/// What the panel's layout pass asks for once it has measured the menu.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum LayoutStep {
+    Reposition,
+    Reveal,
+    Wait,
+}
+
+/// Runs a `LayoutStep`. Handed to the view, so the view doesn't call the
+/// functions that reach back into `HOST` and the uses run one way.
+#[cfg(target_os = "macos")]
+type OnLayoutStep = fn(LayoutStep, WeakEntity<PopupHostView>, u64, Size<Pixels>, &mut App);
+
 #[cfg(target_os = "macos")]
 struct PopupHostView {
     active: Option<ActivePopup>,
+    on_step: OnLayoutStep,
     /// Last measured panel size per dropdown tag so re-opens already start at
     /// the exact final size with zero resize frames.
     cached_sizes: std::collections::HashMap<&'static str, Size<Pixels>>,
@@ -233,9 +248,10 @@ struct PopupHostView {
 
 #[cfg(target_os = "macos")]
 impl PopupHostView {
-    fn new() -> Self {
+    fn new(on_step: OnLayoutStep) -> Self {
         Self {
             active: None,
+            on_step,
             cached_sizes: std::collections::HashMap::new(),
         }
     }
@@ -258,6 +274,7 @@ impl Render for PopupHostView {
         let gen = active.gen;
         let menu = active.menu.clone();
         let view = cx.entity().downgrade();
+        let on_step = self.on_step;
         let pad = gpui_kit::px(SHADOW_PAD);
         let box_el = div().relative().flex_none().child(menu).child(
             canvas(
@@ -275,45 +292,34 @@ impl Render for PopupHostView {
                     let Some(v) = view.upgrade() else {
                         return;
                     };
-                    let action = v.read(cx).active.as_ref().and_then(|a| {
+                    let step = v.read(cx).active.as_ref().and_then(|a| {
                         if a.gen != gen {
                             return None;
                         }
                         if !sizes_close(a.panel_size, target, 1.0) {
-                            return Some(0u8);
+                            return Some(LayoutStep::Reposition);
                         }
                         match a.reveal {
                             RevealState::Shown => None,
                             RevealState::Measuring => {
                                 if sizes_close(viewport, target, 2.5) {
-                                    Some(1u8)
+                                    Some(LayoutStep::Reveal)
                                 } else {
-                                    Some(0u8)
+                                    Some(LayoutStep::Reposition)
                                 }
                             }
                             RevealState::Sized { tries } => {
                                 if sizes_close(viewport, target, 2.5) || tries >= 2 {
-                                    Some(1u8)
+                                    Some(LayoutStep::Reveal)
                                 } else {
-                                    Some(2u8)
+                                    Some(LayoutStep::Wait)
                                 }
                             }
                         }
                     });
-                    match action {
-                        Some(0) => {
-                            let view = view.clone();
-                            cx.defer(move |cx| reposition_active(view, gen, target, cx));
-                        }
-                        Some(1) => {
-                            let view = view.clone();
-                            cx.defer(move |cx| reveal_active(view, gen, target, cx));
-                        }
-                        Some(2) => {
-                            let view = view.clone();
-                            cx.defer(move |cx| bump_reveal_wait(view, gen, cx));
-                        }
-                        _ => {}
+                    if let Some(step) = step {
+                        let view = view.clone();
+                        cx.defer(move |cx| on_step(step, view, gen, target, cx));
                     }
                 },
                 |_, _, _, _| {},
@@ -384,7 +390,7 @@ fn ensure_host(cx: &mut App) -> Option<(AnyWindowHandle, Entity<PopupHostView>)>
     let mut created_view = None;
     let window = cx
         .open_window(options, |_, cx| {
-            let v = cx.new(|_| PopupHostView::new());
+            let v = cx.new(|_| PopupHostView::new(run_layout_step));
             created_view = Some(v.clone());
             v
         })
@@ -398,6 +404,21 @@ fn ensure_host(cx: &mut App) -> Option<(AnyWindowHandle, Entity<PopupHostView>)>
         });
     });
     Some((any_window, view))
+}
+
+#[cfg(target_os = "macos")]
+fn run_layout_step(
+    step: LayoutStep,
+    view: WeakEntity<PopupHostView>,
+    gen: u64,
+    target: Size<Pixels>,
+    cx: &mut App,
+) {
+    match step {
+        LayoutStep::Reposition => reposition_active(view, gen, target, cx),
+        LayoutStep::Reveal => reveal_active(view, gen, target, cx),
+        LayoutStep::Wait => bump_reveal_wait(view, gen, cx),
+    }
 }
 
 #[cfg(target_os = "macos")]
