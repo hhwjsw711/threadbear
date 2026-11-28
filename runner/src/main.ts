@@ -628,10 +628,11 @@ async function main(): Promise<void> {
   const coordinators = new Coordinators({ home: cfg.home, host: runner, projects, clock: realClock, log, enabled: () => !box && experimentOn(cfg.home, 'coordinators'), elsewhere: (id) => peers.find(id) });
   runner.coordinators = coordinators;
   runner.start({ skip: kept, deferBackground: true });
-  // Threads handed over while it connected, now that start has run.
-  peers.startAdopting();
   // App-restart watches with words from before ceilings: bound now.
   appRestarts.bindOldCeilings((id) => (runner.has(id) ? runner.authoritySaved(id).mode : undefined));
+  // Threads handed over while it connected, now that start has run. As
+  // before startup waited for them, this is before the restarter exists.
+  peers.startAdopting();
   bootStep('threads');
   // Answers to ask_secret go after a day (docs/protocol/threads.md, "Secrets").
   runner.secrets.startSweeping((e) => log.warn('secret sweep failed', { error: String(e) }));

@@ -240,13 +240,14 @@ export type PeersDeps = {
   // How long a draining runner that has closed its connection gets to
   // exit before it's counted as dead.
   goneWaitMs?: number;
-  // How long startup keeps trying draining runners that are still alive,
-  // all of them together, before giving up rather than take their threads.
+  // How long startup keeps trying draining runners that are still alive
+  // (connectAll says how it's shared), before giving up rather than take
+  // their threads.
   connectWaitMs?: number;
   // Whether a pid is certainly a runner (main.ts), not just some node.
   identified?: (pid: number) => boolean;
-  // The least time one startup attempt gets (MIN_ATTEMPT_MS).
-  minAttemptMs?: number;
+  // How long one startup attempt may take (ATTEMPT_MS).
+  attemptMs?: number;
 };
 
 // The primary's side: one connection per draining runner.
@@ -268,11 +269,13 @@ export function openCardsAnswer(r: unknown, threadId: string): PersistedEvent[] 
   return undefined;
 }
 
-type Failure = { msg: string; extra: Record<string, unknown>; refused?: boolean };
+type Failure = { msg: string; extra: Record<string, unknown> };
 
-// The least time one startup attempt at a draining runner gets: more than
-// its auth wait (client.ts AUTH_TIMEOUT_MS).
-const MIN_ATTEMPT_MS = 6_000;
+// One startup attempt at a draining runner, connect and setup together:
+// more than its auth wait (client.ts AUTH_TIMEOUT_MS). And the pause
+// between attempts.
+const ATTEMPT_MS = 10_000;
+const RETRY_MS = 200;
 
 export class Peers {
   private deps: PeersDeps;
@@ -301,9 +304,13 @@ export class Peers {
   // for start() to load and recover as after a crash.
   async connectAll(): Promise<Set<string>> {
     const kept = new Set<string>();
-    // One deadline for every draining runner, each whole attempt included,
-    // so startup gives up well inside the launcher's 90 s (launch.mjs).
-    const until = Date.now() + (this.deps.connectWaitMs ?? 30_000);
+    // Retries stop by `until` for every draining runner together, but each
+    // gets a third of that at least, and nothing goes past twice it, well
+    // inside the launcher's 90 s (launch.mjs).
+    const wait = this.deps.connectWaitMs ?? 30_000;
+    const started = Date.now();
+    const until = started + wait;
+    const hardUntil = started + 2 * wait;
     // A thread that comes across meanwhile is taken in only once startup
     // goes ahead (startAdopting, after Runner.start): waiting on one runner
     // may end in giving up, and a turn started here then would die with this
@@ -314,32 +321,37 @@ export class Peers {
     try {
       for (const info of listDrainInfos(this.deps.home)) {
         if (info.pid === process.pid) continue;
+        const peerUntil = Math.min(Math.max(until, Date.now() + wait / 3), hardUntil);
         let peer: Peer | undefined;
         let failed: Failure | undefined;
         while (this.alive(info.pid)) {
-          const r = await this.connect(info, until);
+          const r = await this.connect(info, hardUntil);
           if ('peer' in r) {
             peer = r.peer;
             break;
           }
           failed = r;
-          if (!this.alive(info.pid)) break;
-          // Windows names only the program, so a pid some other node took
-          // over looks alive (runnerAlive) and would hold startup every
-          // time. A runner, however busy, still has its port open, so one
-          // nobody is listening on is taken as gone.
-          if (Date.now() >= until && !this.identified(info.pid) && failed.refused) break;
-          if (Date.now() >= until) {
+          // Gone, or finishing: a runner removes its drain file on the way out.
+          if (!this.alive(info.pid) || !fs.existsSync(drainFile(this.deps.home, info.pid))) break;
+          // Windows names only the program, so this may be some other node
+          // that took the pid over: tried once, as before retries.
+          if (!this.identified(info.pid)) break;
+          if (Date.now() + RETRY_MS >= peerUntil) {
             this.deps.log.error(failed.msg, failed.extra);
             throw new Error(`Draining runner ${info.pid} is still alive but could not be reached; leaving its threads and process groups untouched.`);
           }
           // Expected while it's busy for a moment; the last one is reported.
           this.deps.log.info('a draining runner did not answer yet; trying again', { pid: info.pid, error: String(failed.extra.error) });
-          await new Promise((r) => setTimeout(r, 200));
+          await new Promise((r) => setTimeout(r, RETRY_MS));
         }
         if (!peer) {
-          if (failed) this.deps.log.error(failed.msg, failed.extra);
-          this.deps.log.warn('a draining runner is gone; its threads load as after a crash', { pid: info.pid, threads: info.threads });
+          if (failed && !fs.existsSync(drainFile(this.deps.home, info.pid))) {
+            // It finished and went while this one was connecting: not a fault.
+            this.deps.log.info('a draining runner finished as this one connected', { pid: info.pid, error: String(failed.extra.error) });
+          } else {
+            if (failed) this.deps.log.error(failed.msg, failed.extra);
+            this.deps.log.warn('a draining runner is gone; its threads load as after a crash', { pid: info.pid, threads: info.threads });
+          }
           await this.cleanUp(info.pid);
           continue;
         }
@@ -347,6 +359,7 @@ export class Peers {
       }
     } catch (e) {
       this.deferring = undefined;
+      this.cameAcross.clear();
       // Nothing more comes across to a runner that won't start.
       this.close();
       throw e;
@@ -361,7 +374,15 @@ export class Peers {
   startAdopting(): void {
     const later = this.deferring ?? [];
     this.deferring = undefined;
-    for (const run of later) run();
+    this.cameAcross.clear();
+    if (this.closing) return;
+    for (const run of later) {
+      try {
+        run();
+      } catch (e) {
+        this.deps.log.error('could not take in a thread a draining runner handed over', { error: String((e as Error)?.message ?? e) });
+      }
+    }
   }
 
   private adoptWhenStarted(run: () => void): void {
@@ -374,11 +395,11 @@ export class Peers {
     return (this.deps.identified ?? ((p: number) => runnerAlive(p, undefined, false)))(pid);
   }
 
-  private async connect(info: DrainInfo, until: number): Promise<{ peer: Peer } | Failure> {
+  private async connect(info: DrainInfo, hardUntil: number): Promise<{ peer: Peer } | Failure> {
     const connect = this.deps.connect ?? ((port: number, token: string, legacy: boolean, pid: number) => connectDrain(port, token, legacy, pid));
-    // Each attempt gets a fair go even when the deadline is all but used
-    // (another draining runner took it), so what fails is the real failure.
-    const attemptUntil = Math.max(until, Date.now() + (this.deps.minAttemptMs ?? MIN_ATTEMPT_MS));
+    // Long enough for the auth wait, short enough that a stuck call leaves
+    // time to try again.
+    const attemptUntil = Math.min(Date.now() + (this.deps.attemptMs ?? ATTEMPT_MS), hardUntil);
     const left = () => Math.max(1, attemptUntil - Date.now());
     let client: PeerClient;
     // The one place a new client may still send the token (docs/
@@ -392,8 +413,7 @@ export class Peers {
     } catch (e) {
       // One that connects after giving up on it is closed, not leaked.
       connecting.then((c) => c.close(), () => {});
-      const refused = (e as { code?: unknown })?.code === 'ECONNREFUSED' || /ECONNREFUSED/.test(String(e));
-      return { msg: 'could not reach a draining runner', extra: { pid: info.pid, port: info.port, error: String(e) }, refused };
+      return { msg: 'could not reach a draining runner', extra: { pid: info.pid, port: info.port, error: String(e) } };
     }
     const peer: Peer = { info, client, threads: new Map(), gone: false };
     // Before any call, so nothing it says in between is missed.

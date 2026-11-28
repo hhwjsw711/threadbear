@@ -608,13 +608,15 @@ restart wait for busy threads. It hands over instead:
   rather than when the new runner starts, and the 15-minute limit counts
   from then.
 - If a connection or setup call to a draining runner fails at startup, the
-  primary retries while that process lives, for up to 30 seconds across all
-  draining runners (each attempt gets at least 6). Retries log at info;
+  primary retries while that process lives and its drain file is there, for
+  up to 30 seconds across all draining runners (each gets 10 at least, and
+  nothing goes past 60; one attempt takes at most 10). Retries log at info;
   giving up logs the last failure as an error. If the runner still can't be
   reached, startup fails with its drain file and process groups untouched: a
-  timeout alone never permits taking its threads. On Windows, where a pid
-  can't be told from any other node's, one whose port refuses connections
-  is taken as gone after that.
+  timeout alone never permits taking its threads. One that removed its drain
+  file meanwhile finished cleanly, and isn't reported. On Windows, where a
+  pid can't be told from any other node's, a failed connection is tried
+  once and the runner taken as gone, as before retries.
 - A thread handed over while startup is still reaching draining runners is
   kept from start and taken in just after it, never if startup gives up; one
   handed over to an attempt that failed is left on disk for start to load.

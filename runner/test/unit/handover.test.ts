@@ -707,7 +707,7 @@ for (const failure of ['connect', 'hello', 'list', 'subscribe']) test(`Peers: st
   let closed = 0;
   const swept: number[] = [];
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, alive: () => true,
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async (p) => void swept.push(p),
     connect: async () => {
@@ -790,7 +790,7 @@ test('Peers: a retry that then works reports nothing to Sentry; giving up report
     const { lines, log } = recordingLog();
     let attempts = 0;
     const peers = new Peers({
-      home: h.home, token: 't', log, alive: () => true, identified: () => true, connectWaitMs: works ? 30_000 : 450, minAttemptMs: 50,
+      home: h.home, token: 't', log, alive: () => true, identified: () => true, connectWaitMs: works ? 30_000 : 450, attemptMs: 50,
       runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
       sweep: async () => {},
       connect: async () => {
@@ -814,7 +814,7 @@ test('Peers: the startup deadline covers a setup call that never answers, and cl
   const stuck = fakePeer({ hello: () => new Promise(() => {}) });
   const swept: number[] = [];
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 100, minAttemptMs: 50,
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 100, attemptMs: 50,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async (p) => void swept.push(p),
     connect: async () => stuck.client as unknown as PeerClient,
@@ -834,7 +834,7 @@ test('Peers: a connect that never finishes is bounded too, and closed if it fini
   const late = fakePeer();
   let finish: (c: unknown) => void = () => {};
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 50, minAttemptMs: 50,
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: 50, attemptMs: 50,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async () => {},
     connect: () => new Promise<PeerClient>((r) => { finish = r as (c: unknown) => void; }),
@@ -845,27 +845,48 @@ test('Peers: a connect that never finishes is bounded too, and closed if it fini
   assert.equal(late.closed(), 1);
 });
 
-for (const listening of [false, true]) test(`Peers: on Windows a runner that can't be told from any node is ${listening ? 'left alone while its port answers' : 'taken as gone once nothing listens on its port'}`, async () => {
-  // A pid some other node reused would otherwise hold startup every time;
-  // a busy runner still has its port open, so it isn't swept.
+test("Peers: on Windows, where a pid can't be told from any node's, a failed connection is tried once, as before retries", async () => {
+  // A pid some other node reused would otherwise hold startup every time.
   const h = makeHarness();
   const { writeDrainInfo, listDrainInfos, Peers } = await import('../../src/handover.ts');
   const pid = 424265;
   writeDrainInfo(h.home, { pid, port: 1, version: 'old', since: new Date().toISOString(), threads: ['t-old'] });
   const swept: number[] = [];
+  let attempts = 0;
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => false, connectWaitMs: 50, minAttemptMs: 50,
+    home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => false,
     runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
     sweep: async (p) => void swept.push(p),
+    connect: async () => { attempts++; throw new Error('connect ECONNREFUSED 127.0.0.1:1'); },
+  });
+  assert.deepEqual([...(await peers.connectAll())], []);
+  assert.equal(attempts, 1);
+  assert.deepEqual(swept, [pid]);
+  assert.equal(listDrainInfos(h.home).length, 0);
+  peers.close();
+});
+
+test('Peers: a draining runner that finishes and goes while startup connects is no fault for Sentry', async () => {
+  // THREADBEAR-2V's other events: ECONNRESET from a runner closing its
+  // server on the way out, before it removed its drain file.
+  const h = makeHarness();
+  const { writeDrainInfo, removeDrainInfo, Peers } = await import('../../src/handover.ts');
+  const pid = 424269;
+  writeDrainInfo(h.home, { pid, port: 1, version: 'old', since: new Date().toISOString(), threads: [] });
+  const { lines, log } = recordingLog();
+  let exited = false;
+  const peers = new Peers({
+    home: h.home, token: 't', log, alive: () => !exited, identified: () => true,
+    runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
+    sweep: async () => {},
     connect: async () => {
-      if (listening) throw new Error("The runner didn't prove itself in time.");
-      throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' });
+      removeDrainInfo(h.home, pid);
+      exited = true;
+      throw new Error('Error (ECONNRESET)');
     },
   });
-  if (listening) await assert.rejects(peers.connectAll(), /still alive/);
-  else assert.deepEqual([...(await peers.connectAll())], []);
-  assert.deepEqual(swept, listening ? [] : [pid]);
-  assert.equal(listDrainInfos(h.home).length, listening ? 1 : 0);
+  assert.deepEqual([...(await peers.connectAll())], []);
+  assert.deepEqual(lines.filter((l) => l.level !== 'info'), []);
   peers.close();
 });
 
@@ -881,7 +902,7 @@ test('Peers: a runner that goes while startup waits on another, and startup then
   let goneA = false;
   let releaseSweep: () => void = () => {};
   const peers = new Peers({
-    home: h.home, token: 't', log: nullLogger, identified: () => true, connectWaitMs: 200, minAttemptMs: 50, goneWaitMs: 0,
+    home: h.home, token: 't', log: nullLogger, identified: () => true, connectWaitMs: 200, attemptMs: 50, goneWaitMs: 0,
     alive: (pid) => pid !== 424270 || !goneA,
     runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} },
     // A's clean-up is still going when startup gives up.
@@ -935,7 +956,7 @@ test('Peers: a thread handed over while startup waits on another runner is taken
     const adopted: string[] = [];
     let triesB = 0;
     const peers = new Peers({
-      home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: reached ? 30_000 : 300, minAttemptMs: 50,
+      home: h.home, token: 't', log: nullLogger, alive: () => true, identified: () => true, connectWaitMs: reached ? 30_000 : 300, attemptMs: 50,
       runner: { adopt: (id) => (adopted.push(id), undefined), publish: () => {}, waitedOnDeleted: () => {} },
       sweep: async () => {},
       connect: async (port) => {
