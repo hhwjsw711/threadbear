@@ -1963,17 +1963,17 @@ reviewer does. `"labPanelLines"` in `runner.json` changes the 150. The review ru
 the same permissions as the thread it reviews, and is told not to edit
 anything. Your thread says who is reviewing and waits. The reviewer gives a
 verdict: a list of concrete findings, or nothing that holds up. Then your
-thread wakes with them as a checklist in the thread: one row per finding with
+thread wakes with them as a live checklist in the thread: one row per finding with
 its severity dot, clickable file and line, and claim (click a row for the
 reviewer's case and what the agent did about it, and Full reply for the
 reviewer's own words). Your thread can't finish until it has answered each one,
-so once it does each row shows Fixed, Disputed or Left in place, and anything
-left for you comes as a question. Anything it fixed gets reviewed again, just
-the new change, until a round finds nothing. When a round finds nothing (or has
-no verdict or unchecked fixes), a quiet line over the reply shows who reviewed
-and how it came out; it folds like the agent's work, with any open findings
-still visible under it. Either way it stays off the done card, as it happens in
-the background. The review thread is archived when it's
+and anything left for you comes as a question. Anything it fixed gets reviewed
+again, just the new change, until a round finds nothing. Once the turn finishes,
+the round checklists fold into `Worked for …` (expanding it shows each round's
+checklist with Fixed, Disputed or Left in place), leaving one quiet line over
+the reply saying who reviewed and how it came out; that line folds like the
+agent's work, with any open findings still visible under it. Either way it stays
+off the done card, as it happens in the background. The review thread is archived when it's
 done, so it stays out of your inbox. That holds however the review ends:
 if it gives no verdict, asks you something or stops with an error, your
 thread still wakes with whatever it said, and carries on. A thread gets at most three reviews

@@ -2363,17 +2363,18 @@ impl TranscriptModel {
 
     /// What stays out of a finished turn's line of work: Mike's messages,
     /// the reply, errors, reviews waiting on him, pictures the agent made,
-    /// the footer and the card. The runner's messages fold in: they're how
-    /// the work carried on, all but a review coming back, whose checklist
-    /// shows what was done about each finding (review_note.rs). The note an
-    /// edit of Mike's leaves stays.
+    /// the footer and the card. The runner's messages fold in (including a
+    /// returned code review's checklist, which stays live while the agent
+    /// answers it and folds into `Worked for …` once the turn finishes):
+    /// they're how the work carried on. The note an edit of Mike's leaves
+    /// stays.
     fn stays_out(&self, k: usize, replies: &HashSet<usize>) -> bool {
         let item = &self.items[k];
         if replies.contains(&k) || item.id.starts_with("rw:") || item.content.is_standalone_note() {
             return true;
         }
         match &item.content {
-            RowContent::User(message) => !message.is_from_runner() || message.review_note.is_some(),
+            RowContent::User(message) => !message.is_from_runner(),
             RowContent::Error { .. }
             | RowContent::Footer(_)
             | RowContent::Asks(_)
@@ -2747,29 +2748,7 @@ impl TranscriptModel {
                     .iter()
                     .rev()
                     .find_map(|(index, done)| done.review.as_ref().map(|review| (*index, review)));
-                // The runner's messages that brought the reviews back draw
-                // their findings as a checklist (review_note.rs), so they
-                // take the ledger to fill in what the agent did about each.
-                // When they show every finding in it, the ledger's own row
-                // would only say it all again, so it goes; it stays for what
-                // only it can say (a round no review looked at, a review
-                // with no verdict) and for a note paged out of view.
-                let noted: Vec<i64> = turn
-                    .clone()
-                    .filter_map(|k| match &self.items[k].content {
-                        RowContent::User(m) => m.review_note.as_ref(),
-                        _ => None,
-                    })
-                    .flat_map(|note| note.findings.iter().map(|f| f.id))
-                    .collect();
-                let noted_all = reviewed.is_some_and(|(_, review)| {
-                    !noted.is_empty()
-                        && !review.unstructured
-                        && !review.unchecked
-                        && review.findings.iter().all(|f| noted.contains(&f.id))
-                });
-                let reviewed_in_rows = reviewed.filter(|_| !noted_all);
-                let review_row: Option<Row> = reviewed_in_rows.map(|(index, review)| {
+                let review_row: Option<Row> = reviewed.map(|(index, review)| {
                     let footer = &self.items[index];
                     let id = format!(
                         "lr:{}",
@@ -2912,6 +2891,9 @@ impl TranscriptModel {
                         starts.push(turn.start);
                     }
                 }
+                // When `Worked for …` is expanded, each folded review checklist
+                // takes the turn's ledger so its rows show what was done about
+                // each finding, keeping its indentation inside the group.
                 if let Some((_, review)) = reviewed {
                     for row in &mut out[turn_rows_from..] {
                         let RowContent::User(message) = &row.content else {
@@ -2920,14 +2902,17 @@ impl TranscriptModel {
                         if message.review_note.is_none() {
                             continue;
                         }
+                        let in_group = row.in_group;
                         let mut message = message.clone();
                         message.review_ledger = Some(Box::new(review.clone()));
-                        *row = derived(
+                        let mut updated = derived(
                             &row.id,
                             row.seq,
                             row.turn_id.clone(),
                             RowContent::User(message),
                         );
+                        updated.in_group = in_group;
+                        *row = updated;
                     }
                 }
                 i = turn.end;

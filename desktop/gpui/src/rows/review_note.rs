@@ -7,7 +7,7 @@
 // did about each on the right (from the turn's ledger, as lab_review.rs).
 // The reviewer's own reply is folded under "Full reply".
 use super::lab_review::outcome;
-use super::metrics::{RUNNER_BOTTOM, RUNNER_TOP};
+use super::metrics::{ROW_BOTTOM, RUNNER_BOTTOM, RUNNER_TOP};
 use super::row_wrap;
 use crate::style::{self, size};
 use crate::thread::ThreadPane;
@@ -189,7 +189,11 @@ impl ThreadPane {
         let ruled = div()
             .w_full()
             .pt(px(RUNNER_TOP))
-            .pb(px(RUNNER_BOTTOM))
+            .pb(px(if row.in_group {
+                ROW_BOTTOM
+            } else {
+                RUNNER_BOTTOM
+            }))
             .child(
                 div()
                     .w_full()
