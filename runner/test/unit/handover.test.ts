@@ -694,6 +694,68 @@ test('lsof is looked for only where a Mac and Linux keep it', async () => {
   assert.equal(lsofPath(() => false), '/usr/sbin/lsof', 'neither: fails as a missing tool, and the check refuses');
 });
 
+// THREADBEAR-2V: a busy draining runner's auth timed out during startup.
+// It was still alive, but connectAll swept its active CLI process groups.
+for (const failure of ['connect', 'hello', 'list', 'subscribe']) test(`Peers: startup retries a live draining runner after ${failure} fails`, async () => {
+  const h = makeHarness();
+  const { writeDrainInfo, listDrainInfos, Peers } = await import('../../src/handover.ts');
+  const pid = 424260;
+  writeDrainInfo(h.home, { pid, port: 1, version: 'old', since: new Date().toISOString(), threads: ['t-old'] });
+  let attempts = 0;
+  let closed = 0;
+  const swept: number[] = [];
+  const peers = new Peers({
+    home: h.home, token: 't', log: nullLogger, alive: () => true,
+    runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
+    sweep: async (p) => void swept.push(p),
+    connect: async () => {
+      const first = ++attempts === 1;
+      if (first && failure === 'connect') throw new Error('The runner did not prove itself in time.');
+      return {
+        call: async (method: string) => {
+          if (first && method === ({ hello: 'drain.hello', list: 'threads.list', subscribe: 'threads.subscribe' } as Record<string, string>)[failure]) throw new Error('no answer');
+          return method === 'drain.hello' ? { threads: ['t-old'] } : method === 'threads.list' ? { threads: [{ id: 't-old', title: 'Old', lastActivityAt: '' }] } : {};
+        },
+        onNotification: () => () => {},
+        waitClosed: () => new Promise<void>(() => {}),
+        close: () => { closed++; },
+      };
+    },
+  });
+  try {
+    assert.deepEqual([...(await peers.connectAll())], ['t-old']);
+    assert.equal(attempts, 2);
+    assert.equal(closed, failure === 'connect' ? 0 : 1, 'failed setup closes its client');
+    assert.equal(peers.owns('t-old'), true);
+    assert.deepEqual(swept, [], 'a connection failure does not mean the process is dead');
+    assert.equal(listDrainInfos(h.home).length, 1, 'its ownership file stays until the runner exits');
+  } finally {
+    peers.close();
+  }
+});
+
+for (const alive of [true, false]) test(`Peers: a failed startup connection ${alive ? 'preserves a live runner' : 'recovers a dead runner'}`, async () => {
+  const h = makeHarness();
+  const { writeDrainInfo, listDrainInfos, Peers } = await import('../../src/handover.ts');
+  const pid = 424261;
+  writeDrainInfo(h.home, { pid, port: 1, version: 'old', since: new Date().toISOString(), threads: ['t-old'] });
+  const swept: number[] = [];
+  let failed = false;
+  const peers = new Peers({
+    home: h.home, token: 't', log: nullLogger, connectWaitMs: 0,
+    alive: () => !failed || alive,
+    runner: { adopt: () => { assert.fail('startup must not adopt before Runner.start'); }, publish: () => {}, waitedOnDeleted: () => {} },
+    sweep: async (p) => void swept.push(p),
+    connect: async () => { failed = true; throw new Error('no answer'); },
+  });
+  if (alive) await assert.rejects(peers.connectAll(), /still alive.*untouched/);
+  else assert.deepEqual([...(await peers.connectAll())], []);
+  assert.equal(failed, true);
+  assert.deepEqual(swept, alive ? [] : [pid]);
+  assert.equal(listDrainInfos(h.home).length, alive ? 1 : 0);
+  peers.close();
+});
+
 // From the cross-lab review of the sync fixes (Codex, 7 Nov 2026): a draining
 // runner whose socket closes is let go of before its threads are taken in, so
 // for a few seconds they were on no runner, and the mirror's prune or its

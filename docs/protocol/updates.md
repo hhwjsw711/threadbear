@@ -607,6 +607,10 @@ restart wait for busy threads. It hands over instead:
 - A `resume` for a kept thread is sent when the thread moves across,
   rather than when the new runner starts, and the 15-minute limit counts
   from then.
+- If a connection or setup call to a draining runner fails at startup, the
+  primary retries for up to 30 seconds while that process lives. If it
+  still cannot connect, startup fails with the drain file and its process
+  groups untouched. A timeout alone never permits taking its threads.
 - If a draining runner dies, the primary takes its threads as after a
   crash (a turn in flight ends as `stopped`) and stops the process groups
   it left (`run/children-<pid>.json`).

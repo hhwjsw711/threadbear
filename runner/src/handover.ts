@@ -239,6 +239,8 @@ export type PeersDeps = {
   // How long a draining runner that has closed its connection gets to
   // exit before it's counted as dead.
   goneWaitMs?: number;
+  // Startup retries before refusing to recover a runner that is still alive.
+  connectWaitMs?: number;
 };
 
 // The primary's side: one connection per draining runner.
@@ -285,7 +287,14 @@ export class Peers {
     const kept = new Set<string>();
     for (const info of listDrainInfos(this.deps.home)) {
       if (info.pid === process.pid) continue;
-      const peer = this.alive(info.pid) ? await this.connect(info) : undefined;
+      const until = Date.now() + (this.deps.connectWaitMs ?? 30_000);
+      let peer: Peer | undefined;
+      while (this.alive(info.pid)) {
+        peer = await this.connect(info);
+        if (peer || !this.alive(info.pid)) break;
+        if (Date.now() >= until) throw new Error(`Draining runner ${info.pid} is still alive but could not be reached; leaving its threads and process groups untouched.`);
+        await new Promise((r) => setTimeout(r, 200));
+      }
       if (!peer) {
         this.deps.log.warn('a draining runner is gone; its threads load as after a crash', { pid: info.pid, threads: info.threads });
         await this.cleanUp(info.pid);
@@ -307,7 +316,7 @@ export class Peers {
       // the old auth paths.
       client = await connect(info.port, this.deps.token, info.auth !== 'challenge', info.pid);
     } catch (e) {
-      this.deps.log.error('could not reach a draining runner', { pid: info.pid, port: info.port, error: String(e) });
+      this.deps.log.info('could not reach a draining runner', { pid: info.pid, port: info.port, error: String(e) });
       return undefined;
     }
     const peer: Peer = { info, client, threads: new Map(), gone: false };
@@ -323,7 +332,7 @@ export class Peers {
       // client that subscribes gets its own through threads.subscribe.
       for (const id of peer.threads.keys()) await client.call('threads.subscribe', { threadId: id, afterSeq: Number.MAX_SAFE_INTEGER });
     } catch (e) {
-      this.deps.log.error('could not take over from a draining runner', { pid: info.pid, error: String(e) });
+      this.deps.log.info('could not take over from a draining runner', { pid: info.pid, error: String(e) });
       client.close();
       return undefined;
     }

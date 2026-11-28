@@ -2730,6 +2730,10 @@ their turns first, as in an update. If that happens three times in ten
 minutes it stops restarting for it and says so in the error bar, and carries
 on until an hour goes by without another.
 
+If the old runner is slow to answer during an update, the new one retries
+before starting. If it still cannot connect, it leaves the old runner and its
+active threads alone.
+
 A runner update lets a job a thread left running in the background finish, for
 up to about 4 hours after the thread's last turn. If one goes on longer it's
 stopped, and the thread gets told and wakes by itself to check on it, so you'll
