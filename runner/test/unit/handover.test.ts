@@ -719,7 +719,7 @@ for (const failure of ['connect', 'hello', 'list', 'subscribe']) test(`Peers: st
         onNotification: () => () => {},
         waitClosed: () => new Promise<void>(() => {}),
         close: () => { closed++; },
-      };
+      } as any;
     },
   });
   try {
