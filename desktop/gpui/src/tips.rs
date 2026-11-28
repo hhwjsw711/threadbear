@@ -12,6 +12,8 @@
 // (the capture phase, which nothing stops), whatever the control does with it.
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::*;
+// The zoom-aware px (style.rs), in place of GPUI's.
+use crate::style::px;
 
 pub(crate) trait Tip: ParentElement + StatefulInteractiveElement + Sized {
     /// A tooltip, shown after a short hover, and the name of a click on it.
@@ -24,13 +26,22 @@ pub(crate) trait Tip: ParentElement + StatefulInteractiveElement + Sized {
             }
             // The pointer stopped on it to find out what it is.
             crate::activity::hover(&shown, window, cx);
-            Tooltip::new(shown.clone()).build(window, cx)
+            // Wrap at 480 px with the kit's 8 px horizontal padding each side:
+            // Tooltip::new sets no max width, so long tips ran on one line past
+            // the window's edge.
+            let text = shown.clone();
+            Tooltip::element(move |_, _| div().max_w(px(TIP_TEXT_WIDTH)).child(text.clone()))
+                .build(window, cx)
         })
         .child(anchor(text))
     }
 }
 
 impl<E: ParentElement + StatefulInteractiveElement + Sized> Tip for E {}
+
+/// The widest a tooltip's text runs before wrapping (480 px with the kit's
+/// 8 px padding each side).
+const TIP_TEXT_WIDTH: f32 = 464.;
 
 thread_local! {
     /// Which of the app's own menus are up, one bit each (`menu_up`).
