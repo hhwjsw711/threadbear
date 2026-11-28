@@ -42,6 +42,97 @@ test('a turn that ends without end_turn with its shell running stays unfinished 
   assert.equal(t.needsYou, true);
 });
 
+// 28 Nov 2026, c2df7d18: OpenCode's wake for a shell came after the grace,
+// an update's handover let its CLI go, and the thread sat in the Inbox with
+// no card. A CLI whose wakes can be lost (nudgesUnreadShells) is told to
+// read the result instead; Claude's isn't (the test above).
+function opencodeLike(h: ReturnType<typeof makeHarness>, graceMs?: number) {
+  h.adapter.nudgesUnreadShells = true;
+  if (graceMs) h.adapter.wakeGraceMs = graceMs;
+}
+
+test('a CLI that never wakes for its shell is nudged to read it, rather than leaving Mike a thread with no card', async () => {
+  const h = makeHarness();
+  opencodeLike(h);
+  const { id, s } = start(h);
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.result('completed');
+  await tick();
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  const before = s.sent.length;
+  h.clock.advance(16_000);
+  await tick();
+  let t = h.runner.get(id);
+  assert.equal(t.background, undefined);
+  assert.equal(s.sent.length, before + 1);
+  assert.match(s.sent.at(-1)!.text, /weren't woken to read its result:\n\n- npm test/);
+  assert.equal(t.status, 'running');
+  assert.equal(t.needsYou, false);
+  // That turn ends with nothing said either: it's Mike's after all.
+  s.result('completed');
+  await tick();
+  t = h.runner.get(id);
+  assert.equal(t.needsYou, true);
+  // Nudged once for it, not again.
+  const sent = s.sent.length;
+  h.clock.advance(60_000);
+  await tick();
+  assert.equal(s.sent.length, sent);
+});
+
+test('the nudge for an unread shell stops after three in a row, and Mike writing resets the count', async () => {
+  const h = makeHarness();
+  opencodeLike(h);
+  const { id, s } = start(h);
+  const round = async (n: number) => {
+    s.out({ kind: 'tasks', tasks: [{ ...SHELL, id: `sh_${n}` }] });
+    s.result('completed');
+    await tick();
+    s.out({ kind: 'tasks', tasks: [] });
+    await tick();
+    const before = s.sent.length;
+    h.clock.advance(16_000);
+    await tick();
+    return s.sent.length > before;
+  };
+  assert.equal(await round(1), true);
+  assert.equal(await round(2), true);
+  assert.equal(await round(3), true);
+  assert.match(s.sent.at(-1)!.text, /won't wake this thread for this again/);
+  assert.equal(await round(4), false, 'no fourth nudge');
+  assert.equal(h.runner.get(id).needsYou, true);
+  h.runner.send(id, 'carry on');
+  await tick();
+  assert.equal(await round(5), true, 'counted afresh after Mike wrote');
+});
+
+test("an adapter's own wake grace (OpenCode's slow first words) holds the thread and the nudge that long", async () => {
+  const h = makeHarness();
+  opencodeLike(h, 90_000);
+  const { id, s } = start(h);
+  s.out({ kind: 'tasks', tasks: [SHELL] });
+  s.result('completed');
+  await tick();
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  const before = s.sent.length;
+  h.clock.advance(30_000);
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, false, 'still in its grace');
+  assert.equal(s.sent.length, before, 'no nudge yet');
+  // The wake turn comes at last: no nudge, ever.
+  s.out({ kind: 'cliTurn' });
+  await tick();
+  assert.equal(h.runner.get(id).status, 'running');
+  h.clock.advance(90_000);
+  await tick();
+  assert.equal(s.sent.length, before);
+  s.result('completed');
+  await tick();
+  assert.equal(h.runner.get(id).needsYou, true);
+});
+
 test('the wake turn that reads the result and ends with end_turn is what reaches Mike', async () => {
   const h = makeHarness();
   const { id, s } = start(h);

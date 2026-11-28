@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AcpAdapter, AcpSession } from '../../src/adapters/acp/adapter.ts';
+import { ACP_WAKE_GRACE_MS, AcpAdapter, AcpSession } from '../../src/adapters/acp/adapter.ts';
 import { AcpProcess } from '../../src/adapters/acp/connection.ts';
 import { ACP_AGENTS } from '../../src/adapters/acp/agents.ts';
 import type { AdapterOutput, SessionSink, ToolApprovalAnswer, ToolApprovalRequest } from '../../src/adapters/types.ts';
@@ -170,7 +170,7 @@ test('OpenCode background shell keeps thread in Running (waitState job, not Inbo
     assert.equal(still.live, true);
     assert.equal(still.waitState, 'job');
 
-    // Shell exits: wake grace (15s) must ALSO protect the CLI from the 500ms idle timer.
+    // Shell exits: wake grace (ACP_WAKE_GRACE_MS) must ALSO protect the CLI from the 500ms idle timer.
     alive.delete(42001);
     await until(() => rig.h.runner.get(thread.id).background?.some((b) => b.finished === true) === true);
     clock.advance(5_000);
@@ -178,11 +178,18 @@ test('OpenCode background shell keeps thread in Running (waitState job, not Inbo
     assert.equal(rig.h.runner.get(thread.id).live, true, 'idleMs must not release CLI during wake grace');
     assert.equal(rig.h.runner.get(thread.id).waitState, 'job');
 
-    // Once wake grace expires with no wake and idleMs elapses, the normal idle timer releases the CLI.
+    // Past Claude's 15 s, still in OpenCode's own grace: its wake turn opens
+    // only with the model's first words (28 Nov 2026, c2df7d18).
     clock.advance(11_000);
-    await until(() => rig.h.runner.get(thread.id).background === undefined);
-    assert.equal(rig.h.runner.get(thread.id).live, true, 'CLI stays live until idleMs elapses after wake grace');
-    assert.equal(rig.h.runner.get(thread.id).needsYou, true, "no wake came, so it's Mike's");
+    await flushImmediate();
+    assert.equal(rig.h.runner.get(thread.id).waitState, 'job', 'still in OpenCode\'s longer wake grace');
+    // Once wake grace expires with no wake, the runner nudges the agent to
+    // read the result; that turn ending with nothing said leaves it with Mike.
+    clock.advance(ACP_WAKE_GRACE_MS);
+    await until(() => rig.h.events(thread.id).filter((e) => e.type === 'turn.completed').length === 2);
+    assert.equal(rig.h.runner.get(thread.id).background, undefined);
+    assert.equal(rig.h.runner.get(thread.id).live, true, 'CLI stays live until idleMs elapses after its turn');
+    assert.equal(rig.h.runner.get(thread.id).needsYou, true, "the nudge turn said nothing either, so it's Mike's");
     clock.advance(600);
     await until(() => rig.h.runner.get(thread.id).live === false);
   } finally {
@@ -434,10 +441,12 @@ test('background wake spawning a second background shell stays in Running, and e
     assert.equal(mid.waitState, 'job');
     assert.deepEqual(mid.background, [{ kind: 'shell', description: 'Step 2' }]);
 
-    // Step 2 exits, and OpenCode does NOT wake up: after WAKE_GRACE_MS (15s), thread cleanly exits Running.
+    // Step 2 exits, and OpenCode does NOT wake up: after its wake grace the
+    // runner's nudge turn runs, and once it ends the thread cleanly exits Running.
     alive.delete(42011);
     await until(() => rig.h.runner.get(thread.id).background?.some((b) => b.finished === true) === true);
-    clock.advance(16_000);
+    clock.advance(ACP_WAKE_GRACE_MS + 1_000);
+    await until(() => rig.h.events(thread.id).filter((e) => e.type === 'turn.completed').length === 3);
     const done = rig.h.runner.get(thread.id);
     assert.equal(done.background, undefined);
     assert.notEqual(done.waitState, 'job');
@@ -586,11 +595,22 @@ test('handover drain keeps OpenCode CLI live while a background shell runs and h
     assert.equal(handed.length, 0, 'draining runner must not hand over / kill OpenCode while background shell runs');
     assert.equal(rig.h.runner.get(thread.id).live, true);
 
-    // Once the background shell exits and wake grace elapses with no wake, handover proceeds cleanly.
+    // The shell exits: OpenCode's wake can take longer than Claude's 15 s,
+    // and handing over then lost it (28 Nov 2026, c2df7d18).
     alive.delete(42040);
     await until(() => rig.h.runner.get(thread.id).background?.some((b) => b.finished === true) === true);
     clock.advance(20_000);
+    await flushImmediate();
+    assert.equal(handed.length, 0, 'not handed over during OpenCode\'s wake grace');
+    assert.equal(rig.h.runner.get(thread.id).live, true);
+    // Its grace elapses with no wake: the runner's nudge is queued and goes
+    // across with the thread, for the new runner to start (as lapsed cards do).
+    clock.advance(ACP_WAKE_GRACE_MS);
     await until(() => handed.includes(thread.id));
+    const queued = rig.h.store.load(thread.id)?.queue ?? [];
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]!.origin, 'runner');
+    assert.match(queued[0]!.text, /weren't woken to read its result:\n\n- Build project/);
     assert.deepEqual(handed, [thread.id]);
     assert.equal(rig.h.runner.workingThreads(), 0);
   } finally {
@@ -706,9 +726,9 @@ test('maxLive cap does not evict an OpenCode thread during wake grace', async ()
     await until(() => rig.h.runner.get(t2.id).status === 'idle');
     assert.equal(rig.h.runner.get(t1.id).live, true, 't1 must not be evicted by maxLive during wake grace');
 
-    // Once wake grace expires, a third thread can evict t1 normally.
-    clock.advance(20_000);
-    await until(() => rig.h.runner.get(t1.id).background === undefined);
+    // Once wake grace expires (and the runner's nudge turn has run), a third thread can evict t1 normally.
+    clock.advance(ACP_WAKE_GRACE_MS + 1_000);
+    await until(() => rig.h.runner.get(t1.id).background === undefined && rig.h.runner.get(t1.id).status === 'idle' && rig.h.events(t1.id).filter((e) => e.type === 'turn.completed').length === 2);
     const { thread: t3 } = rig.h.runner.create({
       text: 'say third thread',
       accountId: 'opencode-main',

@@ -199,6 +199,8 @@ export class AcpAdapter implements AgentAdapter {
   readonly provider;
   readonly settingsApplyNextTurn = true;
   readonly wakesAfterTasks: boolean;
+  readonly wakeGraceMs?: number;
+  readonly nudgesUnreadShells?: boolean;
   // Only for an agent that can say (AcpAgent.limits): limit-recheck.ts
   // takes any adapter with one as able to read. null when the agent said
   // nothing that reads (or didn't list its usage command): never a reason
@@ -213,6 +215,10 @@ export class AcpAdapter implements AgentAdapter {
     this.deps = deps;
     this.provider = deps.agent.provider;
     this.wakesAfterTasks = deps.agent.wakesAfterTasks === true;
+    if (this.wakesAfterTasks) {
+      this.wakeGraceMs = ACP_WAKE_GRACE_MS;
+      this.nudgesUnreadShells = true;
+    }
     const limits = deps.agent.limits;
     if (limits && 'method' in limits) this.readLimits = (account) => this.limitsNow(account, limits);
     else if (limits) {
@@ -414,6 +420,11 @@ export const ANTIGRAVITY_QUOTA_GRACE_MS = 30_000;
 export const ANTIGRAVITY_QUOTA_TOOL_GRACE_MS = 30 * 60_000;
 // How often background shells reported by OpenCode are probed for liveness.
 export const BACKGROUND_SHELL_POLL_MS = 1_000;
+// How long the runner waits for OpenCode's own turn after a background shell
+// ends (AgentAdapter.wakeGraceMs). That turn opens only when the model's first
+// words arrive: 12 s for Gemini on 28 Nov 2026, and over the runner's usual 15 s
+// the next time, when an update's handover then let the CLI go mid-wake.
+export const ACP_WAKE_GRACE_MS = 90_000;
 // OpenCode's background turn fiber streams normal session/update events with
 // no session/prompt in flight and sends no end-of-turn notification when the
 // woken turn finishes. Settle once all tools, cards and MCP calls are clear.

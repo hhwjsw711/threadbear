@@ -746,9 +746,18 @@ end, is waiting on that job mid-work: OpenCode tells the model to end its
 response and be resumed when a command it moved to the background finishes
 (27 Nov 2026, dafafece). `needsYou` stays false (no notification or phone
 push) while one of those shells runs and through the wake grace after; the
-turn the CLI opens to read the result has its say, and if none comes the
-thread is Mike's as usual (`awaitedShells` in runner.ts). Shells from an
-earlier turn, or left after an `end_turn`, don't count.
+turn the CLI opens to read the result has its say (`awaitedShells` in
+runner.ts). OpenCode's grace is 90 s, not the usual 15 s
+(`AgentAdapter.wakeGraceMs`): its wake turn opens only with the model's first
+words, and an update's handover waits out the grace. If no turn comes, on
+OpenCode (`nudgesUnreadShells`; Claude's wakes haven't been lost) the runner
+sends the agent a message to read the result and carry on, at most three in a
+row until someone else writes; a draining runner's goes across in the queue.
+If no turn comes on Claude, or the nudged turn has no say either, the thread
+is Mike's as usual. Shells from an earlier turn, or left after an
+`end_turn`, don't count. The incident: 28 Nov 2026, c2df7d18, where OpenCode
+stopped `tb land` at 30 minutes, its wake came after 15 s, the handover let
+the CLI go, and the thread sat in the Inbox with no card.
 
 ### A thread's CLI
 

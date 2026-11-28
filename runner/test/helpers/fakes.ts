@@ -102,6 +102,9 @@ export class FakeAdapter implements AgentAdapter {
   readonly movesFolders?: boolean;
   readonly settingsApplyNextTurn?: boolean;
   readonly wakesAfterTasks?: boolean;
+  // Set by a test of an adapter whose wake turn comes slowly (OpenCode's).
+  wakeGraceMs?: number;
+  nudgesUnreadShells?: boolean;
   sessions: FakeSession[] = [];
   slowExit = false;
   // Set by a test that wants the runner's model probe to find something.

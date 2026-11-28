@@ -25,6 +25,20 @@ export function stoppedWorkMessage(what: string[], last: boolean): string {
   ].join('\n');
 }
 
+// When the CLI never started its own turn for a shell the last turn ended
+// waiting on (Runner.nudgeUnreadShells).
+export function unreadShellsMessage(what: string[], last: boolean): string {
+  const one = what.length <= 1;
+  const lines = what.map((w) => `- ${cutSafely(w, 203, '...')}`);
+  return [
+    `${one ? 'A background shell' : 'Background shells'} you ended your last turn waiting on ${one ? 'has' : 'have'} finished, but you weren't woken to read ${one ? 'its' : 'their'} result${lines.length ? ':' : '.'}`,
+    ...(lines.length ? ['', ...lines] : []),
+    '',
+    `Read ${one ? 'its' : 'their'} output now and carry on from where you left off. A shell can also have been stopped by its time limit, so check whether the work it ran finished by itself before running it again. End with end_turn when you're done or need the user.`,
+    ...(last ? ['', "Threadbear won't wake this thread for this again, so if the user needs to step in, ask them in end_turn."] : []),
+  ].join('\n');
+}
+
 // The runner's own message carrying on a turn that was cut off (CARRY_ON_*
 // below): the same work going on, not a new message to the thread.
 export function isCarryOn(msg: { text: string; origin?: MessageOrigin }): boolean {

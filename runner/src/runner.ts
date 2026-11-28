@@ -115,7 +115,7 @@ import {
 import { cutSafely } from './safe-cut.ts';
 import { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS, FOLDER_CACHE_MS, HOOK_TELL_CHARS, HOOK_TELL_LIMIT, LIVE_POLL_MS, LIVE_SHARE_MS, NO_WAKE_TIME, PATCHES_TTL_MS, SAVE_RETRY_MS, UNTIL_RESTART } from './runner/timings.ts';
 export { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS, FOLDER_CACHE_MS, HOOK_TELL_CHARS, HOOK_TELL_LIMIT, LIVE_POLL_MS, LIVE_SHARE_MS, NO_WAKE_TIME, PATCHES_TTL_MS, SAVE_RETRY_MS, UNTIL_RESTART };
-import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_NETWORK, CARRY_ON_RESTART, CARRY_ON_SIGNED_OUT, CARRY_ON_TOKEN, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, WROTE_INSTEAD, isCarryOn, stoppedWorkMessage } from './runner/carry-on.ts';
+import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_NETWORK, CARRY_ON_RESTART, CARRY_ON_SIGNED_OUT, CARRY_ON_TOKEN, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, WROTE_INSTEAD, isCarryOn, stoppedWorkMessage, unreadShellsMessage } from './runner/carry-on.ts';
 export { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_NETWORK, CARRY_ON_RESTART, CARRY_ON_SIGNED_OUT, CARRY_ON_TOKEN, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, WROTE_INSTEAD, isCarryOn, stoppedWorkMessage };
 import { TITLE_PROMPT, askedLine, checkImages, cleanTitle, fromMike, isAutomaticInput, matchAnswers, oneLine, scheduledMessageId, titleFrom, userMessage } from './runner/messages.ts';
 export { TITLE_PROMPT, askedLine, checkImages, cleanTitle, fromMike, isAutomaticInput, matchAnswers, oneLine, scheduledMessageId, titleFrom, userMessage };
@@ -3477,18 +3477,26 @@ export class Runner {
   }
 
   startWakeGrace(st: ThreadState): void {
-    const { rt } = st;
+    const { rec, rt } = st;
     rt.wakeTimer?.cancel();
+    const adapter = this.adapters[rt.sessionProvider ?? rec.provider];
+    const graceMs = adapter?.wakeGraceMs ?? WAKE_GRACE_MS;
     rt.wakeTimer = this.clock.setTimeout(() => {
       rt.wakeTimer = undefined;
+      const finished = rt.finished;
       rt.finished = [];
       this.markDirty(st);
       // No turn came to read the result: a done card held back for one
       // stands, and a helper's held turn ends its run.
       if (!rt.turn) {
+        // Shells its last turn ended on without end_turn, waiting for them,
+        // that have ended unread: nudged below rather than left with Mike.
+        const going = new Set(rt.tasks.map((t) => t.id));
+        const unread = (rt.awaitedShells ?? []).filter((id) => !going.has(id));
         this.pruneAwaited(st);
         this.settlePendingFinish(st);
         this.settleHelperPending(st);
+        if (unread.length && adapter?.nudgesUnreadShells) this.nudgeUnreadShells(st, finished.filter((t) => unread.includes(t.id)));
       }
       // Mike's turn is running: the CLI may read the result after it, so it
       // counts as ended in that turn, and the grace starts again at its end
@@ -3497,7 +3505,30 @@ export class Runner {
       // A version move, a fresh CLI, or an idle countdown that fired during
       // wake grace was waiting for the grace to end.
       if ((rt.versionMove || rt.releaseWhenIdle || this.queueHeld(st) || !rt.idleTimer) && !rt.turn) this.scheduleIdle(st);
-    }, WAKE_GRACE_MS);
+    }, graceMs);
+  }
+
+  // The CLI never woke for a shell its last turn ended waiting on (no
+  // end_turn): that turn said it would carry on, and nothing else will
+  // make it, so the runner does, rather than the thread landing in Mike's
+  // inbox with no card (28 Nov 2026, c2df7d18: OpenCode stopped tb land at
+  // 30 minutes and its wake came after the grace, which an update's
+  // handover then took as nothing coming). STOPPED_WORK_WAKES in a row at
+  // most, reset by anyone else writing to the thread.
+  private nudgeUnreadShells(st: ThreadState, ended: BackgroundTask[]): void {
+    const { rec, rt } = st;
+    if (this.stopping || rt.deleted || rt.turn || rec.queue.length || this.bucket(rec) !== 'inbox') return;
+    if (this.coordinators?.dispatchRefusal(rec.id)) return;
+    const wakes = rec.stoppedWorkWakes ?? 0;
+    if (wakes >= STOPPED_WORK_WAKES) return;
+    const what = ended.map((t) => t.description || t.type);
+    try {
+      rec.stoppedWorkWakes = wakes + 1;
+      this.sendTo(st, unreadShellsMessage(what, wakes + 1 >= STOPPED_WORK_WAKES), [], { origin: 'runner', queue: true, wakeReason: 'Its background shell ended' });
+      this.log.info('nudged a thread whose CLI never woke for its shell', { threadId: rec.id, what });
+    } catch (e) {
+      this.log.error('could not nudge a thread whose CLI never woke for its shell', { threadId: rec.id, error: String(e) });
+    }
   }
 
   openCliTurn(st: ThreadState): void {
