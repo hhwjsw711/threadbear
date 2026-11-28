@@ -295,9 +295,10 @@ export const inboxGuessPart = {
   quietArchive(this: Runner, st: ThreadState, seq: number, guesses: Guess[]): void {
     const { rec, rt } = st;
     if (!experimentOn(this.cfg.home, QUIET_INBOX_MINE)) return;
-    // Opus itself: a pool with no Claude login answers on another agent's
-    // default model, labelled so (models/index.ts), which doesn't count.
-    const strong = guesses.find((g) => g.strong && (g.by === OPUS || g.by.startsWith(`${OPUS} on `)));
+    // Opus, or Codex answering for it (a pool whose Claude login is out of
+    // room answers on another agent's default, labelled so in
+    // models/index.ts). Other agents don't count.
+    const strong = guesses.find((g) => g.strong && decides(g.by));
     if (!strong?.skip || guesses.some((g) => g.by === 'rule')) return;
     if (rec.detached || rec.starredAt || rec.keptOut || rec.reviewOf || rec.coordinatorHelperFor || rec.lastSeenSeq >= seq || isReminder(rec) || this.coordinators?.forThread(rec.id)) return;
     // A design review waiting on his answer is his to see (Codex's review).
@@ -309,7 +310,7 @@ export const inboxGuessPart = {
     // A thread it started that's gone back to work since git looked.
     if (this.childEnds(st).length) return;
     const why = strong.why.replace(/\s+/g, ' ').trim();
-    this.emit(st, { type: 'system.note', text: quietArchivedNote({ why, now: this.clock.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
+    this.emit(st, { type: 'system.note', text: quietArchivedNote({ why, model: strong.by.startsWith('codex') ? 'Codex' : 'Opus', now: this.clock.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
     this.update({ threadId: rec.id, archived: true, archivedBy: 'threadbear', noted: true });
     // After the archive, which clears any older mark (parkRecord).
     rec.quietlyArchived = { at: this.isoNow(), why, seq };
@@ -382,3 +383,13 @@ export const inboxGuessPart = {
 };
 
 export type InboxGuessPart = RunnerPart<typeof inboxGuessPart>;
+
+// Whose strong guess may archive one of his threads. Codex joined on 28 Nov
+// 2026: the Main pool's one Claude login ran out of weekly room on 26 Nov,
+// every guess went to Codex, and the quiet inbox hid nothing for two days
+// while Mike archived the same threads by hand ("I'm getting a lot of crap in
+// my inbox"). Codex had earned it by then: of 47 of its skips he labelled from
+// the Archive menu, he agreed with 46. Grok missed 1 of its 4, so not Grok.
+export function decides(by: string): boolean {
+  return [OPUS, 'codex default'].some((m) => by === m || by.startsWith(`${m} on `));
+}

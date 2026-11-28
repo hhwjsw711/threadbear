@@ -50,8 +50,9 @@ export function unarchivedNote(o: { who: Who; now: number; timeZone: string; why
 // The quiet inbox's own (experiment quietInboxMine, runner/inbox-guess.ts):
 // named, so Mike knows what moved it, with the model's reason. Hovering a
 // line naming Quiet inbox says what it is (the app's QUIET_INBOX_TIP).
-export function quietArchivedNote(o: { why: string; now: number; timeZone: string }): string {
-  return `Archived by Quiet inbox on ${shortWhen(o.now, o.timeZone)}: it finished with nothing for you, and Opus judged you didn't need to see it. ${o.why}`;
+// `model`: who judged, Opus or Codex answering for it (inbox-guess.ts, decides).
+export function quietArchivedNote(o: { why: string; now: number; timeZone: string; model?: string }): string {
+  return `Archived by Quiet inbox on ${shortWhen(o.now, o.timeZone)}: it finished with nothing for you, and ${o.model ?? 'Opus'} judged you didn't need to see it. ${o.why}`;
 }
 
 // Idle with nothing for Mike and a schedule booked: the sidebar puts it

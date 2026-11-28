@@ -567,8 +567,17 @@ test('a plain unarchive or a new message clears the mark too, and Mike re-archiv
   assert.equal(h.runner.get(c).archivedBy, 'mike');
 });
 
-test("another agent answering for Opus (a pool with no Claude login) archives nothing", async () => {
+test("Codex answering for Opus (a pool whose Claude login is out of room) archives it", async () => {
   const h = setup({ quiet: true, strong: { ok: true, value: '{"guess":"skip","why":"A receipt."}', model: 'codex default on codex-1' } });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => Boolean(h.runner.get(id).quietlyArchived), 'quietly archived');
+  assert.equal(h.runner.get(id).archivedBy, 'threadbear');
+  assert.ok(notes(h, id).some((t) => t.includes('Codex judged you didn')), 'the note says Codex judged');
+});
+
+test("another agent answering for Opus (Grok) archives nothing", async () => {
+  const h = setup({ quiet: true, strong: { ok: true, value: '{"guess":"skip","why":"A receipt."}', model: 'grok default on grok-main' } });
   const id = mine(h);
   finish(h, id);
   await until(() => h.lines().length === 1, 'the guess written down');
