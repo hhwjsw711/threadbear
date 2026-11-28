@@ -725,6 +725,18 @@ short wait it will use within its turn (a server starting) goes through
 when the command carries `# short wait`. Codex's shell has no hook to
 refuse a call with, so Codex threads are left to the stuck-job check.
 
+### Waiting on its own shells
+
+A turn that ends with no say at all (no `end_turn`, nothing asked in its
+text) while a shell job it started still runs, on a CLI that wakes when jobs
+end, is waiting on that job mid-work: OpenCode tells the model to end its
+response and be resumed when a command it moved to the background finishes
+(27 Nov 2026, dafafece). `needsYou` stays false (no notification or phone
+push) while one of those shells runs and through the wake grace after; the
+turn the CLI opens to read the result has its say, and if none comes the
+thread is Mike's as usual (`awaitedShells` in runner.ts). Shells from an
+earlier turn, or left after an `end_turn`, don't count.
+
 ### A thread's CLI
 
 How the runner holds a thread's CLI, as one state type
