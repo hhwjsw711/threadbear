@@ -731,3 +731,38 @@ test('landedOnMain: counts rebased commits even when main later edits the same f
   assert.notEqual(sh(merged.path, 'git rev-parse HEAD'), baseMain);
   assert.equal(await landedOnMain(main, merged.branch), false);
 });
+
+test("a leftover worktree whose repo isn't on this machine is skipped by the question, and the rest are still asked about", async () => {
+  // A thread archived on another OS (WSL, before a move to native Windows)
+  // keeps a main checkout path that doesn't exist here.
+  const { main } = makeRepo();
+  const h = harness();
+  const gone = await threadWithWorktree(h, main);
+  const here = await threadWithWorktree(h, main);
+  commit(gone.w.path, { 'runner/g.ts': 'g\n' }, 'Never landed');
+  commit(here.w.path, { 'runner/h.ts': 'h\n' }, 'Never landed either');
+  h.runner.update({ threadId: gone.id, archived: true });
+  h.runner.update({ threadId: here.id, archived: true });
+  await until(() => notes(h, gone.id).some((n) => n.includes(' stay: ')) && notes(h, here.id).some((n) => n.includes(' stay: ')), 'the first cleanups');
+  const elsewhere = path.join(tmpDir(), 'home', 'someone', 'dev', 'repo');
+  const old = new Date(Date.parse(h.runner.isoNow()) - 3 * 86_400_000).toISOString();
+  for (const id of [gone.id, here.id]) h.runner.threads.get(id)!.rec.archivedAt = old;
+  const g = h.runner.threads.get(gone.id)!.rec.worktree!;
+  g.mainCheckout = elsewhere;
+  g.path = path.join(elsewhere + '-threads', 'slot-1');
+  const asks = () => [...h.runner.threads.values()].filter((st) => st.rec.title?.startsWith('Clean up a leftover worktree'));
+
+  await h.runner.sweepArchivedWorktrees();
+  assert.equal(asks().length, 1);
+  const ask = asks()[0];
+  assert.equal(ask.rec.title, 'Clean up a leftover worktree');
+  assert.equal(ask.rec.cwd, main);
+  const first = h.adapter.sessions.find((s) => s.opts.threadId === ask.rec.id)!.sent[0].text;
+  assert.ok(first.includes(here.w.path), first);
+  assert.ok(!first.includes(elsewhere), first);
+
+  // Only the unreachable one left: nothing is asked, and nothing throws.
+  h.runner.update({ threadId: ask.rec.id, archived: true });
+  assert.equal(await h.runner.askAboutStayed([{ st: h.runner.threads.get(gone.id)!, w: g, reason: 'x' }]), undefined);
+  assert.equal(asks().length, 1);
+});

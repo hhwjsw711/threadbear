@@ -719,6 +719,10 @@ export const worktreesPart = {
     const fresh: (Stayed & { key: string })[] = [];
     for (const x of stayed) {
       if (now - Date.parse(x.st.rec.archivedAt!) < ASK_AFTER_MS) continue;
+      // A repo that isn't on this machine (a thread archived under WSL
+      // before the runner moved to native Windows, say): no thread can look
+      // at it here, and as the asking thread's folder it'd fail them all.
+      if (!isDirectory(x.w.mainCheckout)) continue;
       const tip = await git(x.w.mainCheckout, ['rev-parse', '--verify', '--quiet', x.w.branch]);
       const key = `${x.w.path}@${tip.ok ? tip.stdout.trim() : 'gone'}`;
       if (!asked.has(key)) fresh.push({ ...x, key });
