@@ -9,11 +9,14 @@
 // window comes to the front. Drag-out is later work (`drag.fileout`), and Space
 // shows the file in the pane, as there's no Quick Look here (`file.quicklook`).
 use crate::a11y::A11yRole as _;
+use crate::app::Threadbear;
 use crate::call;
 use crate::file_watch::FolderWatch;
-use crate::highlights::{icon, palette, MenuItem, Palette, PanePreview, SidePane, Target, FILES};
+use crate::highlights::{
+    icon, palette, tipped, MenuItem, Palette, PanePreview, SidePane, Target, FILES,
+};
 use crate::style;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // Shadows gpui's px, so sizes here follow the app's zoom (style.rs).
@@ -26,8 +29,18 @@ use threadbear_core::folders::{
     self as rules, crumbs, join, parent, size_words, Crumb, FolderContents, FolderEntry,
     FolderMode, FolderSort, Selection, SortKey,
 };
-use threadbear_core::highlights::is_app_project;
+use threadbear_core::highlights::{self as core, is_app_project};
 use threadbear_core::inbox::ThreadSummary;
+
+/// Metadata for a standalone folder open as its own BearDock panel
+/// (`threadbear.folder:<root_path>`). `current` tracks subfolder navigation
+/// inside the panel (`Target::Folder`, `back` stack, and `memory`).
+#[derive(Clone, Debug)]
+pub(crate) struct FolderPanelMeta {
+    pub current: PanePreview,
+    pub thread_id: String,
+    pub remote: bool,
+}
 
 const ROW_HEIGHT: f32 = 24.;
 /// NSTableHeaderView's height on macOS 26 and 27, measured.
@@ -489,12 +502,20 @@ impl SidePane {
                 prefs.folder_mode,
             );
             // Back to a folder: what was picked and open there comes back.
-            if let Some(memory) = self
-                .previews
-                .get(&thread.id)
-                .filter(|p| p.target == Target::Folder(root.to_owned()))
-                .map(|p| p.memory.clone())
-            {
+            let memory = self
+                .folder_panels
+                .values()
+                .find(|m| {
+                    m.thread_id == thread.id && m.current.target == Target::Folder(root.to_owned())
+                })
+                .map(|m| m.current.memory.clone())
+                .or_else(|| {
+                    self.previews
+                        .get(&thread.id)
+                        .filter(|p| p.target == Target::Folder(root.to_owned()))
+                        .map(|p| p.memory.clone())
+                });
+            if let Some(memory) = memory {
                 view.selection = Selection::of(memory.selected);
                 view.expanded = memory.expanded;
             }
@@ -645,7 +666,9 @@ impl SidePane {
     /// Keeps the folder showing up to date, and only that one: a watch on
     /// its folders here, a timer for another Mac's. Called as the pane draws.
     pub(crate) fn keep_folder_current(&mut self, cx: &mut Context<Self>) {
-        let key = self.thread(cx).and_then(|t| self.current_folder_key(&t));
+        let key = self
+            .thread(cx)
+            .and_then(|t| self.current_folder_key(&t, cx));
         let Some(key) = key else {
             self.folders.kept = None;
             return;
@@ -843,7 +866,7 @@ impl SidePane {
         })
         .track_scroll(&scroll)
         .size_full();
-        self.folder_surface(key, thread, list.into_any_element(), cx)
+        self.folder_surface(key, &preview.from, thread, list.into_any_element(), cx)
     }
 
     /// Under the rows: a click on the blank space picks nothing, and its
@@ -851,11 +874,13 @@ impl SidePane {
     fn folder_surface(
         &mut self,
         key: &str,
+        from: &str,
         thread: &ThreadSummary,
         content: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (empty_key, click_key) = (key.to_owned(), key.to_owned());
+        let from = from.to_owned();
         let _ = thread;
         div()
             .id("folder-surface")
@@ -876,7 +901,7 @@ impl SidePane {
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     if let Some(thread) = this.thread(cx) {
                         let items = this.folder_menu_items(&empty_key, None, &thread);
-                        this.open_menu(items, ev.position, window, cx);
+                        this.open_folder_menu(&from, items, ev.position, window, cx);
                     }
                 }),
             )
@@ -936,7 +961,7 @@ impl SidePane {
         .track_scroll(&scroll)
         .pt(px(rules::GRID_INSET))
         .size_full();
-        self.folder_surface(key, thread, grid.into_any_element(), cx)
+        self.folder_surface(key, &preview.from, thread, grid.into_any_element(), cx)
     }
 
     /// The bar under the rows: each folder up to this one, to click. A deep
@@ -1026,6 +1051,7 @@ impl SidePane {
             let below = crumb_list.get(tucked).map(|c| c.path.clone());
             let menu_key = key.to_owned();
             let _ = below;
+            let preview_from = preview.from.clone();
             row = row.child(
                 crate::highlights::tipped(
                     div()
@@ -1060,7 +1086,7 @@ impl SidePane {
                             )
                         })
                         .collect();
-                    this.open_menu(items, ev.position(), window, cx);
+                    this.open_folder_menu(&preview_from, items, ev.position(), window, cx);
                 })),
             );
             row = row.child(arrow());
@@ -1257,6 +1283,7 @@ impl FolderRow {
         let (click_entity, menu_entity, tri_entity) =
             (entity.clone(), entity.clone(), entity.clone());
         let (click_entry, menu_entry, tri_entry) = (entry.clone(), entry.clone(), entry.clone());
+        let menu_from = preview.from.clone();
         let (click_key, menu_key, tri_key) = (key.to_owned(), key.to_owned(), key.to_owned());
         let (click_thread, menu_thread, tri_thread) =
             (thread.clone(), thread.clone(), thread.clone());
@@ -1371,10 +1398,11 @@ impl FolderRow {
                 MouseButton::Right,
                 move |event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    let (entry, key, thread, position) = (
+                    let (entry, key, thread, from, position) = (
                         menu_entry.clone(),
                         menu_key.clone(),
                         menu_thread.clone(),
+                        menu_from.clone(),
                         event.position,
                     );
                     menu_entity
@@ -1383,7 +1411,7 @@ impl FolderRow {
                             if let Some(view) = this.folders.views.get_mut(&key) {
                                 view.menu_row = Some(entry.path.clone());
                             }
-                            this.open_menu(items, position, window, cx);
+                            this.open_folder_menu(&from, items, position, window, cx);
                         })
                         .ok();
                 },
@@ -1453,6 +1481,7 @@ impl FolderTile {
         let (click_key, menu_key) = (key.to_owned(), key.to_owned());
         let (click_thread, menu_thread) = (thread.clone(), thread.clone());
         let click_preview = preview.clone();
+        let menu_from = preview.from.clone();
         let drag = (!thread.is_remote()).then(|| entry.path.clone());
         crate::file_drag::FileDragExt::file_drag(div().id(("folder-tile", index)), drag)
             .flex_none()
@@ -1523,10 +1552,11 @@ impl FolderTile {
                 MouseButton::Right,
                 move |event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    let (entry, key, thread, position) = (
+                    let (entry, key, thread, from, position) = (
                         menu_entry.clone(),
                         menu_key.clone(),
                         menu_thread.clone(),
+                        menu_from.clone(),
                         event.position,
                     );
                     menu_entity
@@ -1535,7 +1565,7 @@ impl FolderTile {
                             if let Some(view) = this.folders.views.get_mut(&key) {
                                 view.menu_row = Some(entry.path.clone());
                             }
-                            this.open_menu(items, position, window, cx);
+                            this.open_folder_menu(&from, items, position, window, cx);
                         })
                         .ok();
                 },
@@ -1546,6 +1576,21 @@ impl FolderTile {
 // ---------------------------------------------------------------- doing
 
 impl SidePane {
+    fn open_folder_menu(
+        &mut self,
+        from: &str,
+        items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if core::folder_panel_path(from).is_some() {
+            self.open_panel_menu(from, items, position, window, cx);
+        } else {
+            self.open_menu(items, position, window, cx);
+        }
+    }
+
     pub(crate) fn set_folder_sort(&mut self, key: &str, sort: FolderSort, cx: &mut Context<Self>) {
         self.files.prefs.folder_sort = sort;
         crate::files_store::save(&self.files.prefs);
@@ -1575,9 +1620,13 @@ impl SidePane {
         for view in self.folders.views.values_mut() {
             view.mode = mode;
         }
-        if let Some(key) = self.thread(cx).and_then(|t| self.current_folder_key(&t)) {
+        if let Some(key) = self
+            .thread(cx)
+            .and_then(|t| self.current_folder_key(&t, cx))
+        {
             self.reveal_selection(&key);
         }
+        cx.refresh_windows();
         cx.notify();
     }
 
@@ -1713,18 +1762,46 @@ impl SidePane {
             back
         };
         if is_folder && !iwork_package {
-            let mut next = PanePreview::new(Target::Folder(path), name, preview.from.clone());
+            let mut next =
+                PanePreview::new(Target::Folder(path.clone()), name, preview.from.clone());
             next.back = back_stack;
-            self.show_preview(next, &thread.id, cx);
+            if core::folder_panel_path(&preview.from).is_some() {
+                self.preview_opened += 1;
+                next.opened = self.preview_opened;
+                if let Some(meta) = self.folder_panels.get_mut(&preview.from) {
+                    meta.current = next;
+                }
+                self.load_folder_panel(&preview.from, cx);
+                cx.refresh_windows();
+                cx.notify();
+            } else {
+                self.show_preview(next, &thread.id, cx);
+            }
             return;
         }
         if !thread.is_remote() && is_app_project(&path) {
             self.open_externally(&path, cx);
             return;
         }
-        let mut next = PanePreview::new(Target::File(path), name, preview.from.clone());
-        next.back = back_stack;
-        self.show_preview(next, &thread.id, cx);
+        // Files opened from `Files` or a folder panel open as their own normal
+        // file panel tab beside the folder.
+        if let Some(app) = self.app.upgrade() {
+            let preferred = preview.from.clone();
+            let thread = thread.clone();
+            cx.defer(move |cx| {
+                app.update(cx, |app, cx| {
+                    app.open_preview_panel(
+                        &path,
+                        Some(name),
+                        None,
+                        false,
+                        Some(&preferred),
+                        &thread,
+                        cx,
+                    )
+                });
+            });
+        }
     }
 
     /// A folder in the path bar, or its "…" menu: there, with Back to here,
@@ -1757,6 +1834,8 @@ impl SidePane {
             let selecting = join(&path, core_folders_name(&selecting));
             if let Some(view) = self.folders.views.get_mut(&view_key(&thread.id, &path)) {
                 view.selection = Selection::of(vec![selecting]);
+            } else if let Some(meta) = self.folder_panels.get_mut(&preview.from) {
+                meta.current.memory.selected = vec![selecting];
             } else if let Some(p) = self.previews.get_mut(&thread.id) {
                 p.memory.selected = vec![selecting];
             }
@@ -2080,7 +2159,7 @@ impl SidePane {
         thread: &ThreadSummary,
         cx: &mut Context<Self>,
     ) {
-        let preview = self.folder_preview(thread);
+        let preview = self.folder_preview(thread, cx);
         self.open_row(key, &entry, thread, &preview, cx);
     }
 
@@ -2093,13 +2172,21 @@ impl SidePane {
         thread: &ThreadSummary,
         cx: &mut Context<Self>,
     ) {
-        let preview = self.folder_preview(thread);
+        let preview = self.folder_preview(thread, cx);
         self.go_to_crumb(key, path, selecting, thread, &preview, cx);
     }
 
-    /// The preview the folder showing belongs to: the pane's own, or the
-    /// Files panel's.
-    fn folder_preview(&self, thread: &ThreadSummary) -> PanePreview {
+    /// The preview the folder showing belongs to: an open folder panel's,
+    /// `Files`' subfolder preview, or `Files` itself.
+    fn folder_preview(&self, thread: &ThreadSummary, cx: &App) -> PanePreview {
+        if let Some(panel) = self
+            .active_preview_panel(cx)
+            .filter(|p| core::folder_panel_path(p).is_some())
+        {
+            if let Some(meta) = self.folder_panels.get(&panel) {
+                return meta.current.clone();
+            }
+        }
         self.previews
             .get(&thread.id)
             .filter(|p| matches!(p.target, Target::Folder(_)))
@@ -2126,13 +2213,34 @@ impl SidePane {
 
     #[cfg(feature = "automation")]
     pub(crate) fn folder_summary(&self, thread: &ThreadSummary, cx: &App) -> Option<String> {
-        let _ = cx;
-        let key = self.current_folder_key(thread)?;
+        let key = self.current_folder_key(thread, cx)?;
         self.folders.views.get(&key).map(|v| v.summary())
     }
 
-    /// The folder browser showing, if any: the pane's own or the Files panel's.
-    pub(crate) fn current_folder_key(&self, thread: &ThreadSummary) -> Option<String> {
+    #[cfg(feature = "automation")]
+    pub(crate) fn folder_summary_for_path(
+        &self,
+        thread_id: &str,
+        path: &str,
+        _cx: &App,
+    ) -> Option<String> {
+        let key = view_key(thread_id, path);
+        self.folders.views.get(&key).map(|v| v.summary())
+    }
+
+    /// The folder browser showing, if any: a showing folder panel, `Files`'
+    /// subfolder preview, or the `Files` panel itself.
+    pub(crate) fn current_folder_key(&self, thread: &ThreadSummary, cx: &App) -> Option<String> {
+        if let Some(panel) = self
+            .active_preview_panel(cx)
+            .filter(|p| core::folder_panel_path(p).is_some())
+        {
+            if let Some(meta) = self.folder_panels.get(&panel) {
+                if let Target::Folder(path) = &meta.current.target {
+                    return Some(view_key(&meta.thread_id, path));
+                }
+            }
+        }
         let section = self.section_for(thread);
         if let Some(preview) = self.previews.get(&thread.id).filter(|p| p.from == section) {
             return match &preview.target {
@@ -2216,9 +2324,9 @@ pub(crate) fn folder_command(
 ) -> Result<Value, String> {
     let pane = side.read(cx);
     let key = pane
-        .current_folder_key(thread)
+        .current_folder_key(thread, cx)
         .ok_or("no folder is showing in the pane")?;
-    let preview = pane.folder_preview(thread);
+    let preview = pane.folder_preview(thread, cx);
     let find = |pane: &SidePane, name: &str| {
         pane.folders
             .views
@@ -2406,15 +2514,437 @@ pub(crate) fn folder_command(
         side.update(cx, |pane, cx| pane.folder_up(&key, thread, &preview, cx));
     }
     let pane = side.read(cx);
-    let preview_words = pane.previews.get(&thread.id).map_or_else(
-        || "no preview".to_owned(),
-        |p| format!("showing {}", p.title),
-    );
+    let preview_words = pane
+        .active_preview_panel(cx)
+        .and_then(|p| {
+            pane.folder_panels
+                .get(&p)
+                .map(|m| format!("showing {}", m.current.title))
+        })
+        .or_else(|| {
+            pane.previews
+                .get(&thread.id)
+                .map(|p| format!("showing {}", p.title))
+        })
+        .unwrap_or_else(|| "no preview".to_owned());
     let summary = pane
-        .current_folder_key(thread)
+        .current_folder_key(thread, cx)
         .and_then(|k| pane.folders.views.get(&k))
         .map_or_else(|| "no folder".to_owned(), |v| v.summary());
     Ok(json!(format!("ok {preview_words}; {summary}")))
+}
+
+// ---------------------------------------------------------------- dock panels
+
+impl SidePane {
+    pub(crate) fn open_folder_panel_state(
+        &mut self,
+        panel_id: &str,
+        path: &str,
+        title: Option<String>,
+        thread: &ThreadSummary,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_explaining(&thread.id);
+        self.preview_opened += 1;
+        let title = title.unwrap_or_else(|| core_folders_name(path).to_owned());
+        let mut current =
+            PanePreview::new(Target::Folder(path.to_owned()), title, panel_id.to_owned());
+        current.opened = self.preview_opened;
+        self.folder_panels.insert(
+            panel_id.to_owned(),
+            FolderPanelMeta {
+                current,
+                thread_id: thread.id.clone(),
+                remote: thread.is_remote(),
+            },
+        );
+        self.menu = None;
+        // Defer loading so `load_folder_panel` never reads `Threadbear` while
+        // `open_folder_panel` still holds a mutable borrow on it.
+        let (side, panel) = (cx.entity().downgrade(), panel_id.to_owned());
+        cx.defer(move |cx| {
+            let _ = side.update(cx, |s, cx| s.load_folder_panel(&panel, cx));
+        });
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    pub(crate) fn ensure_folder_panel_loaded(&mut self, panel_id: &str, cx: &mut Context<Self>) {
+        if !self.folder_panels.contains_key(panel_id) {
+            let Some(path) = core::folder_panel_path(panel_id).map(str::to_owned) else {
+                return;
+            };
+            let (thread_id, remote) = self.thread(cx).map_or((String::new(), false), |t| {
+                let remote = t.is_remote();
+                (t.id, remote)
+            });
+            self.preview_opened += 1;
+            let mut current = PanePreview::new(
+                Target::Folder(path.clone()),
+                core_folders_name(&path).to_owned(),
+                panel_id.to_owned(),
+            );
+            current.opened = self.preview_opened;
+            self.folder_panels.insert(
+                panel_id.to_owned(),
+                FolderPanelMeta {
+                    current,
+                    thread_id,
+                    remote,
+                },
+            );
+        }
+        self.load_folder_panel(panel_id, cx);
+    }
+
+    pub(crate) fn load_folder_panel(&mut self, panel_id: &str, cx: &mut Context<Self>) {
+        let Some(meta) = self.folder_panels.get(panel_id).cloned() else {
+            return;
+        };
+        let Target::Folder(path) = &meta.current.target else {
+            return;
+        };
+        let thread = self
+            .app
+            .upgrade()
+            .and_then(|a| {
+                a.read(cx)
+                    .threads
+                    .get(&meta.thread_id)
+                    .map(|t| (**t).clone())
+            })
+            .or_else(|| self.thread(cx));
+        let Some(thread) = thread else {
+            return;
+        };
+        let key = view_key(&thread.id, path);
+        if self.folders.views.contains_key(&key) {
+            self.refresh_folder(&key, cx);
+        }
+        self.ensure_folder(&thread, path, path, cx);
+    }
+
+    pub(crate) fn folder_panel_back(&mut self, panel_id: &str, cx: &mut Context<Self>) {
+        let Some(current) = self.folder_panels.get(panel_id).map(|m| m.current.clone()) else {
+            return;
+        };
+        let Some((last, rest)) = current.back.split_last() else {
+            return;
+        };
+        let mut previous = last.clone();
+        previous.back = rest.to_vec();
+        self.preview_opened += 1;
+        previous.opened = self.preview_opened;
+        if let Some(meta) = self.folder_panels.get_mut(panel_id) {
+            meta.current = previous;
+        }
+        self.load_folder_panel(panel_id, cx);
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    pub(crate) fn drop_folder_panel(&mut self, panel_id: &str) {
+        self.folder_panels.remove(panel_id);
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|m| m.owner.as_deref() == Some(panel_id))
+        {
+            self.menu = None;
+        }
+    }
+
+    pub(crate) fn render_folder_panel(
+        &mut self,
+        panel_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(meta) = self.folder_panels.get(panel_id).cloned() else {
+            return div().size_full().into_any_element();
+        };
+        let Target::Folder(path) = &meta.current.target else {
+            return div().size_full().into_any_element();
+        };
+        let thread = self
+            .app
+            .upgrade()
+            .and_then(|a| {
+                a.read(cx)
+                    .threads
+                    .get(&meta.thread_id)
+                    .map(|t| (**t).clone())
+            })
+            .or_else(|| self.thread(cx));
+        let Some(thread) = thread else {
+            return div().size_full().into_any_element();
+        };
+        let body = self.render_folder(&thread, path, &meta.current, window, cx);
+        let menu = self
+            .menu
+            .as_ref()
+            .filter(|m| m.owner.as_deref() == Some(panel_id))
+            .map(|m| (m.position, m.view.clone()));
+        div()
+            .relative()
+            .size_full()
+            .child(body)
+            .when_some(menu, |s, (position, view)| {
+                s.child(
+                    deferred(
+                        anchored()
+                            .position(position)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(div().occlude().child(view)),
+                    )
+                    .with_priority(1),
+                )
+            })
+            .into_any_element()
+    }
+}
+
+/// One standalone folder open as a BearDock panel (`threadbear.folder:<path>`).
+pub(crate) struct FolderPanelView {
+    side: Entity<SidePane>,
+    panel_id: String,
+    _watch: Subscription,
+}
+
+impl FolderPanelView {
+    fn new(side: Entity<SidePane>, panel_id: String, cx: &mut Context<Self>) -> Self {
+        let watch = cx.observe(&side, |_, _, cx| cx.notify());
+        FolderPanelView {
+            side,
+            panel_id,
+            _watch: watch,
+        }
+    }
+}
+
+impl Render for FolderPanelView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self
+            .side
+            .read(cx)
+            .folder_panels
+            .contains_key(&self.panel_id)
+        {
+            let (side, panel_id) = (self.side.clone(), self.panel_id.clone());
+            cx.defer(move |cx| {
+                side.update(cx, |s, cx| s.ensure_folder_panel_loaded(&panel_id, cx))
+            });
+        }
+        let panel_id = self.panel_id.clone();
+        let body = self
+            .side
+            .update(cx, |s, cx| s.render_folder_panel(&panel_id, window, cx));
+        div().size_full().bg(cx.theme().background).child(body)
+    }
+}
+
+impl Threadbear {
+    /// Opens a folder as a normal dock panel beside Highlights (or
+    /// `preferred_section`).
+    pub(crate) fn open_folder_panel(
+        &mut self,
+        path: &str,
+        title: Option<String>,
+        preferred_section: Option<&str>,
+        thread: &ThreadSummary,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = core::folder_panel(path);
+        self.side.update(cx, |s, cx| {
+            s.open_folder_panel_state(&panel, path, title, thread, cx);
+        });
+        self.dock_thread_tab(&panel, preferred_section, cx);
+        let layout = self.dock.read(cx).layout().clone();
+        self.save_thread_pane_store(&layout, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn reopen_folder_panel(&mut self, panel: &str, cx: &mut Context<Self>) {
+        if !self.side.read(cx).folder_panels.contains_key(panel) {
+            if let (Some(path), Some(thread)) = (core::folder_panel_path(panel), self.pane_thread())
+            {
+                self.side.update(cx, |s, cx| {
+                    s.open_folder_panel_state(panel, path, None, &thread, cx);
+                });
+            }
+        }
+        self.dock_thread_tab(panel, None, cx);
+    }
+
+    pub(crate) fn folder_panel_title(&self, panel: &str, cx: &App) -> Option<String> {
+        let path = core::folder_panel_path(panel)?;
+        Some(
+            self.side
+                .read(cx)
+                .folder_panels
+                .get(panel)
+                .map(|m| m.current.title.clone())
+                .unwrap_or_else(|| core_folders_name(path).to_owned()),
+        )
+    }
+
+    pub(crate) fn folder_panel_tip(&self, panel: &str, cx: &App) -> Option<String> {
+        let root = core::folder_panel_path(panel)?;
+        let current = self
+            .side
+            .read(cx)
+            .folder_panels
+            .get(panel)
+            .and_then(|m| match &m.current.target {
+                Target::Folder(p) => Some(p.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| root.to_owned());
+        let cwd = self.pane_thread().map(|t| t.cwd);
+        let rel = core::text::folder(&current, cwd.as_deref(), &crate::files::home_dir());
+        let name = core_folders_name(&current);
+        Some(if rel.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{rel}/{name}")
+        })
+    }
+
+    pub(crate) fn folder_panel_icon(&self, panel: &str, cx: &App) -> Option<AnyElement> {
+        core::folder_panel_path(panel)?;
+        let color = cx.theme().muted_foreground;
+        Some(
+            crate::icons::symbol("folder")
+                .with_size(px(13.))
+                .text_color(color)
+                .into_any_element(),
+        )
+    }
+
+    /// Back (when drilled deeper), List/Icons toggle, and Open in Finder at
+    /// the right end of a folder panel's BearDock bar.
+    pub(crate) fn folder_panel_buttons(
+        &mut self,
+        panel: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let root = core::folder_panel_path(panel)?.to_owned();
+        let p = palette(cx);
+        let hover = p.hover;
+        let fg = p.fg;
+        let side = self.side.clone();
+        let (back_to, current_path, remote, mode) = {
+            let s = side.read(cx);
+            let meta = s.folder_panels.get(panel);
+            let back_to = meta.and_then(|m| m.current.back.last().map(|b| b.title.clone()));
+            let current = meta
+                .and_then(|m| match &m.current.target {
+                    Target::Folder(p) => Some(p.clone()),
+                    _ => None,
+                })
+                .unwrap_or(root);
+            let remote = meta.is_some_and(|m| m.remote);
+            (back_to, current, remote, s.files.prefs.folder_mode)
+        };
+        let mut row = h_flex().flex_none().items_center().pr(px(4.));
+        if let Some(back_title) = back_to {
+            let (side_back, panel_back) = (side.clone(), panel.to_owned());
+            row = row.child(
+                tipped(
+                    div()
+                        .id(SharedString::from(format!("hl-folder-back-{panel}")))
+                        .size(px(26.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .hover(move |s| s.bg(hover).text_color(fg))
+                        .cursor_pointer()
+                        .child(icon("chevron.left", style::size::LABEL, p.secondary)),
+                    format!("Back to {back_title}"),
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    side_back.update(cx, |s, cx| s.folder_panel_back(&panel_back, cx));
+                }),
+            );
+        }
+        let side_mode = side;
+        row = row.child(
+            tipped(
+                div()
+                    .id(SharedString::from(format!("hl-folder-mode-{panel}")))
+                    .size(px(26.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .hover(move |s| s.bg(hover).text_color(fg))
+                    .cursor_pointer()
+                    .child(icon(mode.switch_symbol(), style::size::LABEL, p.secondary)),
+                mode.switch_title().to_owned(),
+            )
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(move |_, _, cx| {
+                side_mode.update(cx, |s, cx| s.set_folder_mode(mode.other(), cx));
+            }),
+        );
+        if !remote {
+            let open_path = current_path;
+            row = row.child(
+                tipped(
+                    div()
+                        .id(SharedString::from(format!("hl-folder-open-{panel}")))
+                        .size(px(26.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .hover(move |s| s.bg(hover).text_color(fg))
+                        .cursor_pointer()
+                        .child(icon("arrow.up.right", style::size::LABEL, p.secondary)),
+                    "Open in Finder".to_owned(),
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    crate::files::open_file_in_app(
+                        &open_path,
+                        crate::open_gate::Origin::ThisMac,
+                        cx,
+                    )
+                }),
+            );
+        }
+        Some(row.into_any_element())
+    }
+
+    pub(crate) fn folder_panel_view(
+        &mut self,
+        panel: &str,
+        ghost: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if ghost {
+            return div()
+                .size_full()
+                .bg(cx.theme().background)
+                .into_any_element();
+        }
+        let side = self.side.clone();
+        let panel_id = panel.to_owned();
+        let view = self
+            .thread_panels
+            .folder_views
+            .entry(panel.to_owned())
+            .or_insert_with(|| cx.new(|cx| FolderPanelView::new(side, panel_id, cx)))
+            .clone();
+        AnyView::from(view).into_any_element()
+    }
 }
 
 #[cfg(feature = "automation")]

@@ -70,8 +70,8 @@ opens when Mike is looking at the thread, now or later, and every pin
 with `show` asks again: the same page pinned after an edit comes up
 again. (It was a `show` flag on the item until 8 Nov 2026, which the app
 only acted on the first time it saw it, and never for a thread it hadn't
-fetched yet.) The app opens the pin over Highlights, fetching the
-thread's highlights first if it hasn't got that one, then calls
+fetched yet.) The app opens the pin as a file panel beside Highlights, fetching
+the thread's highlights first if it hasn't got that one, then calls
 `threads.panelShown`; one that's gone opens Highlights. The tool waits
 up to 2 seconds for that, as `show_panel` does, and says which. Only the pane: a file shown this
 way never opens in its app (a project file included), and a link only

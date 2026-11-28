@@ -250,18 +250,16 @@ fn open_big(page: &LivePage, window: &mut Window, cx: &mut App) {
     let Some(thread) = side.read(cx).thread(cx) else {
         return;
     };
-    let mut preview = crate::highlights::PanePreview::new(
-        crate::highlights::Target::File(page.path.clone()),
-        page.title.clone(),
-        side.read(cx).section_for(&thread),
-    );
-    preview.live = true;
-    let section = preview.from.clone();
-    side.update(cx, |side, cx| side.show_preview(preview, &thread.id, cx));
     app.update(cx, |t, cx| {
-        if !t.dock.read(cx).is_showing(&section) {
-            t.show_pane(&section, cx);
-        }
+        t.open_preview_panel(
+            &page.path,
+            Some(page.title.clone()),
+            None,
+            true,
+            None,
+            &thread,
+            cx,
+        );
     });
     window.refresh();
 }

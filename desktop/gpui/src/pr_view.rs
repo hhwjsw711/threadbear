@@ -29,7 +29,6 @@ use threadbear_core::inbox::{ago, parse_ms, ThreadSummary};
 use threadbear_core::pull_requests::{
     self as rules, CachedPr, CheckState, MergeMethod, PrFiles, PrRef, PrState, PrTab, PrView,
 };
-use threadbear_dock::{DockDrop, DockEdge, DockLayout};
 
 /// The tip on a PR's buttons while the copy kept from an earlier run is
 /// read again.
@@ -1690,96 +1689,8 @@ impl Threadbear {
             }
             s.begin_pr(&canonical, cx);
         });
-        if self.dock.read(cx).layout().contains(&panel) {
-            self.dock.update(cx, |m, cx| {
-                m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx)
-            });
-            return;
-        }
-        if self.thread_panels.context.is_none() {
-            self.thread_panels.context = Some(self.current_main_context());
-        }
-        // Prefer Highlights' group, then another open side panel or per-thread
-        // PR tab, so a PR dragged elsewhere never hijacks new PR tabs. Know its
-        // home group before opening so `dock_layout_changed` omits this
-        // transient tab from disk.
-        let target_group = {
-            let layout = self.dock.read(cx).layout();
-            layout
-                .group_containing(crate::shell::HIGHLIGHTS)
-                .map(|g| g.id)
-                .or_else(|| {
-                    self.open_panes(cx)
-                        .into_iter()
-                        .find_map(|p| layout.group_containing(&p).map(|g| g.id))
-                })
-        };
-        if let Some(group_id) = target_group {
-            self.thread_panels
-                .pr_tabs
-                .insert(panel.clone(), group_id.clone());
-            self.dock
-                .update(cx, |m, cx| m.open(&panel, DockDrop::tab(group_id), cx));
-        } else {
-            self.dock.update(cx, |m, cx| {
-                m.open(&panel, DockDrop::window(DockEdge::Right), cx)
-            });
-            if let Some(group) = self.dock.read(cx).layout().group_containing(&panel) {
-                self.thread_panels.pr_tabs.insert(panel, group.id);
-                let layout = self.dock.read(cx).layout().clone();
-                self.settings.saved.dock_layout =
-                    serde_json::to_value(self.layout_for_save(&layout)).ok();
-                self.save_settings_soon(cx);
-            }
-        }
+        self.dock_thread_tab(&panel, None, cx);
         cx.notify();
-    }
-
-    /// Reopens a thread's un-moved PR panels when returning to it.
-    pub(crate) fn restore_pr_panels(
-        &mut self,
-        saved: crate::thread_panels::SavedPrTabs,
-        cx: &mut Context<Self>,
-    ) {
-        let open_panes = self.open_panes(cx);
-        if saved.selected.is_none() && open_panes.is_empty() {
-            return;
-        }
-        let prev_selected = open_panes.into_iter().find_map(|p| {
-            self.dock
-                .read(cx)
-                .layout()
-                .group_containing(&p)
-                .map(|g| g.selected)
-        });
-        for panel in &saved.panels {
-            if self.dock.read(cx).layout().contains(panel) {
-                continue;
-            }
-            if let Some(url) = rules::panel_url(panel) {
-                self.open_pr_panel(url, None, cx);
-            }
-        }
-        let select = saved.selected.or(prev_selected);
-        if let Some(sel) = select {
-            if self.dock.read(cx).layout().contains(&sel) {
-                self.dock.update(cx, |m, cx| m.select(&sel, cx));
-            }
-        }
-    }
-
-    /// After a dock layout change: a PR panel dragged out of its home group
-    /// (into a split, onto Main or into a window of its own) stays open across
-    /// threads, and views for closed PR panels are dropped.
-    pub(crate) fn pr_panels_layout_changed(&mut self, layout: &DockLayout) {
-        self.thread_panels.pr_tabs.retain(|panel, home| {
-            layout
-                .group_containing(panel)
-                .is_some_and(|g| g.id == *home)
-        });
-        self.thread_panels
-            .pr_views
-            .retain(|panel, _| layout.contains(panel));
     }
 
     pub(crate) fn pr_panel_title(&self, panel: &str) -> Option<String> {
@@ -1921,7 +1832,7 @@ impl Threadbear {
                     "tip": self.pr_panel_tip(id, cx),
                     "showing": dock.is_showing(id),
                     "floating": dock.layout().is_floating(id),
-                    "perThread": self.thread_panels.pr_tabs.contains_key(id),
+                    "perThread": self.thread_panels.thread_tabs.contains_key(id),
                     "pr": side.prs.describe(url),
                 }))
             })

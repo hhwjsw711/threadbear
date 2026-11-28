@@ -250,7 +250,12 @@ impl SidePane {
             }),
             Some(Target::Page(doc)) => {
                 doc.update(cx, |s, cx| s.clear_range_highlights(cx));
-                if let Some(focus) = &self.files.focus {
+                if let Some(focus) = self
+                    .files
+                    .open
+                    .get(thread_id)
+                    .and_then(|o| o.focus.as_ref())
+                {
                     window.focus(focus, cx);
                     crate::web_panels::keyboard_to_app(window);
                 }

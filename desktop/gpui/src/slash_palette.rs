@@ -823,8 +823,9 @@ impl Composer {
             let thread = data.summary.filter(|_| self.thread_id.is_some());
             match (self.app.upgrade(), thread) {
                 (Some(app), Some(thread)) => {
-                    let side = app.read(cx).side.clone();
-                    side.update(cx, |side, cx| side.preview_path(&path, None, &thread, cx));
+                    app.update(cx, |app, cx| {
+                        app.open_preview_panel(&path, None, None, false, None, &thread, cx)
+                    });
                 }
                 _ => crate::open_gate::open_file(&path, crate::open_gate::Origin::ThisMac, cx),
             }

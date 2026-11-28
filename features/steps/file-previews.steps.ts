@@ -126,8 +126,53 @@ Then('the pane shows the PDF', async function (this: ThreadbearWorld) {
   await this.until('a PDF in the pane', (d) => pane(d)?.previewKind === 'quickLook' || (pane(d)?.previewKind === 'pdf' && pane(d)?.previewText === '1 page'));
 });
 
+type FilePanelEntry = { id: string; kind: 'file' | 'folder'; path: string; title?: string | null; showing: boolean; floating: boolean; perThread: boolean };
+const filePanels = (d: unknown): FilePanelEntry[] => ((d as { filePanels?: FilePanelEntry[] }).filePanels ?? []);
+
 When('I put Highlights in a window of its own', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'float', id: 'threadbear.highlights' });
+});
+
+When('I put the open file panel in a window of its own', async function (this: ThreadbearWorld) {
+  const panel = await this.until('a showing file panel', (d) => filePanels(d).find((p) => p.kind === 'file' && p.showing));
+  await this.app.do({ cmd: 'float', id: panel.id });
+});
+
+Then('the file {string} is open as a normal panel beside Highlights', async function (this: ThreadbearWorld, relative: string) {
+  await this.until(`the file panel "${relative}" beside Highlights`, (d) => {
+    const entry = filePanels(d).find((p) => p.kind === 'file' && p.path.replaceAll('\\', '/').endsWith(relative));
+    return Boolean(entry?.showing && entry.perThread && (d.dock ?? '').includes('highlights'));
+  });
+});
+
+Then('both {string} and {string} are open as normal panels', async function (this: ThreadbearWorld, first: string, second: string) {
+  await this.until(`file panels "${first}" and "${second}"`, (d) => {
+    const panels = filePanels(d).filter((p) => p.kind === 'file');
+    return panels.some((p) => p.path.replaceAll('\\', '/').endsWith(first)) && panels.some((p) => p.path.replaceAll('\\', '/').endsWith(second));
+  });
+});
+
+Then('the folder {string} is open as a normal panel beside Highlights', async function (this: ThreadbearWorld, relative: string) {
+  await this.until(`the folder panel "${relative}" beside Highlights`, (d) => {
+    const entry = filePanels(d).find((p) => p.kind === 'folder' && p.path.replaceAll('\\', '/').endsWith(relative));
+    return Boolean(entry?.showing && entry.perThread && (d.dock ?? '').includes('highlights'));
+  });
+});
+
+Then('no file or folder panel is open', async function (this: ThreadbearWorld) {
+  await this.until('no file or folder panels in the dock', (d) => filePanels(d).length === 0);
+});
+
+When('I move the file panel {string} to the bottom of the window', async function (this: ThreadbearWorld, relative: string) {
+  const panel = await this.until(`file panel "${relative}"`, (d) => filePanels(d).find((p) => p.kind === 'file' && p.path.replaceAll('\\', '/').endsWith(relative)));
+  await this.app.do({ cmd: 'dock-move', panel: panel.id, edge: 'bottom' });
+});
+
+Then('the file panel {string} stays open across threads', async function (this: ThreadbearWorld, relative: string) {
+  await this.until(`the moved file panel "${relative}" still showing`, (d) => {
+    const entry = filePanels(d).find((p) => p.kind === 'file' && p.path.replaceAll('\\', '/').endsWith(relative));
+    return Boolean(entry?.showing && !entry.perThread);
+  });
 });
 
 // The GPUI app's list of the system's views it has up, in any window.

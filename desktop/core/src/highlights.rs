@@ -765,6 +765,40 @@ pub fn is_app_project(path: &str) -> bool {
     extension(path) == "tandem"
 }
 
+/// Dock panel id prefix for an opened file preview (`threadbear.file:<path>`).
+pub const FILE_PANEL_PREFIX: &str = "threadbear.file:";
+
+/// Dock panel id prefix for an opened folder preview (`threadbear.folder:<path>`).
+pub const FOLDER_PANEL_PREFIX: &str = "threadbear.folder:";
+
+pub fn file_panel(path: &str) -> String {
+    format!("{FILE_PANEL_PREFIX}{path}")
+}
+
+pub fn file_panel_path(panel: &str) -> Option<&str> {
+    panel
+        .strip_prefix(FILE_PANEL_PREFIX)
+        .filter(|p| !p.is_empty())
+}
+
+pub fn folder_panel(path: &str) -> String {
+    format!("{FOLDER_PANEL_PREFIX}{path}")
+}
+
+pub fn folder_panel_path(panel: &str) -> Option<&str> {
+    panel
+        .strip_prefix(FOLDER_PANEL_PREFIX)
+        .filter(|p| !p.is_empty())
+}
+
+pub fn is_preview_panel(panel: &str) -> bool {
+    file_panel_path(panel).is_some() || folder_panel_path(panel).is_some()
+}
+
+pub fn preview_panel_path(panel: &str) -> Option<&str> {
+    file_panel_path(panel).or_else(|| folder_panel_path(panel))
+}
+
 // ---------------------------------------------------------------- words and icons
 
 /// An SF Symbol for a file, by its extension (`FileIcon`).
@@ -2476,6 +2510,26 @@ mod tests {
         // Tandem's hidden folder beside a project isn't one.
         assert!(!is_app_project("/a/.tandem"));
         assert!(!is_app_project("/a/notes.md"));
+    }
+
+    #[test]
+    fn preview_panel_ids_round_trip() {
+        let f = file_panel("/tmp/docs/copy-review.md");
+        assert_eq!(f, "threadbear.file:/tmp/docs/copy-review.md");
+        assert_eq!(file_panel_path(&f), Some("/tmp/docs/copy-review.md"));
+        assert_eq!(folder_panel_path(&f), None);
+        assert!(is_preview_panel(&f));
+        assert_eq!(preview_panel_path(&f), Some("/tmp/docs/copy-review.md"));
+
+        let d = folder_panel("/tmp/docs");
+        assert_eq!(d, "threadbear.folder:/tmp/docs");
+        assert_eq!(folder_panel_path(&d), Some("/tmp/docs"));
+        assert_eq!(file_panel_path(&d), None);
+        assert!(is_preview_panel(&d));
+
+        assert_eq!(file_panel_path("threadbear.file:"), None);
+        assert_eq!(folder_panel_path("threadbear.folder:"), None);
+        assert!(!is_preview_panel("threadbear.highlights"));
     }
 
     #[test]

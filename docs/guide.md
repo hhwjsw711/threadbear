@@ -452,9 +452,16 @@ permission, its window comes to the middle of your screen and the panel says so,
 with Show it to bring it to the front. Existing-profile pages use captured frames,
 so movement is less smooth than the separate Chrome's stream.
 
-A link to a folder opens it in the side pane, where it works like a Finder
-window. Double-click a folder to go in, or a file to see it there, and the
-back arrow takes you back to where you were. Press the space bar for Quick
+A file or folder link clicked in a reply or Highlights opens as a normal panel
+tabbed beside Highlights (with its controls, Reveal and Open buttons in the
+panel bar), rather than replacing Highlights. Un-moved file and folder panels
+follow their thread: they close when you switch threads and come back when you
+return or relaunch, while dragging one into another split or a window of its
+own keeps it open across threads.
+
+A link to a folder opens a folder panel that works like a Finder
+window. Double-click a folder to go in, or a file to open it in its own tab,
+and the back arrow takes you back to where you were. Press the space bar for Quick
 Look, or use the path along the bottom to go up. ⌘↑ goes up too, and ⌘⇧.
 shows hidden files. The button in the bar, or Show as in the right-click menu, swaps the list for
 icons, with thumbnails of pictures and videos, and the list sorts by whichever column

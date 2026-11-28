@@ -896,16 +896,7 @@ impl Threadbear {
             if let Some((path, title)) =
                 item.and_then(|i| i.path.clone().map(|p| (p, i.title.clone())))
             {
-                let (shown, side) = (thread.clone(), self.side.clone());
-                // Once this update is over: the pane reads the app to know its
-                // thread, which GPUI refuses while the app is the one being
-                // updated. Opening a thread whose agent had shown a pin
-                // crashed the app (Mike, 12 Nov).
-                cx.defer(move |cx| {
-                    side.update(cx, |side, cx| {
-                        side.preview_path(&path, Some(title), &shown, cx)
-                    })
-                });
+                self.open_preview_panel(&path, Some(title), None, false, None, &thread, cx);
             }
             self.tell_panel_shown(&request, &thread);
             return;
@@ -2200,6 +2191,8 @@ impl Threadbear {
         dump["pinnedPanels"] = self.pinned_panels_dump(cx);
         // GitHub PR panels open in the dock (pr_view.rs).
         dump["prPanels"] = self.pr_panels_dump(cx);
+        // File and folder panels open in the dock (files.rs, folders.rs).
+        dump["filePanels"] = self.file_panels_dump(cx);
         // The # thread picker over the box, while it's open (thread_palette.rs).
         dump["threadPicker"] = self
             .composer(cx)

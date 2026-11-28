@@ -19,7 +19,14 @@ const KEEP: usize = 300;
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct Place {
     pub section: Option<String>,
+    /// Legacy single preview (still read on upgrade from older versions).
     pub open: Option<Open>,
+    /// Open per-thread file/folder panels, in tab order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panels: Vec<Open>,
+    /// Which of `panels` was selected (by panel id), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
     /// When it last changed, in seconds since 1970, to know which to keep.
     pub at: u64,
 }
@@ -90,6 +97,7 @@ mod tests {
                 back: vec![],
             }),
             at,
+            ..Default::default()
         }
     }
 
@@ -115,6 +123,7 @@ mod tests {
                     section: Some("threadbear.files".into()),
                     open: None,
                     at: 6,
+                    ..Default::default()
                 },
             ),
         ]);

@@ -113,7 +113,7 @@ impl PanePreview {
 /// What's kept of a preview across launches, with the folders and files Back
 /// goes through. A web page has gone to the browser by now (files.rs
 /// `begin_preview`), so it counts as nothing open.
-fn remembered_open(p: &PanePreview) -> Option<crate::pane_store::Open> {
+pub(crate) fn remembered_open(p: &PanePreview) -> Option<crate::pane_store::Open> {
     let (path, folder) = match &p.target {
         Target::File(path) => (path.clone(), false),
         Target::Folder(path) => (path.clone(), true),
@@ -130,7 +130,7 @@ fn remembered_open(p: &PanePreview) -> Option<crate::pane_store::Open> {
 }
 
 /// A remembered preview opened again over `from`, Back's steps included.
-fn restored_preview(open: &crate::pane_store::Open, from: &str) -> PanePreview {
+pub(crate) fn restored_preview(open: &crate::pane_store::Open, from: &str) -> PanePreview {
     let target = if open.folder {
         Target::Folder(open.path.clone())
     } else {
@@ -418,13 +418,18 @@ pub(crate) struct SidePane {
     pub(crate) chosen: HashMap<String, String>,
     pub(crate) previews: HashMap<String, PanePreview>,
     /// Each open gets a new number, even after closing the previous file.
-    preview_opened: u64,
-    /// Each thread's section and open file as last left, saved across
-    /// launches (pane_store.rs): a file comes back the first time its
+    pub(crate) preview_opened: u64,
+    /// Each thread's section and open file/folder panels as last left, saved
+    /// across launches (pane_store.rs): they come back the first time the
     /// thread shows after a restart.
-    places: HashMap<String, crate::pane_store::Place>,
-    /// Threads whose remembered file has had its one chance to come back.
-    restored: HashSet<String>,
+    pub(crate) places: HashMap<String, crate::pane_store::Place>,
+    /// Threads whose remembered file/folder panels have had their one chance to
+    /// come back.
+    pub(crate) restored: HashSet<String>,
+    /// Open file panels by panel id (`threadbear.file:<path>`, files.rs).
+    pub(crate) file_panels: HashMap<String, crate::files::FilePanelMeta>,
+    /// Open folder panels by panel id (`threadbear.folder:<path>`, folders.rs).
+    pub(crate) folder_panels: HashMap<String, crate::folders::FolderPanelMeta>,
     pub(crate) flags: HashMap<String, RowFlags>,
     /// Asks being ticked, by "<thread>/<seq>/<index>".
     ticking: HashSet<String>,
@@ -480,6 +485,8 @@ impl SidePane {
             preview_opened: 0,
             places: crate::pane_store::load(),
             restored: HashSet::new(),
+            file_panels: HashMap::new(),
+            folder_panels: HashMap::new(),
             flags: HashMap::new(),
             ticking: HashSet::new(),
             projects: HashMap::new(),
@@ -591,12 +598,6 @@ impl SidePane {
         // app draws it again. Fetching again is only for a new thread or new
         // events, below.
         cx.notify();
-        // The thread on show's file from before a restart: the selected
-        // thread's, or the one a project page borrows its panels from, which
-        // is never selected.
-        if let Some(shown) = self.thread(cx) {
-            self.restore_preview(&shown.id, cx);
-        }
         let t = app.read(cx);
         let Some(thread) = t.selected.as_ref().and_then(|id| t.threads.get(id)) else {
             return;
@@ -611,15 +612,6 @@ impl SidePane {
         }
         let new_thread = self.seen.as_ref().map(|k| &k.0) != Some(&key.0);
         let id = key.0.clone();
-        // Leaving a thread whose file was being worked on: what's typed is saved.
-        if let Some(left) = self
-            .seen
-            .as_ref()
-            .map(|k| k.0.clone())
-            .filter(|_| new_thread)
-        {
-            self.leave_edit(&left, cx);
-        }
         self.seen = Some(key);
         if new_thread {
             let fetched = self.highlights.contains_key(&id);
@@ -830,68 +822,64 @@ impl SidePane {
         ids
     }
 
-    /// Shows a section (`choosePanel`), closing a preview over another one.
+    /// Shows a section (`choosePanel`), closing any folder browse preview over
+    /// another one.
     pub(crate) fn choose_section(&mut self, thread_id: &str, id: &str, cx: &mut Context<Self>) {
         if self.previews.get(thread_id).is_some_and(|p| p.from != id) {
-            self.leave_edit(thread_id, cx);
             self.previews.remove(thread_id);
         }
         self.chosen.insert(thread_id.to_owned(), id.to_owned());
-        self.remember(thread_id);
+        self.remember_section(thread_id);
         self.menu = None;
         self.section_shown(id, thread_id, cx);
         cx.notify();
     }
 
-    /// Saves where `thread_id`'s pane is, if that changed (pane_store.rs).
-    fn remember(&mut self, thread_id: &str) {
-        let open = self.previews.get(thread_id).and_then(remembered_open);
+    /// Saves `thread_id`'s chosen section while keeping its saved file/folder
+    /// panels intact (pane_store.rs).
+    fn remember_section(&mut self, thread_id: &str) {
         let section = self.chosen.get(thread_id).cloned();
         if self
             .places
             .get(thread_id)
-            .is_some_and(|p| p.section == section && p.open == open)
+            .is_some_and(|p| p.section == section)
         {
+            return;
+        }
+        let entry = self.places.entry(thread_id.to_owned()).or_default();
+        entry.section = section;
+        entry.at = crate::pane_store::now();
+        crate::pane_store::save(&self.places);
+    }
+
+    /// Saves `thread_id`'s per-thread file/folder panels (pane_store.rs).
+    pub(crate) fn remember_panels(
+        &mut self,
+        thread_id: &str,
+        panels: Vec<crate::pane_store::Open>,
+        selected: Option<String>,
+    ) {
+        let section = self.chosen.get(thread_id).cloned();
+        let legacy_open = panels.first().cloned();
+        if self.places.get(thread_id).is_some_and(|p| {
+            p.section == section
+                && p.open == legacy_open
+                && p.panels == panels
+                && p.selected == selected
+        }) {
             return;
         }
         self.places.insert(
             thread_id.to_owned(),
             crate::pane_store::Place {
                 section,
-                open,
+                open: legacy_open,
+                panels,
+                selected,
                 at: crate::pane_store::now(),
             },
         );
         crate::pane_store::save(&self.places);
-    }
-
-    /// The file the thread had open when the app last quit, opened again the
-    /// first time the thread shows in the pane (`app_changed`).
-    /// Once in a launch: anything done in the pane since is what's
-    /// remembered from then on.
-    fn restore_preview(&mut self, thread_id: &str, cx: &mut Context<Self>) {
-        if self.restored.contains(thread_id) {
-            return;
-        }
-        // Not on show yet: its first section drawn tries again.
-        let Some(thread) = self.thread(cx).filter(|t| t.id == thread_id) else {
-            return;
-        };
-        self.restored.insert(thread_id.to_owned());
-        if self.previews.contains_key(thread_id) {
-            return;
-        }
-        let Some(open) = self.places.get(thread_id).and_then(|p| p.open.clone()) else {
-            return;
-        };
-        // Opened over a panel the thread no longer has: there's nowhere for it
-        // to show (another section may not be open in the dock either), so
-        // it's left closed. A preview draws over its own section whichever
-        // one was picked last, side by side or not, so that's the only check.
-        if !Self::section_ids(&thread).contains(&open.from) {
-            return;
-        }
-        self.show_preview(restored_preview(&open, &open.from), thread_id, cx);
     }
 
     pub(crate) fn section_shown(&mut self, id: &str, thread_id: &str, cx: &mut Context<Self>) {
@@ -907,16 +895,26 @@ impl SidePane {
         if let Some(section) = self.chosen.get(thread_id).cloned() {
             self.section_shown(&section, thread_id, cx);
         }
-        // Its previewed file changed while another thread showed (files.rs
-        // reread_file put the read off): read it now.
-        if let Some(open) = self
+        // Any open file panel belonging to this thread whose file changed
+        // while away is read again now.
+        let stale: Vec<String> = self
             .files
             .open
-            .get_mut(thread_id)
-            .filter(|f| f.changed_away)
-        {
-            open.changed_away = false;
-            self.reread_file(thread_id, cx);
+            .iter()
+            .filter(|(panel, f)| {
+                f.changed_away
+                    && self
+                        .file_panels
+                        .get(*panel)
+                        .is_some_and(|m| m.thread_id == thread_id)
+            })
+            .map(|(panel, _)| panel.clone())
+            .collect();
+        for panel in stale {
+            if let Some(open) = self.files.open.get_mut(&panel) {
+                open.changed_away = false;
+            }
+            self.reread_file(&panel, cx);
         }
     }
 
@@ -1013,7 +1011,8 @@ impl SidePane {
         self.preview_path_at(path, title, None, thread, cx);
     }
 
-    /// `preview_path`, with lines of its text to tint and scroll to.
+    /// `preview_path`, with lines of its text to tint and scroll to: opens as
+    /// a normal file or folder panel beside Highlights.
     pub(crate) fn preview_path_at(
         &mut self,
         path: &str,
@@ -1022,19 +1021,20 @@ impl SidePane {
         thread: &ThreadSummary,
         cx: &mut Context<Self>,
     ) {
-        let section = self.section_for(thread);
-        // A folder browsed in place of its picture; the runner says which it is.
-        let target = if self.files.is_known_folder(path) {
-            Target::Folder(path.to_owned())
-        } else {
-            Target::File(path.to_owned())
+        let Some(app) = self.app.upgrade() else {
+            return;
         };
-        let title = title.unwrap_or_else(|| core::last_component(path).to_owned());
-        let mut preview = PanePreview::new(target, title, section);
-        preview.lines = lines;
-        self.show_preview(preview, &thread.id.clone(), cx);
+        let (path, thread) = (path.to_owned(), thread.clone());
+        cx.defer(move |cx| {
+            app.update(cx, |app, cx| {
+                app.open_preview_panel(&path, title, lines, false, None, &thread, cx)
+            });
+        });
     }
 
+    /// Shows a subfolder navigation preview inside `Files` (`threadbear.files`)
+    /// or a web page note. File and standalone folder previews open as their
+    /// own BearDock panels (`Threadbear::open_preview_panel`).
     pub(crate) fn show_preview(
         &mut self,
         mut preview: PanePreview,
@@ -1043,28 +1043,12 @@ impl SidePane {
     ) {
         // It takes an explanation's place, as a preview of its own would.
         self.stop_explaining(thread_id);
-        // A file being worked on is saved before anything takes its place.
-        self.leave_edit(thread_id, cx);
         self.preview_opened += 1;
         preview.opened = self.preview_opened;
-        // A Markdown file opens as its bar's menu last left it, and code and
-        // plain text ready to type in, on this runner's machine
-        // (`MarkdownView.opensRaw`).
-        let here = self
-            .thread(cx)
-            .is_some_and(|t| t.id == thread_id && !t.is_remote());
-        if let Some(path) = preview.file_path() {
-            preview.editing = here
-                && threadbear_core::text_file::MarkdownView::opens_raw(
-                    path,
-                    self.files.prefs.markdown_view,
-                );
-        }
         self.chosen
             .entry(thread_id.to_owned())
             .or_insert_with(|| preview.from.clone());
         self.previews.insert(thread_id.to_owned(), preview);
-        self.remember(thread_id);
         self.menu = None;
         if let Some(thread) = self.thread(cx) {
             self.begin_preview(&thread, cx);
@@ -1072,13 +1056,11 @@ impl SidePane {
         cx.notify();
     }
 
-    /// Back: through the folders and files Mike came through in the browser,
-    /// then out to the section (`previewBack`).
+    /// Back inside `Files`' subfolder browser (`previewBack`).
     pub(crate) fn preview_back(&mut self, thread_id: &str, cx: &mut Context<Self>) {
         let Some(current) = self.previews.get(thread_id).cloned() else {
             return;
         };
-        self.leave_edit(thread_id, cx);
         match current.back.split_last() {
             None => {
                 self.previews.remove(thread_id);
@@ -1094,14 +1076,11 @@ impl SidePane {
                 }
             }
         }
-        self.remember(thread_id);
         cx.notify();
     }
 
     pub(crate) fn close_preview(&mut self, thread_id: &str, cx: &mut Context<Self>) {
-        self.leave_edit(thread_id, cx);
         self.previews.remove(thread_id);
-        self.remember(thread_id);
         cx.notify();
     }
 
@@ -1320,6 +1299,17 @@ impl SidePane {
         self.open_menu_for(None, items, position, window, cx);
     }
 
+    pub(crate) fn open_panel_menu(
+        &mut self,
+        owner: &str,
+        items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu_for(Some(owner.to_owned()), items, position, window, cx);
+    }
+
     pub(crate) fn open_pr_menu(
         &mut self,
         pr_url: &str,
@@ -1328,7 +1318,7 @@ impl SidePane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_menu_for(Some(pr_url.to_owned()), items, position, window, cx);
+        self.open_panel_menu(pr_url, items, position, window, cx);
     }
 
     fn open_menu_for(
@@ -3294,7 +3284,7 @@ impl SidePane {
     ) {
         if self.chosen.get(thread_id).map(String::as_str) != Some(section) {
             self.chosen.insert(thread_id.to_owned(), section.to_owned());
-            self.remember(thread_id);
+            self.remember_section(thread_id);
             if let Some(width) = self.widths.get(section) {
                 self.width = *width;
             }
@@ -3463,6 +3453,16 @@ impl SidePane {
 // ---------------------------------------------------------------- the dump (Swift's `panels.pane`)
 
 impl SidePane {
+    /// The showing file or folder panel in the dock, if any.
+    pub(crate) fn active_preview_panel(&self, cx: &App) -> Option<String> {
+        let app = self.app.upgrade()?;
+        let dock = app.read(cx).dock.read(cx);
+        dock.layout()
+            .panels()
+            .into_iter()
+            .find(|p| core::is_preview_panel(p) && dock.is_showing(p))
+    }
+
     /// The `panels` part of the dump, in AppDump's shape.
     #[cfg(feature = "automation")]
     pub(crate) fn dump(&self, cx: &App) -> Value {
@@ -3497,11 +3497,19 @@ impl SidePane {
                 .join(", ");
             items.push(json!({ "id": PATCHES, "title": "Patches", "kind": "patches", "note": summary, "active": section == PATCHES }));
         }
-        let preview = self.explain_line(&thread.id).or_else(|| {
-            self.previews
-                .get(&thread.id)
-                .map(|pv| self.preview_line(pv))
-        });
+        let active_panel = self.active_preview_panel(cx);
+        let preview = self
+            .explain_line(&thread.id)
+            .or_else(|| {
+                active_panel
+                    .as_deref()
+                    .and_then(|p| self.preview_panel_line(p))
+            })
+            .or_else(|| {
+                self.previews
+                    .get(&thread.id)
+                    .map(|pv| self.preview_line(pv))
+            });
         // Each section on show and what it drew: two side by side each draw
         // their own (GPUI's own; the Swift dump has the one pane).
         let drawn: Vec<Value> = Self::section_ids(&thread)
@@ -3511,7 +3519,7 @@ impl SidePane {
                 |id| json!({ "id": id, "draws": self.drawn.get(&id).cloned().unwrap_or_default() }),
             )
             .collect();
-        let mut out = json!({ "shown": true, "width": PANE_WIDTH as i64, "items": items, "preview": preview, "highlights": self.highlights_line(&thread.id), "fetchingHighlights": self.fetching.contains(&thread.id), "pane": self.pane_dump(&thread, &section, cx), "drawn": drawn });
+        let mut out = json!({ "shown": true, "width": PANE_WIDTH as i64, "items": items, "preview": preview, "highlights": self.highlights_line(&thread.id), "fetchingHighlights": self.fetching.contains(&thread.id), "pane": self.pane_dump(&thread, &section, active_panel.as_deref(), cx), "drawn": drawn });
         // The Browser pane's pages while it's on show, wherever it is, as
         // sections now draw side by side whichever one was last chosen.
         if self.dock_showing(BROWSER, cx) {
@@ -3568,7 +3576,13 @@ impl SidePane {
     }
 
     #[cfg(feature = "automation")]
-    fn pane_dump(&self, thread: &ThreadSummary, section: &str, cx: &App) -> Value {
+    fn pane_dump(
+        &self,
+        thread: &ThreadSummary,
+        section: &str,
+        active_panel: Option<&str>,
+        cx: &App,
+    ) -> Value {
         let mut pane = serde_json::Map::new();
         pane.insert("section".into(), json!(section));
         if let Some(folder) = self.folder_summary(thread, cx) {
@@ -3577,6 +3591,10 @@ impl SidePane {
         // An explanation, as the Swift dump has it.
         if self.explaining(&thread.id) {
             pane.insert("previewKind".into(), json!("note"));
+            return Value::Object(pane);
+        }
+        if let Some(panel) = active_panel {
+            self.fill_preview_panel_dump(&mut pane, panel, cx);
             return Value::Object(pane);
         }
         if let Some(preview) = self
@@ -3924,7 +3942,7 @@ pub(crate) fn automation(
             Ok(json!(answer))
         }
         "highlight" => highlight_command(&side, &thread, cmd, window, cx),
-        "preview" => crate::files::preview_command(&side, &thread, cmd, window, cx),
+        "preview" => crate::files::preview_command(app, &side, &thread, cmd, window, cx),
         "folder" => crate::folders::folder_command(&side, &thread, cmd, window, cx),
         "trust" => crate::patches::trust_command(&side, &thread, cmd, cx),
         "action" => crate::patches::action_command(&side, &thread, cmd, cx),
@@ -4020,10 +4038,17 @@ fn highlight_command(
             pane.section_pressed(&thread.id, HIGHLIGHTS, cx);
             pane.open_highlight(&item, thread, cx);
         });
-        let shown = side.read(cx).previews.get(&thread.id).map_or_else(
-            || "no preview".to_owned(),
-            |p| format!("showing {}", p.title),
-        );
+        let shown = side
+            .read(cx)
+            .active_preview_panel(cx)
+            .map(|p| format!("showing {}", p))
+            .or_else(|| {
+                side.read(cx)
+                    .previews
+                    .get(&thread.id)
+                    .map(|p| format!("showing {}", p.title))
+            })
+            .unwrap_or_else(|| "no preview".to_owned());
         return Ok(json!(format!("ok {shown}")));
     }
     if let Some(title) = cmd["menu"].as_str() {

@@ -31,25 +31,32 @@ pub(crate) struct ThreadPanels {
     panes: HashMap<String, PanelPane>,
     /// Tabs opened beside the main panel for what it shows now (`mainTabs`).
     main_tabs: HashSet<String>,
-    /// Per-thread PR panels still in the dock group they opened into:
-    /// panel id -> home group id. Dragging one out drops it here so it stays
-    /// open across threads.
-    pub(crate) pr_tabs: HashMap<String, String>,
-    /// Per-thread PR panels hidden by View > Hide Panels on the current thread.
-    pub(crate) hidden_pr_tabs: HashSet<String>,
-    /// Per-thread PR panels closed when switching away, restored on return.
-    pub(crate) saved_pr_tabs: HashMap<MainContext, SavedPrTabs>,
+    /// Per-thread dynamic panels (PRs, files, folders) still in the dock group
+    /// they opened into: panel id -> home group id. Dragging one out drops it
+    /// here so it stays open across threads.
+    pub(crate) thread_tabs: HashMap<String, String>,
+    /// Per-thread dynamic panels hidden by View > Hide Panels on the current thread.
+    pub(crate) hidden_thread_tabs: HashSet<String>,
+    /// Per-thread dynamic panels closed when switching away, restored on return.
+    pub(crate) saved_thread_tabs: HashMap<MainContext, SavedThreadTabs>,
+    /// True while `main_context_maybe_changed` is closing tabs for a thread
+    /// switch so `dock_layout_changed` keeps file/folder state cached for return.
+    pub(crate) switching_context: bool,
     /// PR panel views, by panel id, let go when the panel closes (pr_view.rs).
     pub(crate) pr_views: HashMap<String, Entity<crate::pr_view::PrPanelView>>,
+    /// File panel views, by panel id, let go when the panel closes (files.rs).
+    pub(crate) file_views: HashMap<String, Entity<crate::files::FilePanelView>>,
+    /// Folder panel views, by panel id, let go when the panel closes (folders.rs).
+    pub(crate) folder_views: HashMap<String, Entity<crate::folders::FolderPanelView>>,
     /// What the main panel showed when last looked at.
     pub(crate) context: Option<MainContext>,
     /// Pinned list and picture panels' views, by panel id (pinned_panels.rs).
     pub(crate) pinned: HashMap<String, Entity<crate::pinned_panels::PinnedPanelView>>,
 }
 
-/// Un-moved PR panels remembered when leaving a thread, in tab order.
+/// Un-moved per-thread panels remembered when leaving a thread, in tab order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SavedPrTabs {
+pub(crate) struct SavedThreadTabs {
     pub(crate) panels: Vec<String>,
     pub(crate) selected: Option<String>,
 }
@@ -572,19 +579,180 @@ impl Threadbear {
         }
     }
 
+    /// Opens a per-thread dynamic panel (PR, file or folder) as a sibling tab
+    /// beside `preferred_section` (default Highlights), then any open side
+    /// panel, else down the right edge. Tracks it in `thread_tabs` so it
+    /// follows the current thread until closed or dragged out.
+    pub(crate) fn dock_thread_tab(
+        &mut self,
+        panel: &str,
+        preferred_section: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dock.read(cx).layout().contains(panel) {
+            self.dock.update(cx, |m, cx| {
+                m.show(panel, &[], DockDrop::window(DockEdge::Right), cx)
+            });
+            return;
+        }
+        if self.thread_panels.context.is_none() {
+            self.thread_panels.context = Some(self.current_main_context());
+        }
+        // Prefer the requested section (e.g. Files when opened from Files),
+        // then Highlights, then another open side panel or per-thread tab, so
+        // a panel dragged elsewhere never hijacks new per-thread tabs. Know
+        // its home group before opening so `dock_layout_changed` omits this
+        // transient tab from `desktop-settings.json`.
+        let target_group = {
+            let layout = self.dock.read(cx).layout();
+            preferred_section
+                .and_then(|s| layout.group_containing(s))
+                .or_else(|| layout.group_containing(crate::shell::HIGHLIGHTS))
+                .map(|g| g.id)
+                .or_else(|| {
+                    self.open_panes(cx)
+                        .into_iter()
+                        .find_map(|p| layout.group_containing(&p).map(|g| g.id))
+                })
+        };
+        if let Some(group_id) = target_group {
+            self.thread_panels
+                .thread_tabs
+                .insert(panel.to_owned(), group_id.clone());
+            self.dock
+                .update(cx, |m, cx| m.open(panel, DockDrop::tab(group_id), cx));
+        } else {
+            self.dock.update(cx, |m, cx| {
+                m.open(panel, DockDrop::window(DockEdge::Right), cx)
+            });
+            if let Some(group) = self.dock.read(cx).layout().group_containing(panel) {
+                self.thread_panels
+                    .thread_tabs
+                    .insert(panel.to_owned(), group.id);
+                let layout = self.dock.read(cx).layout().clone();
+                self.settings.saved.dock_layout =
+                    serde_json::to_value(self.layout_for_save(&layout)).ok();
+                self.save_settings_soon(cx);
+            }
+        }
+    }
+
+    /// Reopens a thread's un-moved PR, file and folder panels when returning.
+    pub(crate) fn restore_thread_tabs(&mut self, saved: SavedThreadTabs, cx: &mut Context<Self>) {
+        let open_panes = self.open_panes(cx);
+        if saved.selected.is_none() && open_panes.is_empty() {
+            return;
+        }
+        let prev_selected = open_panes.into_iter().find_map(|p| {
+            self.dock
+                .read(cx)
+                .layout()
+                .group_containing(&p)
+                .map(|g| g.selected)
+        });
+        for panel in &saved.panels {
+            if self.dock.read(cx).layout().contains(panel) {
+                continue;
+            }
+            if let Some(url) = threadbear_core::pull_requests::panel_url(panel) {
+                self.open_pr_panel(url, None, cx);
+            } else if threadbear_core::highlights::file_panel_path(panel).is_some() {
+                self.reopen_file_panel(panel, cx);
+            } else if threadbear_core::highlights::folder_panel_path(panel).is_some() {
+                self.reopen_folder_panel(panel, cx);
+            }
+        }
+        let select = saved.selected.or(prev_selected);
+        if let Some(sel) = select {
+            if self.dock.read(cx).layout().contains(&sel) {
+                self.dock.update(cx, |m, cx| m.select(&sel, cx));
+            }
+        }
+    }
+
+    /// After a dock layout change: a per-thread panel dragged out of its home
+    /// group stays open across threads, closed views are dropped, and
+    /// user-closed file/folder panels flush edits and update `pane_store`.
+    pub(crate) fn thread_tabs_layout_changed(
+        &mut self,
+        layout: &DockLayout,
+        cx: &mut Context<Self>,
+    ) {
+        let switching = self.thread_panels.switching_context;
+        let closed_files: Vec<String> = if switching {
+            vec![]
+        } else {
+            self.thread_panels
+                .file_views
+                .keys()
+                .filter(|p| !layout.contains(p))
+                .cloned()
+                .collect()
+        };
+        let closed_folders: Vec<String> = if switching {
+            vec![]
+        } else {
+            self.thread_panels
+                .folder_views
+                .keys()
+                .filter(|p| !layout.contains(p))
+                .cloned()
+                .collect()
+        };
+        let mut preview_changed = !closed_files.is_empty() || !closed_folders.is_empty();
+        self.thread_panels.thread_tabs.retain(|panel, home| {
+            let still_home = layout
+                .group_containing(panel)
+                .is_some_and(|g| g.id == *home);
+            if !still_home && threadbear_core::highlights::is_preview_panel(panel) {
+                preview_changed = true;
+            }
+            still_home
+        });
+        self.thread_panels
+            .pr_views
+            .retain(|panel, _| layout.contains(panel));
+        self.thread_panels
+            .file_views
+            .retain(|panel, _| layout.contains(panel));
+        self.thread_panels
+            .folder_views
+            .retain(|panel, _| layout.contains(panel));
+        if !closed_files.is_empty() || !closed_folders.is_empty() {
+            self.side.update(cx, |s, cx| {
+                for panel in &closed_files {
+                    s.drop_file_panel(panel, cx);
+                }
+                for panel in &closed_folders {
+                    s.drop_folder_panel(panel);
+                }
+            });
+        }
+        if preview_changed && !switching {
+            self.save_thread_pane_store(layout, cx);
+        }
+    }
+
     /// The main panel moved to another thread, a new thread, a page or a
     /// project (`mainContextChanged`): the tabs opened for what it showed
-    /// before go, and its own tab comes to the front. Per-thread PR panels
-    /// still in their home group are remembered for this context, closed, and
-    /// restored if the new context had any. Run whenever the app changes, as
-    /// that's every way the main panel can move on.
+    /// before go, and its own tab comes to the front. Per-thread PR, file and
+    /// folder panels still in their home group are remembered for this context,
+    /// closed, and restored if the new context had any (or from `pane_store`
+    /// on first visit after launch). Run whenever the app changes, as that's
+    /// every way the main panel can move on.
     pub(crate) fn main_context_maybe_changed(&mut self, cx: &mut Context<Self>) {
         let now = self.current_main_context();
         let before = self.thread_panels.context.replace(now.clone());
         let Some(prev) = before else {
+            if self.pane_thread().is_some() {
+                self.restore_pane_store_panels(cx);
+            }
             return;
         };
         if prev == now {
+            if self.pane_thread().is_some() {
+                self.restore_pane_store_panels(cx);
+            }
             return;
         }
         let layout = self.dock.read(cx).layout().clone();
@@ -595,45 +763,62 @@ impl Threadbear {
             .drain()
             .filter(|p| main.as_ref().is_some_and(|g| g.panels.contains(p)))
             .collect();
-        let closing_prs: Vec<String> = layout
+        let closing_tabs: Vec<String> = layout
             .panels()
             .into_iter()
-            .filter(|p| self.thread_panels.pr_tabs.contains_key(p))
+            .filter(|p| self.thread_panels.thread_tabs.contains_key(p))
             .collect();
-        let selected_pr = closing_prs
+        let selected_tab = closing_tabs
             .iter()
             .find(|p| self.dock.read(cx).is_showing(p))
             .cloned();
-        if closing_prs.is_empty() {
-            self.thread_panels.saved_pr_tabs.remove(&prev);
+        if closing_tabs.is_empty() {
+            self.thread_panels.saved_thread_tabs.remove(&prev);
         } else {
-            self.thread_panels.saved_pr_tabs.insert(
+            self.thread_panels.saved_thread_tabs.insert(
                 prev,
-                SavedPrTabs {
-                    panels: closing_prs.clone(),
-                    selected: selected_pr,
+                SavedThreadTabs {
+                    panels: closing_tabs.clone(),
+                    selected: selected_tab,
                 },
             );
         }
-        self.thread_panels.pr_tabs.clear();
-        let hidden_prs = std::mem::take(&mut self.thread_panels.hidden_pr_tabs);
+        // Flush any unsaved typing in file panels being hidden for this switch.
+        if closing_tabs
+            .iter()
+            .any(|p| threadbear_core::highlights::file_panel_path(p).is_some())
+        {
+            self.side.update(cx, |s, cx| {
+                for p in &closing_tabs {
+                    if threadbear_core::highlights::file_panel_path(p).is_some() {
+                        s.leave_edit(p, cx);
+                    }
+                }
+            });
+        }
+        self.thread_panels.thread_tabs.clear();
+        let hidden_tabs = std::mem::take(&mut self.thread_panels.hidden_thread_tabs);
         self.hidden_panes
-            .retain(|p| !closing_prs.contains(p) && !hidden_prs.contains(p));
-        let restore = self.thread_panels.saved_pr_tabs.remove(&now);
+            .retain(|p| !closing_tabs.contains(p) && !hidden_tabs.contains(p));
+        let restore = self.thread_panels.saved_thread_tabs.remove(&now);
 
         let needs_main_select = main.as_ref().is_some_and(|g| g.selected != MAIN);
-        if !stale.is_empty() || !closing_prs.is_empty() || needs_main_select {
+        if !stale.is_empty() || !closing_tabs.is_empty() || needs_main_select {
+            self.thread_panels.switching_context = true;
             self.dock.update(cx, |m, cx| {
-                for panel in stale.iter().chain(&closing_prs) {
+                for panel in stale.iter().chain(&closing_tabs) {
                     m.close(panel, cx);
                 }
                 if needs_main_select && m.layout().contains(MAIN) {
                     m.select(MAIN, cx);
                 }
             });
+            self.thread_panels.switching_context = false;
         }
         if let Some(saved) = restore {
-            self.restore_pr_panels(saved, cx);
+            self.restore_thread_tabs(saved, cx);
+        } else {
+            self.restore_pane_store_panels(cx);
         }
     }
 

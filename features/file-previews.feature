@@ -131,12 +131,29 @@ Feature: Files opened in the side pane
   # A panel in a window of its own can't place the player yet, so the video
   # stops and goes with the pane, and says it shows in the main window
   # (Codex's review, 12 Nov: it stayed up, unplaced, for good).
+  @file.host @swift-pending
+  Scenario: Files and folders open as normal panels beside Highlights and follow their thread unless moved
+    When I open the thread "Rebuild the three landing pages"
+    And I click the highlight "copy-review.md"
+    Then the file "docs/copy-review.md" is open as a normal panel beside Highlights
+    When I open "src/hero.ts" in the thread's folder in the pane
+    Then both "docs/copy-review.md" and "src/hero.ts" are open as normal panels
+    When I open "docs" in the thread's folder in the pane
+    Then the folder "docs" is open as a normal panel beside Highlights
+    When I open the thread "Draft the release notes for 0.4"
+    Then no file or folder panel is open
+    When I open the thread "Rebuild the three landing pages"
+    Then both "docs/copy-review.md" and "src/hero.ts" are open as normal panels
+    When I move the file panel "src/hero.ts" to the bottom of the window
+    And I open the thread "Draft the release notes for 0.4"
+    Then the file panel "src/hero.ts" stays open across threads
+
   @file.video @swift-pending @windows-pending @linux-pending
   Scenario: A video stops when its pane goes into a window of its own
     When I open the thread "Rebuild the three landing pages"
     And I open "screens/hero-walkthrough.mp4" in the thread's folder in the pane
     Then the pane shows a video 1600 by 1058
-    When I put Highlights in a window of its own
+    When I put the open file panel in a window of its own
     Then no video or PDF view is up
 
   # Quick Look draws a PDF in the Swift app; PDFKit's view does in the GPUI

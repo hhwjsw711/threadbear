@@ -584,9 +584,8 @@ impl ThreadPane {
         open_gate::open_link(url, self.origin(), &self.summary.cwd, cx);
     }
 
-    /// A file in the pane beside the transcript, opening the pane if it's
-    /// closed (`PaneModel.show`), with the `lines` a link named (`a.ts:12-18`)
-    /// tinted and scrolled to.
+    /// A file or folder in a normal panel beside the transcript, with the
+    /// `lines` a link named (`a.ts:12-18`) tinted and scrolled to.
     fn preview_in_pane(
         &mut self,
         path: &str,
@@ -597,12 +596,9 @@ impl ThreadPane {
         let Some(app) = self.composer.read(cx).app.upgrade() else {
             return;
         };
-        let side = app.read(cx).side.clone();
-        let section = side.update(cx, |side, cx| {
-            side.preview_path_at(path, None, lines, &thread, cx);
-            side.section_for(&thread)
+        app.update(cx, |app, cx| {
+            app.open_preview_panel(path, None, lines, false, None, &thread, cx)
         });
-        show_pane(&app, &section, cx);
     }
 }
 
