@@ -60,6 +60,7 @@ pub mod panel_requests;
 pub mod pinned_panels;
 pub mod pools;
 pub mod private_file;
+pub mod project_brief;
 pub mod projects;
 pub mod pull_requests;
 pub mod recipes;

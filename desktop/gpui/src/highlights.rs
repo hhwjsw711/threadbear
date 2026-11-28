@@ -438,6 +438,8 @@ pub(crate) struct SidePane {
     pub(crate) schedules: Vec<Schedule>,
     /// The project whose ⓘ popover is open, and where (`projectWhyShown`).
     pub(crate) project_why: Option<(String, Point<Pixels>)>,
+    /// Per-thread expansion flags for inline project briefs (highlights_project.rs).
+    pub(crate) project_briefs: crate::highlights_project::ProjectBriefUi,
     pub(crate) menu: Option<OpenMenu>,
     pub(crate) scroll: ScrollHandle,
     /// What's being fetched or was fetched for the pane: files.rs, folders.rs, patches.rs.
@@ -493,6 +495,7 @@ impl SidePane {
             boards: HashMap::new(),
             schedules: Vec::new(),
             project_why: None,
+            project_briefs: Default::default(),
             menu: None,
             scroll: ScrollHandle::new(),
             files: Default::default(),
@@ -618,6 +621,7 @@ impl SidePane {
             // Show-all and the edited files don't stick to a thread we leave (HighlightsView's @State per thread).
             self.flags.clear();
             self.project_why = None;
+            self.project_briefs.clear();
             self.refresh_highlights(
                 id.clone(),
                 if fetched {
@@ -1554,7 +1558,7 @@ impl SidePane {
         }
     }
 
-    fn open_link_row_menu(
+    pub(crate) fn open_link_row_menu(
         &mut self,
         url: &str,
         position: Point<Pixels>,
@@ -2135,67 +2139,6 @@ impl SidePane {
         self.collapsed.contains(key)
     }
 
-    fn project_block(
-        &mut self,
-        row: &ProjectRow,
-        thread: &ThreadSummary,
-        p: Palette,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let key = fold::project(&row.project.id);
-        let folded = self.is_folded(&key);
-        let count = row.project.links.len() + row.project.open_task_count();
-        let project_id = row.project.id.clone();
-        let accessory = crate::highlights_project::why_button(row, p, cx).into_any_element();
-        let mut list = v_flex();
-        list = list.child(self.heading(
-            Heading {
-                key,
-                title: row.project.title.clone(),
-                icon: Some(
-                    crate::highlights_project::project_icon(&row.project, cx).into_any_element(),
-                ),
-                count: Some(count),
-                folded: folded && count > 0,
-                foldable: count > 0,
-                accessory: Some(accessory),
-            },
-            p,
-            cx,
-        ));
-        if !(folded && count > 0) {
-            for (i, link) in row.project.links.iter().enumerate() {
-                let address = core::text::address(&link.url);
-                let url = link.url.clone();
-                let menu_url = link.url.clone();
-                let mut pr = PaneRow::new(
-                    SharedString::from(format!("hl-plink-{project_id}-{i}")),
-                    link.title.clone(),
-                )
-                .icon("globe")
-                .tip(format!("Open {address}"))
-                .on_click(move |this, _window, cx| this.follow_link(&url.clone(), cx))
-                .on_menu(move |this, pos, window, cx| {
-                    this.open_link_row_menu(&menu_url.clone(), pos, window, cx)
-                });
-                if address != link.title {
-                    pr = pr.detail(Some(address));
-                }
-                list = list.child(pr.render(p, cx));
-            }
-            if let Some(tasks) = row
-                .project
-                .tasks
-                .as_ref()
-                .and_then(threadbear_core::projects::Tasks::decode)
-            {
-                list = list.child(self.task_board(&project_id, &tasks, thread, p, window, cx));
-            }
-        }
-        list.into_any_element()
-    }
-
     /// `row`, a highlight (`HighlightsView.row`).
     fn highlight_row(
         &mut self,
@@ -2593,9 +2536,10 @@ impl SidePane {
             }
         }
         // The thread's projects, each under its own icon with why it's there
-        // behind an ⓘ, then the places Mike keeps going back to for it.
-        for row in &projects {
-            list = list.child(self.project_block(row, thread, p, window, cx));
+        // behind an ⓘ, showing an inline project brief (state, open questions
+        // and tasks, open threads and compact links).
+        for (index, row) in projects.iter().enumerate() {
+            list = list.child(self.project_block(row, index == 0, thread, p, window, cx));
         }
         if !scheduled.is_empty() {
             let folded = self.is_folded(fold::SCHEDULED);
@@ -3702,18 +3646,8 @@ impl SidePane {
                 &mut out,
             );
         }
-        for row in &projects {
-            let rows = row.project.links.iter().map(|l| {
-                let address = core::text::address(&l.url);
-                json!({ "title": l.title, "detail": if address == l.title { None } else { Some(address) }, "symbol": "globe" })
-            }).collect();
-            add(
-                &fold::project(&row.project.id),
-                &row.project.title,
-                row.project.links.len() + row.project.open_task_count(),
-                rows,
-                &mut out,
-            );
+        for (index, row) in projects.iter().enumerate() {
+            out.push(self.project_brief_dump(row, index == 0, thread, &clock, cx));
         }
         if !scheduled.is_empty() {
             let rows = scheduled.iter().map(|r| json!({ "title": r.title, "trailing": r.when, "detail": r.detail, "symbol": if r.paused { "pause.circle" } else { "clock" } })).collect();
@@ -3915,8 +3849,12 @@ pub(crate) fn automation(
                 let remove = cmd["cmd"] == "expand";
                 if remove {
                     pane.collapsed.remove(&key);
+                    if key.starts_with("project:") {
+                        pane.project_briefs.expanded_secondary.insert(key.clone());
+                    }
                 } else {
                     pane.collapsed.insert(key.clone());
+                    pane.project_briefs.expanded_secondary.remove(&key);
                 }
                 crate::highlights_store::save_collapsed(&pane.collapsed);
                 cx.notify();

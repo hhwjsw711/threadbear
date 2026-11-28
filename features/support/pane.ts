@@ -3,7 +3,22 @@
 import type { Dump } from './driver.ts';
 
 export type PaneRow = { title: string; lead?: string | null; trailing?: string | null; note?: string | null; detail?: string | null; symbol?: string | null; ticked?: boolean | null; tone?: string | null; /** A list row's drawn symbol: its own icon, else its tone's shape. */ mark?: string | null; /** Its tone's shape beside the title, for a row with its own icon. */ toneMark?: string | null; /** A list row's switch (`toggle`); `pending` while a press is on its way. */ switch?: { id: string; on: boolean; symbol: string; pending: boolean } | null };
-export type PaneSection = { key: string; title: string; count: number; folded: boolean; rows: PaneRow[] };
+export type PaneBriefQuestion = { id: string; title: string; note?: string | null; tag: string; urgent: boolean; kind: string };
+export type PaneBriefThread = { id: string; title: string; running: boolean; tag: string };
+export type PaneSection = {
+  key: string;
+  title: string;
+  count: number;
+  folded: boolean;
+  rows: PaneRow[];
+  hasCoordinator?: boolean;
+  coordinatorOpenTasks?: number;
+  state?: string | null;
+  stateUpdated?: string | null;
+  collapsedSummary?: string | null;
+  questions?: PaneBriefQuestion[];
+  openThreads?: PaneBriefThread[];
+};
 export type Pane = {
   section: string;
   empty?: string | null;

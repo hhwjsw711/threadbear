@@ -73,6 +73,31 @@ Feature: Highlights, what a thread has made and shared
     And it says "The librarian put it here."
     And it offers "Keep, Take out, Open project"
 
+  @highlights.projects @swift-pending
+  Scenario: A project's inline brief shows its state, other open threads and jumps to them
+    When I open the thread "Pick a colour for the new Share button"
+    Then the project brief for "Walkies" shows the state "Share button colour being picked"
+    And the project brief for "Walkies" lists the open thread "Add dark mode to the dashboard"
+    When I click the project brief item "Add dark mode to the dashboard"
+    Then the open thread is "Add dark mode to the dashboard"
+
+  @highlights.projects @swift-pending
+  Scenario: Secondary projects on a multi-project thread start folded until opened
+    When I open the thread "Why is the build slow on CI?"
+    Then the "Photo sync" project brief in Highlights is expanded
+    And the "Threadbear" project brief in Highlights is folded
+    When I press the control "Show Threadbear"
+    Then the "Threadbear" project brief in Highlights is expanded
+
+  @highlights.projects @coordinators @swift-pending
+  Scenario: A coordinated project's inline brief jumps straight to its tasks and coordinator
+    When I open the project "Threadbear"
+    And the coordinator publishes a task board
+    When I open the thread "Rename the Settings tabs"
+    Then the project brief for "Threadbear" lists the open question "Reconfirm pickup with Barry"
+    When I click the project brief item "Reconfirm pickup with Barry"
+    Then the coordinator's "Tasks" tab is open
+
   @highlights.subagents
   Scenario: Sub-agents are listed with the ones still running first
     When I open the thread "Why is the build slow on CI?"

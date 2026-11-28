@@ -1148,15 +1148,21 @@ From the top, and only when there's something to show:
 - A line or two from the librarian on where the thread is up to.
 - **Needs you**: what the agent's last reply asked you to do, each with a
   box to tick off as you go. Ticking one here ticks it in the thread too.
-- The thread's projects, each under its icon and name with its links,
-  such as a live site or an admin page, and its task board if it has one
-  (see [Projects](#projects)). The ⓘ beside a project's name
-  says who put the thread there and why ("Shortlists photos for the
-  calendar entry"). If the librarian guessed wrong, press Take out there
-  and it won't put it back; Keep stops it ever taking the thread out.
-  The librarian also renames a project whose name has gone out of date
-  (a tool it's about was renamed, say), but never one you named or
-  renamed yourself.
+- The thread's projects, each under its icon and name as an inline project
+  brief: the project's live state, its open questions and tasks (coordinator
+  tasks and decisions together with open Needs you asks from other open
+  threads in the project), other open threads in the project, its links in a
+  compact row, and its Notion task board if it has one (see
+  [Projects](#projects)). Click any open question, task or thread to jump
+  straight to it; for a coordinated project, **Coordinator →** opens its
+  project home and **All tasks →** opens its Tasks view. When a thread is in
+  more than one project, secondary projects start folded to a one-line
+  summary until clicked. The ⓘ beside a project's name says who put the
+  thread there and why ("Shortlists photos for the calendar entry"). If the
+  librarian guessed wrong, press Take out there and it won't put it back;
+  Keep stops it ever taking the thread out. The librarian also renames a
+  project whose name has gone out of date (a tool it's about was renamed,
+  say), but never one you named or renamed yourself.
 - **Scheduled**: messages booked to come to this thread. Click one to
   change it.
 - **Sub-agents**: helpers the agent started, with how each is getting on.

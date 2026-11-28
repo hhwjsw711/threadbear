@@ -141,6 +141,28 @@ impl Threadbear {
         cx.notify();
     }
 
+    /// Jumps from an ordinary thread's Highlights brief straight into a
+    /// project's coordinator Tasks tab, optionally selecting a specific task.
+    pub(crate) fn open_project_coordinator_tasks(
+        &mut self,
+        project: &str,
+        task: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_project_page(project, cx);
+        if let Some(task_id) = task {
+            self.select_board_task(project, task_id, cx);
+        }
+        self.open_coordinator_tab(Tab::Tasks, cx);
+    }
+
+    /// Jumps from an ordinary thread's Highlights brief into a project's
+    /// coordinator home on its Conversation tab.
+    pub(crate) fn open_project_coordinator_home(&mut self, project: &str, cx: &mut Context<Self>) {
+        self.open_project_page(project, cx);
+        self.open_coordinator_tab(Tab::Conversation, cx);
+    }
+
     pub(crate) fn refresh_task_board(&self, project: &str, cx: &mut Context<Self>) {
         let Some(before) = self.coordinator_for_project(project).cloned() else {
             return;
