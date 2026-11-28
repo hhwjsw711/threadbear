@@ -330,3 +330,70 @@ test('a wake read during a turn of Mike\'s takes the shell off the awaited list'
   await tick();
   assert.equal(h.runner.threads.get(id)!.rt.awaitedShells, undefined);
 });
+
+// Codex's and Gemini's review of the nudge, 28 Nov 2026.
+async function waitingOnShell(h: ReturnType<typeof makeHarness>) {
+  opencodeLike(h, 90_000);
+  const r = start(h);
+  r.s.out({ kind: 'tasks', tasks: [{ ...SHELL, description: 'tb land' }] });
+  r.s.text('m1', 'Waiting for tb land.');
+  r.s.result('completed');
+  await tick();
+  return r;
+}
+
+test("a nudge queued on a draining runner keeps the thread out of Needs you until it goes across", async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  let ready = false;
+  const handed: string[] = [];
+  await h.runner.beginDrain([id], { onHandedOver: (x) => handed.push(x), ready: () => ready });
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(91_000);
+  await tick();
+  assert.equal(h.runner.threads.get(id)!.rec.queue.length, 1, 'the nudge waits in the queue');
+  assert.equal(h.runner.get(id).needsYou, false, 'mid-work, not Mike\'s');
+  ready = true;
+  h.runner.recheckHandovers();
+  await tick();
+  h.clock.advance(5_000);
+  await tick();
+  assert.deepEqual(handed, [id]);
+});
+
+test('a late wake of the CLI takes back a nudge still queued for it', async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  await h.runner.beginDrain([id], { onHandedOver: () => {}, ready: () => false });
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(91_000);
+  await tick();
+  const st = h.runner.threads.get(id)!;
+  assert.equal(st.rec.queue.length, 1);
+  // OpenCode wakes after all, reads the result and finishes.
+  s.out({ kind: 'cliTurn' });
+  await tick();
+  assert.equal(st.rec.queue.length, 0, 'the nudge is withdrawn');
+  assert.equal(st.rec.stoppedWorkWakes ?? 0, 0, 'and not counted');
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m2', 'Landed.');
+  s.result('completed');
+  await tick();
+  assert.equal(st.rec.queue.length, 0);
+  assert.equal(h.runner.get(id).status, 'idle');
+});
+
+test('the runner stopping during the wake grace leaves the next one to tell the thread about its unread shell', async () => {
+  const h = makeHarness();
+  const { id, s } = await waitingOnShell(h);
+  s.out({ kind: 'tasks', tasks: [] });
+  await tick();
+  h.clock.advance(30_000);
+  await tick();
+  await h.runner.shutdown();
+  const what = h.runner.threads.get(id)!.rec.stoppedWork?.what ?? [];
+  assert.equal(what.length, 1);
+  assert.match(what[0]!, /tb land \(it had finished; you hadn't read its result yet\)/);
+});

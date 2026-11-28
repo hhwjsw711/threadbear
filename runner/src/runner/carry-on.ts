@@ -27,8 +27,8 @@ export function stoppedWorkMessage(what: string[], last: boolean): string {
 
 // When the CLI never started its own turn for a shell the last turn ended
 // waiting on (Runner.nudgeUnreadShells).
-export function unreadShellsMessage(what: string[], last: boolean): string {
-  const one = what.length <= 1;
+export function unreadShellsMessage(count: number, what: string[], last: boolean): string {
+  const one = count <= 1;
   const lines = what.map((w) => `- ${cutSafely(w, 203, '...')}`);
   return [
     `${one ? 'A background shell' : 'Background shells'} you ended your last turn waiting on ${one ? 'has' : 'have'} finished, but you weren't woken to read ${one ? 'its' : 'their'} result${lines.length ? ':' : '.'}`,
