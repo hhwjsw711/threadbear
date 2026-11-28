@@ -1,8 +1,7 @@
 // Projects (docs/protocol/projects.md, "Projects") with no UI in them, ported from the
 // Swift app: the project itself and its icon and task board (Project.swift),
 // what `projects.update` changes (ProjectUpdate in RunnerAPI.swift), the
-// sidebar's sections with parts nested under their parent
-// (ProjectSections.swift), the Projects page's cards (ProjectCards.swift),
+// sidebar's sections (ProjectSections.swift), the Projects page's cards (ProjectCards.swift),
 // what a project's page borrows from its threads (ProjectPane, PatchGroups),
 // and the words the page and the cards say (ProjectPage.swift,
 // ProjectsHome.swift). The GPUI app draws from these; its `dump` says what
@@ -271,9 +270,6 @@ pub struct Project {
     /// as the runner last read it (protocol "Project tasks").
     pub notion: Option<String>,
     pub tasks: Option<Tasks>,
-    /// The project it's a part of (protocol, Projects, "Parts"); none for a
-    /// project of its own and from a runner before parts.
-    pub parent_id: Option<String>,
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -328,7 +324,6 @@ impl Project {
             last_activity_ms: v["lastActivityAt"].as_str().and_then(parse_ms),
             notion: some("notion"),
             tasks: Tasks::decode(&v["tasks"]),
-            parent_id: some("parentId"),
         })
     }
 
@@ -376,8 +371,6 @@ pub struct Update {
     pub archived: Option<bool>,
     /// A Notion page with the project's task board; empty takes it off.
     pub notion: Option<String>,
-    /// The project it's to be a part of; empty makes it its own again.
-    pub parent_id: Option<String>,
 }
 
 impl Update {
@@ -405,9 +398,6 @@ impl Update {
         }
         if let Some(notion) = &self.notion {
             put(&mut params, "notion", json!(notion));
-        }
-        if let Some(parent) = &self.parent_id {
-            put(&mut params, "parentId", json!(parent));
         }
         params
     }
@@ -443,9 +433,6 @@ impl Update {
                 project.tasks = None;
             }
             project.notion = link;
-        }
-        if let Some(parent) = &self.parent_id {
-            project.parent_id = (!parent.is_empty()).then(|| parent.clone());
         }
         project
     }
@@ -501,25 +488,6 @@ pub fn projects_to_add<'a>(projects: &'a [Project], thread: &ThreadSummary) -> V
 /// The live projects, by name, for a thread's Projects ▸ menu.
 pub fn live_by_title(projects: &[Project]) -> Vec<&Project> {
     let mut out: Vec<&Project> = projects.iter().filter(|p| !p.archived).collect();
-    out.sort_by(|a, b| standard_compare(&a.title, &b.title));
-    out
-}
-
-/// What a project could be made a part of (the project menu's Make a Part
-/// of), by name. One level only: none for a project with parts of its own,
-/// and only projects that aren't parts themselves.
-pub fn possible_parents<'a>(projects: &'a [Project], project: &Project) -> Vec<&'a Project> {
-    if project.parent_id.is_some()
-        || projects
-            .iter()
-            .any(|p| p.parent_id.as_deref() == Some(project.id.as_str()))
-    {
-        return vec![];
-    }
-    let mut out: Vec<&Project> = projects
-        .iter()
-        .filter(|p| p.id != project.id && !p.archived && p.parent_id.is_none())
-        .collect();
     out.sort_by(|a, b| standard_compare(&a.title, &b.title));
     out
 }
@@ -619,21 +587,13 @@ impl Section<'_> {
 }
 
 /// The Projects view (`ProjectSections`): a section per live project, newest
-/// activity first, then the threads in no project. A part nests under its
-/// parent (protocol, Projects, "Parts").
+/// activity first, then the threads in no project.
 #[derive(Clone, Debug, Default)]
 pub struct Sections<'a> {
-    /// Every live project's section, parts too: for finding one by id and
-    /// counting threads.
+    /// Every live project's section, in the order the lists show them.
     pub sections: Vec<Section<'a>>,
     /// Inbox threads in no live project, newest first.
     pub unfiled: Vec<&'a ThreadSummary>,
-    /// What the lists show at the top, as indexes into `sections`: projects
-    /// of their own, and parts whose parent isn't shown. A parent goes by
-    /// the newest activity in it or its parts.
-    top: Vec<usize>,
-    /// Each shown parent's parts, by its id, in title order.
-    parts: HashMap<String, Vec<usize>>,
 }
 
 /// Newest activity first, then by id so the order never wobbles.
@@ -721,101 +681,20 @@ impl<'a> Sections<'a> {
                 .then_with(|| standard_compare(&a.project.title, &b.project.title))
         });
         sort_newest_first(&mut unfiled);
-        Sections::with_parts(sections, unfiled)
-    }
-
-    /// Works out which sections are parts. A part nests only under a shown
-    /// parent that isn't a part itself, so whatever comes in (a cycle, three
-    /// levels, a parent that's gone) nothing is hidden.
-    fn with_parts(sections: Vec<Section<'a>>, unfiled: Vec<&'a ThreadSummary>) -> Sections<'a> {
-        let mut parent_of: HashMap<&str, Option<&str>> = HashMap::new();
-        for s in &sections {
-            parent_of
-                .entry(s.project.id.as_str())
-                .or_insert(s.project.parent_id.as_deref());
-        }
-        let is_part = |s: &Section| {
-            s.project
-                .parent_id
-                .as_deref()
-                .is_some_and(|p| p != s.project.id && parent_of.get(p) == Some(&None))
-        };
-        let mut parts: HashMap<String, Vec<usize>> = HashMap::new();
-        for (i, s) in sections.iter().enumerate() {
-            if is_part(s) {
-                parts
-                    .entry(s.project.parent_id.clone().unwrap_or_default())
-                    .or_default()
-                    .push(i);
-            }
-        }
-        for list in parts.values_mut() {
-            list.sort_by(|a, b| {
-                standard_compare(&sections[*a].project.title, &sections[*b].project.title)
-            });
-        }
-        let newest = |i: usize| {
-            parts
-                .get(&sections[i].project.id)
-                .into_iter()
-                .flatten()
-                .map(|p| sections[*p].last_activity_ms)
-                .fold(sections[i].last_activity_ms, i64::max)
-        };
-        let mut top: Vec<usize> = (0..sections.len())
-            .filter(|i| !is_part(&sections[*i]))
-            .collect();
-        // Stable, so ties keep the sections' own order.
-        top.sort_by_key(|i| std::cmp::Reverse(newest(*i)));
-        Sections {
-            sections,
-            unfiled,
-            top,
-            parts,
-        }
-    }
-
-    /// What the lists and the Projects page show at the top, in order.
-    pub fn top_level(&self) -> Vec<&Section<'a>> {
-        self.top.iter().map(|i| &self.sections[*i]).collect()
-    }
-
-    /// A shown parent's parts, in title order; none for anything else.
-    pub fn parts_of(&self, id: &str) -> Vec<&Section<'a>> {
-        self.parts
-            .get(id)
-            .into_iter()
-            .flatten()
-            .map(|i| &self.sections[*i])
-            .collect()
+        Sections { sections, unfiled }
     }
 
     pub fn section(&self, id: &str) -> Option<&Section<'a>> {
         self.sections.iter().find(|s| s.project.id == id)
     }
 
-    /// The project's threads and its parts', each once, newest first.
-    pub fn threads_with_parts(&self, section: &Section<'a>) -> Vec<&'a ThreadSummary> {
-        let mut seen = HashSet::new();
-        let mut out: Vec<&ThreadSummary> = std::iter::once(section)
-            .chain(self.parts_of(section.id()))
-            .flat_map(|s| s.threads.iter().copied())
-            .filter(|t| seen.insert(t.id.as_str()))
-            .collect();
-        sort_newest_first(&mut out);
-        out
-    }
-
-    /// Thread ids top to bottom, for the arrow keys: a parent, then its parts,
-    /// then the threads in none. A thread in two projects is listed once, where
+    /// Thread ids top to bottom, for the arrow keys: each project's, then
+    /// the threads in none. A thread in two projects is listed once, where
     /// it first comes.
     pub fn order(&self) -> Vec<String> {
         let mut seen = HashSet::new();
-        let drawn = self
-            .top_level()
-            .into_iter()
-            .flat_map(|s| std::iter::once(s).chain(self.parts_of(s.id())));
-        drawn
+        self.sections
+            .iter()
             .flat_map(|s| s.threads.iter().copied())
             .chain(self.unfiled.iter().copied())
             .filter(|t| seen.insert(t.id.as_str()))
@@ -938,8 +817,7 @@ impl CardStatus {
     }
 }
 
-/// One project's card on the Projects page (`ProjectCard`): a card for each
-/// project of its own, with its parts inside it.
+/// One project's card on the Projects page (`ProjectCard`).
 #[derive(Clone, Debug)]
 pub struct Card<'a> {
     pub project: &'a Project,
@@ -947,25 +825,19 @@ pub struct Card<'a> {
     pub last_activity_ms: i64,
     /// Its newest few open threads' titles.
     pub recent: Vec<String>,
-    /// Its parts, shown inside its card; its status counts theirs.
-    pub parts: Vec<&'a Project>,
 }
 
 /// The cards in the sidebar's order, newest activity first.
 pub fn cards<'a>(sections: &Sections<'a>, recent: usize) -> Vec<Card<'a>> {
     sections
-        .top_level()
-        .into_iter()
+        .sections
+        .iter()
         .map(|section| {
-            let parts = sections.parts_of(section.id());
-            let threads = sections.threads_with_parts(section);
+            let threads = &section.threads;
             Card {
                 project: section.project,
-                status: CardStatus::of(&threads),
-                last_activity_ms: parts
-                    .iter()
-                    .map(|p| p.last_activity_ms)
-                    .fold(section.last_activity_ms, i64::max),
+                status: CardStatus::of(threads),
+                last_activity_ms: section.last_activity_ms,
                 recent: threads
                     .iter()
                     .take(recent)
@@ -977,7 +849,6 @@ pub fn cards<'a>(sections: &Sections<'a>, recent: usize) -> Vec<Card<'a>> {
                         }
                     })
                     .collect(),
-                parts: parts.iter().map(|p| p.project).collect(),
             }
         })
         .collect()
@@ -998,8 +869,7 @@ pub fn overall(sections: &Sections) -> CardStatus {
 
 /// The cards a search keeps (`ProjectCard.matching`). Every word has to be
 /// somewhere in the project, case and accents aside; goals and notes count,
-/// as you often remember what a project was for and not its name, and so
-/// does a part's name. That casts a wide net, so cards with every word in
+/// as you often remember what a project was for and not its name. That casts a wide net, so cards with every word in
 /// the title go first, each group newest first.
 pub fn matching<'a>(cards: Vec<Card<'a>>, query: &str) -> Vec<Card<'a>> {
     let words: Vec<String> = query.split_whitespace().map(fold).collect();
@@ -1012,11 +882,7 @@ pub fn matching<'a>(cards: Vec<Card<'a>>, query: &str) -> Vec<Card<'a>> {
     };
     let (mut in_title, mut rest) = (Vec::new(), Vec::new());
     for card in cards {
-        let text = std::iter::once(card.project.search_text())
-            .chain(card.parts.iter().map(|p| p.search_text()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !hit(&text) {
+        if !hit(&card.project.search_text()) {
             continue;
         }
         if hit(&card.project.title) {
@@ -1256,17 +1122,6 @@ pub fn task_due(task: &Task) -> Option<String> {
     })
 }
 
-/// A part's row on its parent's page: its state's first line.
-pub fn part_line(project: &Project) -> Option<String> {
-    project
-        .state
-        .lines()
-        .next()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_owned)
-}
-
 /// "1 thread", "4 threads".
 pub fn thread_count_words(count: usize) -> String {
     if count == 1 {
@@ -1393,7 +1248,7 @@ pub fn patches_across<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inbox::{iso_time, OpenAsk};
+    use crate::inbox::iso_time;
     use chrono::FixedOffset;
 
     const NOW: i64 = 1_000_000_000;
@@ -1432,23 +1287,6 @@ mod tests {
         }
     }
 
-    fn asking(id: &str, minutes: f64, projects: &[&str], asks: usize) -> ThreadSummary {
-        let mut t = thread(id, minutes, projects);
-        t.needs_you = true;
-        t.needs = Some("you".into());
-        t.asks = Some(
-            (0..asks)
-                .map(|n| OpenAsk {
-                    action: format!("Ask {n}?"),
-                    options: Some(vec!["Yes".into(), "No".into()]),
-                    ..Default::default()
-                })
-                .collect(),
-        );
-        t.asks_seq = Some(7);
-        t
-    }
-
     fn ids(threads: &[&ThreadSummary]) -> Vec<String> {
         threads.iter().map(|t| t.id.clone()).collect()
     }
@@ -1459,7 +1297,7 @@ mod tests {
             "id": "p_3b1d9e20", "title": "Threadbear", "folders": ["/Users/alex/code/threadbear", 5, "/Users/alex/code/notes"],
             "goals": "An agent app.", "createdBy": "librarian", "createdByThread": "th1",
             "createdAt": "2026-10-20T10:00:00Z", "updatedAt": "2026-10-27T10:00:00Z", "threadCount": "7",
-            "lastActivityAt": "2026-10-27T11:00:00Z", "colour": "teal", "parentId": "",
+            "lastActivityAt": "2026-10-27T11:00:00Z", "colour": "teal",
             "links": [{ "title": "Live site", "url": "https://cruise.example/" }, { "url": "https://www.cruise.example/admin/" }, { "title": "no url" }, "https://loose.example"],
         }))
         .unwrap();
@@ -1471,7 +1309,6 @@ mod tests {
         assert_eq!(p.created_by, Author::Librarian);
         assert_eq!(p.thread_count, 7);
         assert_eq!(p.last_activity_ms, parse_ms("2026-10-27T11:00:00Z"));
-        assert_eq!(p.parent_id, None, "an empty parent is none");
         assert_eq!(
             p.links,
             vec![
@@ -1638,32 +1475,6 @@ mod tests {
             .notion,
             None
         );
-        let part = Update {
-            parent_id: Some("tb".into()),
-            ..Default::default()
-        }
-        .applied(&base, 100);
-        assert_eq!(part.parent_id.as_deref(), Some("tb"));
-        assert_eq!(
-            Update {
-                parent_id: Some(String::new()),
-                ..Default::default()
-            }
-            .applied(&part, 100)
-            .parent_id,
-            None
-        );
-        assert_eq!(
-            Update {
-                title: Some("U".into()),
-                ..Default::default()
-            }
-            .applied(&part, 100)
-            .parent_id
-            .as_deref(),
-            Some("tb"),
-            "left out, it stays a part"
-        );
         let params = Update {
             folders: Some(vec!["/a".into()]),
             notes: Some(String::new()),
@@ -1746,120 +1557,6 @@ mod tests {
             ids(&threads_in("b", &threads)),
             ["t3", "t2"],
             "the page lists put away ones too"
-        );
-    }
-
-    fn parts_world() -> (Vec<Project>, Vec<ThreadSummary>) {
-        let projects = vec![
-            project("tb", "Threadbear"),
-            Project {
-                parent_id: Some("tb".into()),
-                ..project("port", "GPUI port")
-            },
-            Project {
-                parent_id: Some("tb".into()),
-                ..project("android", "Android app")
-            },
-            project("pool", "Pool"),
-            Project {
-                parent_id: Some("gone".into()),
-                ..project("orphan", "Orphan")
-            },
-        ];
-        let threads = vec![
-            thread("t-pool", 5., &["pool"]),
-            asking("t-port", 1., &["port"], 1),
-            thread("t-tb", 30., &["tb"]),
-            asking("t-android", 40., &["android"], 1),
-        ];
-        (projects, threads)
-    }
-
-    #[test]
-    fn parts_nest_under_their_parent_which_goes_by_their_activity() {
-        let (projects, threads) = parts_world();
-        let s = Sections::build(&projects, &threads, NOW);
-        assert_eq!(s.top_level().iter().map(|x| x.id()).collect::<Vec<_>>(), ["tb", "pool", "orphan"], "Threadbear first, by its part's newest thread; a part whose parent's gone stands alone");
-        assert_eq!(
-            s.parts_of("tb").iter().map(|x| x.id()).collect::<Vec<_>>(),
-            ["android", "port"],
-            "parts in title order"
-        );
-        assert_eq!(s.sections.len(), 5);
-        assert_eq!(
-            ids(&s.threads_with_parts(s.top_level()[0])),
-            ["t-port", "t-tb", "t-android"]
-        );
-        assert_eq!(
-            s.order(),
-            ["t-tb", "t-android", "t-port", "t-pool"],
-            "the arrow keys go through a parent, then its parts"
-        );
-
-        let all = cards(&s, 3);
-        assert_eq!(
-            all.iter()
-                .map(|c| c.project.id.as_str())
-                .collect::<Vec<_>>(),
-            ["tb", "pool", "orphan"]
-        );
-        assert_eq!(
-            all[0]
-                .parts
-                .iter()
-                .map(|p| p.title.as_str())
-                .collect::<Vec<_>>(),
-            ["Android app", "GPUI port"]
-        );
-        assert_eq!(all[0].status.open, 3, "both parts' threads");
-        assert_eq!(
-            matching(all, "GPUI")
-                .iter()
-                .map(|c| c.project.id.as_str())
-                .collect::<Vec<_>>(),
-            ["tb"],
-            "a part's name finds its parent's card"
-        );
-    }
-
-    #[test]
-    fn a_cycle_or_three_levels_hides_nothing() {
-        let projects = vec![
-            Project {
-                parent_id: Some("b".into()),
-                ..project("a", "A")
-            },
-            Project {
-                parent_id: Some("a".into()),
-                ..project("b", "B")
-            },
-            project("top", "Top"),
-            Project {
-                parent_id: Some("top".into()),
-                ..project("mid", "Mid")
-            },
-            Project {
-                parent_id: Some("mid".into()),
-                ..project("low", "Low")
-            },
-        ];
-        let s = Sections::build(&projects, std::iter::empty(), NOW);
-        let mut top: Vec<&str> = s.top_level().iter().map(|x| x.id()).collect();
-        top.sort();
-        assert_eq!(top, ["a", "b", "low", "top"]);
-        assert_eq!(
-            s.parts_of("top").iter().map(|x| x.id()).collect::<Vec<_>>(),
-            ["mid"]
-        );
-        assert_eq!(
-            possible_parents(&projects, &projects[2]).len(),
-            0,
-            "a project with a part can't become one"
-        );
-        assert_eq!(
-            possible_parents(&projects, &projects[3]).len(),
-            0,
-            "a part can't be a part again"
         );
     }
 
@@ -1987,7 +1684,6 @@ mod tests {
                 status: CardStatus::default(),
                 last_activity_ms: 0,
                 recent: vec![],
-                parts: vec![],
             })
             .collect();
         let found = |q: &str| {

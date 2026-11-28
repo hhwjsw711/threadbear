@@ -781,7 +781,7 @@ fn step(
         }
         // Projects (projects.rs): a project's page, its parent and the
         // Projects page's search.
-        "project" | "projectParent" => crate::projects::automation(app, cmd, window, cx),
+        "project" => crate::projects::automation(app, cmd, window, cx),
         "search" if cmd["projects"].as_bool() == Some(true) => {
             crate::projects::automation(app, cmd, window, cx)
         }

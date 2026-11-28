@@ -10,18 +10,9 @@ thread can be in several projects, and it keeps `goals`, `state` and
 the librarian and the agents do. Kept in `projects.json` in the data dir;
 which projects a thread is in is kept with the thread.
 
-**Parts.** A project can be a part of another (`parentId`), for one
-body of work with separate strands (Threadbear, its GPUI port and its
-Android app), so each part keeps its own goals, state and notes rather
-than every thread being told all of them. One level only: a part can't
-have parts, and a project with parts can't become one. A thread in a part
-is told the parent's title and goals in its brief, then the part's own
-(see "The brief"); a thread in the parent is told the parts' names. The
-librarian doesn't set parents: Mike does, or an agent with `update_project`'s
-`parent`. Merging a project moves its parts to the kept one (or makes them
-projects of their own if that one is a part); deleting one makes its parts
-projects of their own. Parts go to Convex as projects of their own: the
-phone and the website list them flat, without `parentId`, for now.
+Projects don't nest. A `parentId` that an older runner saved, or an older
+app sends to `projects.create` or `projects.update`, is dropped: projects
+nested inside another until 28 Nov 2026 load as projects of their own.
 
 **Patches.** A thread loads patches from, in this order: `~/.threadbear/`,
 each folder of each of its projects (the built-in ones and the patch
@@ -40,9 +31,7 @@ gave every chip twice.
 A fresh session (a new thread, a move or account change that starts a new
 native session) gets the brief as instructions: each project's title,
 folders, goals and state, at most about 2,000 characters in all, and that
-`read_project` has the notes. A part's block starts with its parent's
-title and goals (not the parent's state or notes); a parent's ends with a
-line naming its parts. Claude gets it appended to the system
+`read_project` has the notes. Claude gets it appended to the system
 prompt, Codex as developer instructions. A live or resumed session (Claude
 Code ignores new instructions on a resume) hears about a project it hasn't
 been told about at the start of its next message, in a line beginning

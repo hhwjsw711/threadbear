@@ -358,7 +358,6 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | `projects.home` | Projects home | Cards, New project, search | Drawn cards with `Input`. | build | M | `ProjectsHome`, `ProjectCards` |
 | `projects.list` | Projects list | Sidebar view, Archive, Merge, Delete, copy id | gpui-kit list and menus. | kit | M | `ProjectsList`, `ProjectSections` |
 | `projects.page` | Project page | Title, goals, state, notes editing, folders, threads | Drawn page using `Input` and `Textarea`. | build | L | `ProjectPage`, `Projects` |
-| `projects.parts` | Parts of a project | A project can be a part of another (one level): in the sidebar a part nests under its parent's heading; on the Projects page it's named inside its parent's card, which counts its threads; the parent's page has a Parts section, a part's page links up with "Part of"; the ... menu's Make a Part of and Make Its Own Project | Drawn rows and a section; the menu items in the project menu. | build | M | `ProjectsList`, `ProjectPage` (`PartsSection`), `ProjectSections`, `ProjectCards` |
 | `projects.icon` | Project icon | Choose or librarian's | GPUI path prompt, with Reveal going through the open gate. | kit | S | `ProjectPage`, `ProjectIconView` |
 | `projects.tasks` | Tasks board page | Status columns from Notion | Drawn columns. | build | M | `ProjectPage` (`TasksSection`) |
 | `projects.newthread` | New thread in project | "In" chip | Drawn chip. | build | S | `DetailView` (`NewThreadProjectChip`) |

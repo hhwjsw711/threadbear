@@ -487,9 +487,6 @@ type Project = {
   stateUpdatedAt?: string
   archived?: boolean
   icon?: ProjectIcon    // absent until the librarian has found or picked one
-  parentId?: string     // the project it's a part of (see Projects,
-                        // "Parts"); absent for a project of its own, and
-                        // from a runner before parts
   threadCount: number   // threads in it, put away ones included
   lastActivityAt?: string // its newest thread's lastActivityAt
 }

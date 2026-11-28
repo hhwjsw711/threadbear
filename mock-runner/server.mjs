@@ -833,13 +833,6 @@ const mockPr = {
 // threads it started, as in mockup sub-A. Only when asked, as it adds rows
 // other specs count.
 if (process.env.TB_MOCK_NESTED) addDemoNested();
-// Parts of a project (docs/protocol/projects.md, Projects, "Parts"): Photo sync as a
-// part of Threadbear, for features/projects.feature.
-if (process.env.TB_MOCK_PARTS) {
-  const photo = projects.find((p) => p.title === 'Photo sync');
-  const tb = projects.find((p) => p.title === 'Threadbear');
-  if (photo && tb) photo.parentId = tb.id;
-}
 // A big set for timing the Projects view (TB_MOCK_PERF_PROJECTS=<threads>):
 // that many threads over 80 projects, nearly all archived, the open ones
 // partly waiting on a card of asks, and a third of the projects with a
@@ -4111,8 +4104,6 @@ function projectRequest(method, p) {
       }
       if (p.state !== undefined) { project.state = p.state; project.stateUpdatedAt = iso(); }
       if (p.archived !== undefined) project.archived = Boolean(p.archived) || undefined;
-      // Parts (docs/protocol/projects.md, Projects, "Parts"): '' or null makes it its own.
-      if (p.parentId !== undefined) project.parentId = p.parentId || undefined;
       project.updatedAt = iso();
       if (p.title !== undefined) for (const s of membersOf(project.id)) { renameIn(s, project); broadcastSummary(s.id); }
       broadcastProjects();

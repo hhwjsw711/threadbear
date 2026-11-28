@@ -128,9 +128,8 @@ the app sent back, so check it before putting it in a command. Watching a PR for
 
 **Live state.** An action or panel can also have `when` and `badge`,
 functions that get the same `{ cwd, threadId, thread, matched, sh }` as `items`.
-`thread` is `{ title, projects }`, each project `{ id, title }` with a
-`parent: { id, title }` when it's a part, so a patch in a folder many
-threads share can turn up in only some of them:
+`thread` is `{ title, projects }`, each project `{ id, title }`, so a
+patch in a folder many threads share can turn up in only some of them:
 `when: ({ thread }) => thread.projects.some((p) => p.title === "Acceptance testing")`.
 A rename or a change to its projects reads them again.
 `when` hides it unless it returns something true (a chip that only turns

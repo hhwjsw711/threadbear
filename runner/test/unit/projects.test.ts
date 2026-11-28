@@ -1852,69 +1852,35 @@ test('a look from the first message alone leaves the Pocket to its agent, and a 
   assert.equal(fake.saved.length, 0);
 });
 
-// ------------------------------------------------------- parts
+// ------------------------------------------------------- parts, retired
 
-test('parts: a project can be a part of another, one level only, and taken out again', () => {
-  const { projects } = setup();
-  const tb = projects.create({ title: 'Threadbear', goals: 'The app', by: 'mike' });
-  const gpui = projects.create({ title: 'GPUI port', by: 'mike' });
-  const android = projects.create({ title: 'Android app', parent: tb.id, by: 'mike' });
-  assert.equal(android.parentId, tb.id, 'made as a part');
-  assert.equal(projects.update(gpui.id, { parent: 'threadbear' }).parentId, tb.id, 'by title, any case');
-  assert.throws(() => projects.update(gpui.id, { parent: gpui.id }), /can't be a part of itself/);
-  assert.throws(() => projects.update(tb.id, { parent: gpui.id }), /has parts of its own/);
-  const other = projects.create({ title: 'Other', by: 'mike' });
-  assert.throws(() => projects.update(other.id, { parent: android.id }), /is a part of "Threadbear" already/);
-  assert.throws(() => projects.update(other.id, { parent: 'nope' }), /No project/);
-  assert.equal(projects.update(gpui.id, { parent: '' }).parentId, undefined, 'empty makes it its own project');
-  // Deleting the parent leaves its parts as projects of their own.
-  projects.delete(tb.id);
-  assert.equal(projects.record(android.id)?.parentId, undefined);
+// Projects had parts (a project inside another, `parentId`) until 28 Nov
+// 2026, when Mike dropped the idea: an old part loads as a project of its
+// own, and old callers that still send a parent are heard and ignored.
+test('retired parts: a parentId saved by an older runner is dropped on load, and saved without it', () => {
+  const home = tmpDir();
+  const at = { createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z', createdBy: 'mike' };
+  fs.writeFileSync(path.join(home, 'projects.json'), JSON.stringify({ projects: [
+    { id: 'p_top', title: 'Top' }, { id: 'p_mid', title: 'Mid', parentId: 'p_top' }, { id: 'p_lost', title: 'Lost', parentId: 'p_gone' },
+  ].map((p) => ({ ...at, ...p })) }));
+  const projects = new Projects({ home, clock: new FakeClock(), log: nullLogger });
+  const h = makeHarness(home, {}, { projects });
+  projects.start(h.runner);
+  assert.equal(projects.list().length, 3);
+  for (const p of projects.list()) assert.equal('parentId' in p, false, `${p.title} lost its parent`);
+  projects.update('p_mid', { title: 'Mid, on its own' });
+  const saved = JSON.parse(fs.readFileSync(path.join(home, 'projects.json'), 'utf8')) as { projects: Record<string, unknown>[] };
+  assert.equal(saved.projects.some((p) => 'parentId' in p), false, 'none written back');
 });
 
-test('parts: merging moves a project\'s parts to the one kept, or frees them when that one is a part', () => {
-  const { projects } = setup();
-  const a = projects.create({ title: 'A', by: 'mike' });
-  const b = projects.create({ title: 'B', by: 'mike' });
-  const partOfA = projects.create({ title: 'A1', parent: a.id, by: 'mike' });
-  projects.merge(a.id, b.id);
-  assert.equal(projects.record(partOfA.id)?.parentId, b.id);
-  const c = projects.create({ title: 'C', by: 'mike' });
-  const partOfC = projects.create({ title: 'C1', parent: c.id, by: 'mike' });
-  projects.merge(c.id, partOfA.id);
-  assert.equal(projects.record(partOfC.id)?.parentId, undefined, 'a part has no parts');
-  // A part merged into its own parent goes, and nothing points at it.
-  projects.merge(partOfA.id, b.id);
-  assert.equal(projects.record(b.id)?.parentId, undefined);
-});
-
-test("parts: a thread in a part is told its parent's title and goals; one in the parent hears the parts' names", () => {
-  const { projects, create, h } = setup();
-  const tb = projects.create({ title: 'Threadbear', goals: 'One agent app for everything', state: 'Projects next', notes: 'LONG PARENT NOTES', by: 'mike' });
-  const port = projects.create({ title: 'GPUI port', goals: 'Rust desktop app', state: 'Settings next', parent: tb.id, by: 'mike' });
-  const { thread: inPart } = create('port work');
-  const { thread: inParent } = create('app work');
-  projects.changeMembership(inPart.id, { add: [port.id], by: 'mike' });
-  projects.changeMembership(inParent.id, { add: [tb.id], by: 'mike' });
-  const partBrief = projects.brief(rec(h, inPart.id))!;
-  assert.match(partBrief, /## GPUI port \(p_[0-9a-f]+\), a part of Threadbear \(p_[0-9a-f]+\)/);
-  assert.match(partBrief, /Threadbear's goals: One agent app for everything/);
-  assert.match(partBrief, /\nGoals: Rust desktop app\nState: Settings next/);
-  assert.doesNotMatch(partBrief, /Projects next|LONG PARENT NOTES/, "not the parent's state or notes");
-  const parentBrief = projects.brief(rec(h, inParent.id))!;
-  assert.match(parentBrief, /Parts: GPUI port \(p_[0-9a-f]+\)/);
-  assert.match(projects.joinedLine(projects.record(port.id)!), /a part of "Threadbear"/);
-});
-
-test('parts: the RPC sets and clears parentId, and the agent tools take parent and show parts', async () => {
+test('retired parts: projects.create and projects.update take a parentId and ignore it; the agent tools take parent and ignore it', async () => {
   const { h, projects, create } = setup();
   const m = projectMethods(projects);
   const { project: tb } = m['projects.create']({ title: 'Threadbear' }) as any;
   const { project: port } = m['projects.create']({ title: 'GPUI port', parentId: tb.id }) as any;
-  assert.equal(port.parentId, tb.id);
-  assert.equal((m['projects.update']({ projectId: port.id, parentId: null }) as any).project.parentId, undefined);
-  assert.equal((m['projects.update']({ projectId: port.id, parentId: tb.id }) as any).project.parentId, tb.id);
-  assert.equal((m['projects.update']({ projectId: port.id, title: 'GPUI' }) as any).project.parentId, tb.id, 'left out leaves it');
+  assert.equal('parentId' in port, false);
+  assert.equal('parentId' in (m['projects.update']({ projectId: port.id, parentId: tb.id, title: 'GPUI' }) as any).project, false);
+  assert.equal((m['projects.update']({ projectId: port.id, parentId: null }) as any).project.title, 'GPUI');
   const { thread } = create();
   const tools = buildThreadbearTools(h.runner, thread.id, Date.now, undefined, projects);
   const call = async (name: string, args: Record<string, unknown>) => {
@@ -1923,35 +1889,17 @@ test('parts: the RPC sets and clears parentId, and the agent tools take parent a
     return { text: r.content.map((c: any) => c.text).join(''), error: Boolean(r.isError) };
   };
   const made = await call('create_project', { title: 'Android', parent: 'threadbear', join: false });
-  assert.match(made.text, /Made the project "Android" \(p_[0-9a-f]+\), a part of "Threadbear"\./);
-  const list = (await call('list_projects', {})).text.split('\n');
-  const at = list.findIndex((l) => l.includes('"Threadbear"'));
-  assert.ok(list[at + 1].startsWith('  ') && list.slice(at + 1, at + 3).some((l) => l.includes('"GPUI"')), 'parts under their parent, indented:\n' + list.join('\n'));
-  assert.match((await call('read_project', { project: 'GPUI' })).text, /\nPart of: Threadbear \(p_[0-9a-f]+\)\n/);
-  assert.match((await call('read_project', { project: 'Threadbear' })).text, /\nParts: .*GPUI \(p_[0-9a-f]+\)/);
-  assert.match((await call('update_project', { project: 'GPUI', parent: '' })).text, /^Updated "GPUI"/);
-  assert.equal(projects.record(port.id)?.parentId, undefined);
-  assert.equal((await call('update_project', { project: 'Threadbear', parent: 'Android' })).error, true, 'a part has no parts, said as an error');
-});
-
-test('parts: a projects.json with a cycle or three levels loads with nothing hidden', () => {
-  const home = tmpDir();
-  const at = { createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z', createdBy: 'mike' };
-  fs.writeFileSync(path.join(home, 'projects.json'), JSON.stringify({ projects: [
-    { id: 'p_a', title: 'A', parentId: 'p_b' }, { id: 'p_b', title: 'B', parentId: 'p_a' },
-    { id: 'p_top', title: 'Top' }, { id: 'p_mid', title: 'Mid', parentId: 'p_top' }, { id: 'p_low', title: 'Low', parentId: 'p_mid' },
-    { id: 'p_self', title: 'Self', parentId: 'p_self' }, { id: 'p_lost', title: 'Lost', parentId: 'p_gone' },
-  ].map((p) => ({ ...at, ...p })) }));
-  const projects = new Projects({ home, clock: new FakeClock(), log: nullLogger });
-  const h = makeHarness(home, {}, { projects });
-  projects.start(h.runner);
-  const parentOf = Object.fromEntries(projects.list().map((p) => [p.id, p.parentId ?? null]));
-  assert.deepEqual(parentOf, { p_a: null, p_b: null, p_top: null, p_mid: 'p_top', p_low: null, p_self: null, p_lost: null });
-});
-
-test("parts: a session that joins a parent mid-way hears its parts' names too", () => {
-  const { projects } = setup();
-  const tb = projects.create({ title: 'Threadbear', by: 'mike' });
-  projects.create({ title: 'GPUI port', parent: tb.id, by: 'mike' });
-  assert.match(projects.joinedLine(projects.record(tb.id)!), /Parts: GPUI port \(p_[0-9a-f]+\)\./);
+  assert.equal(made.error, false, made.text);
+  assert.match(made.text, /^Made the project "Android" \(p_[0-9a-f]+\)\.$/);
+  const updated = await call('update_project', { project: 'GPUI', parent: 'Threadbear', state: 'Settings next' });
+  assert.equal(updated.error, false, updated.text);
+  assert.equal(projects.record(port.id)?.state, 'Settings next');
+  assert.equal((await call('update_project', { project: 'GPUI', parent: 'nope' })).error, false, 'a parent that names nothing is ignored too');
+  for (const p of projects.list()) assert.equal('parentId' in p, false);
+  const advertised = tools.filter((t) => t.name === 'create_project' || t.name === 'update_project').map((t) => Object.keys(t.inputSchema));
+  for (const keys of advertised) assert.equal(keys.includes('parent'), false, 'not offered to new sessions');
+  projects.changeMembership(thread.id, { add: [tb.id], by: 'mike' });
+  const said = [(await call('list_projects', {})).text, (await call('read_project', { project: 'Threadbear' })).text].join('\n');
+  assert.doesNotMatch(said, /\bparts?\b|Part of/i);
+  assert.doesNotMatch(projects.brief(rec(h, thread.id))!, /Parts:|a part of/);
 });

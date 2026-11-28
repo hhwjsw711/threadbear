@@ -95,8 +95,6 @@ pub(crate) enum ProjectAction {
     Open(String),
     Archive(String, bool),
     Notion(String),
-    /// Make it a part of the second, or its own project again with "".
-    Parent(String, String),
     Merge(String, String),
     CopyId(String),
     Delete(String),
@@ -946,30 +944,6 @@ impl Threadbear {
             "checklist",
             act(ProjectAction::Notion(id.clone())),
         ));
-        // Parts, one level: only a project with no parts of its own can be
-        // one, and only of a project that isn't a part itself.
-        if project.parent_id.is_some() {
-            rows.push(MenuRow::item(
-                "Make Its Own Project",
-                "square.on.square",
-                act(ProjectAction::Parent(id.clone(), String::new())),
-            ));
-        } else {
-            let parents = rules::possible_parents(&self.projects.list, project);
-            if !parents.is_empty() {
-                let children = parents
-                    .into_iter()
-                    .map(|p| {
-                        MenuRow::item(
-                            p.title.clone(),
-                            "folder",
-                            act(ProjectAction::Parent(id.clone(), p.id.clone())),
-                        )
-                    })
-                    .collect();
-                rows.push(MenuRow::submenu("Make a Part of", "square.stack", children));
-            }
-        }
         let others: Vec<&Project> = self
             .projects
             .list
@@ -1045,14 +1019,6 @@ impl Threadbear {
                 cx,
             ),
             ProjectAction::Notion(id) => self.link_project_notion(&id, window, cx),
-            ProjectAction::Parent(id, parent) => self.update_project(
-                &id,
-                Update {
-                    parent_id: Some(parent),
-                    ..Default::default()
-                },
-                cx,
-            ),
             ProjectAction::Merge(id, into) => self.merge_project(&id, &into, window, cx),
             ProjectAction::CopyId(id) => cx.write_to_clipboard(ClipboardItem::new_string(id)),
             ProjectAction::Delete(id) => self.delete_project(&id, window, cx),
@@ -1380,16 +1346,9 @@ impl Threadbear {
             return Value::Null;
         };
         let threads = rules::threads_in(&project.id, self.threads.values().map(|t| &**t));
-        let sections = rules::Sections::build(
-            &self.projects.list,
-            self.threads.values().map(|t| &**t),
-            now_ms(),
-        );
         json!({
             "id": project.id,
             "title": project.title,
-            "parent": project.parent_id.as_deref().and_then(|p| self.project(p)).map(|p| p.title.clone()),
-            "parts": sections.parts_of(&project.id).iter().map(|s| s.project.title.clone()).collect::<Vec<_>>(),
             "folders": project.folders,
             "threads": threads.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
             "patches": rules::patches_across(project, &threads).iter().map(|(p, _)| p.id.clone()).collect::<Vec<_>>(),
@@ -1472,8 +1431,8 @@ pub(crate) fn project_icon(
 
 /// The projects' scripted commands, the Swift app's names and shapes
 /// (app/README.md): `project` opens (or with `close` shuts) a project's page,
-/// by `id` or `title`, `newThread` being its New Thread; `projectParent`
-/// makes one a part of another; `search` with `projects` types in the
+/// by `id` or `title`, `newThread` being its New Thread; `search` with
+/// `projects` types in the
 /// Projects page's search and says the cards it leaves.
 #[cfg(feature = "automation")]
 pub(crate) fn automation(
@@ -1535,34 +1494,6 @@ pub(crate) fn automation(
             }
             let _ = window;
             Ok(json!("ok"))
-        }
-        "projectParent" => {
-            let key = cmd["title"]
-                .as_str()
-                .ok_or("give a project's title or id as title")?;
-            let id = find(cx, key).ok_or("give a project's title or id as title")?;
-            let wanted = cmd["parent"].as_str().unwrap_or("");
-            let parent = if wanted.is_empty() {
-                String::new()
-            } else {
-                find(cx, wanted).ok_or_else(|| format!("no project {wanted}"))?
-            };
-            app.update(cx, |t, cx| {
-                t.update_project(
-                    &id,
-                    Update {
-                        parent_id: Some(parent),
-                        ..Default::default()
-                    },
-                    cx,
-                )
-            });
-            let now = app
-                .read(cx)
-                .project(&id)
-                .and_then(|p| p.parent_id.clone())
-                .unwrap_or_else(|| "its own".into());
-            Ok(json!(format!("ok {now}")))
         }
         "search" => {
             let words = cmd["text"].as_str().unwrap_or("").to_owned();

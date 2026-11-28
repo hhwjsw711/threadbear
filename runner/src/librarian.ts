@@ -910,10 +910,6 @@ export class Librarian {
       for (const [pid, name] of Object.entries(byProject(a.retitle))) {
         const p = this.projects.record(pid);
         if (!p || !member.has(pid) || (p.titleBy ?? p.createdBy) === 'mike') continue;
-        // Not a part or a parent: its name goes into the other's threads'
-        // briefs (Projects, "Parts"), threads this look wasn't about, which
-        // may have more access than the one that set it off (Codex review).
-        if (p.parentId || this.projects.partsOf(pid).length) continue;
         const next = projectTitle(name);
         if (!next || next.toLowerCase() === p.title.toLowerCase()) continue;
         try {

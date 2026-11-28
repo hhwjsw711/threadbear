@@ -30,7 +30,6 @@ struct CardView {
     project: Project,
     status: CardStatus,
     last_activity_ms: i64,
-    parts: Vec<String>,
 }
 
 thread_local! {
@@ -121,7 +120,6 @@ impl Threadbear {
                     project: c.project.clone(),
                     status: c.status,
                     last_activity_ms: c.last_activity_ms,
-                    parts: c.parts.iter().map(|p| p.title.clone()).collect(),
                 })
                 .collect();
             (shown, total, summary)
@@ -298,8 +296,8 @@ impl Threadbear {
     }
 
     /// `ProjectCardView`: its icon on a wide tile with its open threads'
-    /// count in the corner, then its title, what its threads are doing, its
-    /// parts and the first lines of its state. A click opens its page; its
+    /// count in the corner, then its title, what its threads are doing and
+    /// the first lines of its state. A click opens its page; its
     /// menu is the project's.
     fn render_project_card(
         &mut self,
@@ -322,24 +320,6 @@ impl Threadbear {
                     .child(card.project.title.clone()),
             )
             .child(project_status_line(&card.status, card.last_activity_ms, cx));
-        // Its parts are inside its card rather than cards of their own; its
-        // page lists them with their state.
-        if !card.parts.is_empty() {
-            words = words.child(
-                h_flex()
-                    .gap(px(4.))
-                    .items_center()
-                    .text_size(px(style::size::SIDEBAR_META + 1.))
-                    .line_height(px(15.))
-                    .text_color(secondary)
-                    .child(
-                        icons::symbol("square.stack")
-                            .with_size(px(11.))
-                            .text_color(secondary),
-                    )
-                    .child(div().min_w_0().truncate().child(card.parts.join(" · "))),
-            );
-        }
         if !card.project.state.is_empty() {
             words = words.child(
                 div()
@@ -483,8 +463,7 @@ impl Threadbear {
     }
 
     /// The Projects page's cards in the dump (`projectCards`), while it's
-    /// showing: "Title: 1 needs you · 2 working", or "Title: quiet", with
-    /// its parts after.
+    /// showing: "Title: 1 needs you · 2 working", or "Title: quiet".
     #[cfg(feature = "automation")]
     pub(crate) fn project_cards_dump(&self) -> Option<Vec<String>> {
         if self.open_project().is_some()
@@ -501,21 +480,7 @@ impl Threadbear {
         Some(
             cards
                 .iter()
-                .map(|card| {
-                    let parts = if card.parts.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            " (parts: {})",
-                            card.parts
-                                .iter()
-                                .map(|p| p.title.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    };
-                    format!("{}: {}{parts}", card.project.title, card.status.words())
-                })
+                .map(|card| format!("{}: {}", card.project.title, card.status.words()))
                 .collect(),
         )
     }

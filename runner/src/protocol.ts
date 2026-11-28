@@ -460,9 +460,6 @@ export type Project = {
   // the board as last read (see "Project tasks").
   notion?: string;
   tasks?: ProjectTasks;
-  // The project it's a part of (docs/protocol/projects.md, Projects, "Parts"). One
-  // level: a part has no parts.
-  parentId?: string;
   threadCount: number;
   lastActivityAt?: string;
 };

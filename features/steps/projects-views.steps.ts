@@ -69,3 +69,20 @@ Then('the right rail has no {string} button', async function (this: ThreadbearWo
     return right.length > 0 && !right.some((b) => b.title === title);
   });
 });
+
+// The Projects page and a project's page (`projectCards` in the dump: a line
+// a card).
+type WithProjects = Dump & { projectCards?: string[] | null };
+
+When('I show the Projects page', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'mode', mode: 'projects' });
+});
+
+When('I open the project {string}', async function (this: ThreadbearWorld, title: string) {
+  await this.app.do({ cmd: 'project', title });
+});
+
+Then('the project card {string} says {string}', async function (this: ThreadbearWorld, title: string, words: string) {
+  await this.until(`the "${title}" card saying "${words}"`, (d) =>
+    ((d as WithProjects).projectCards ?? []).some((line) => line.startsWith(`${title}: `) && line.includes(words)));
+});

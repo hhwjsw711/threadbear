@@ -683,7 +683,7 @@
   },
   "runner/test/unit/projects.test.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 22
+      "count": 21
     }
   },
   "runner/test/unit/provider-switch.test.ts": {
@@ -698,7 +698,7 @@
   },
   "runner/test/unit/raising-access.test.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 7
+      "count": 6
     }
   },
   "runner/test/unit/relay-install.test.ts": {

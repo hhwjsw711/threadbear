@@ -18,7 +18,7 @@ use threadbear_core::highlights::patches::{gives, source_name};
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::new_thread::abbreviate_home;
 use threadbear_core::projects::{
-    self as rules, Project, Section, Sections, Task, TaskColumn, TaskKind, Tasks, TextField,
+    self as rules, Project, Task, TaskColumn, TaskKind, Tasks, TextField,
 };
 use threadbear_core::sidebar::local_now;
 
@@ -47,9 +47,6 @@ impl Threadbear {
         let mut column = v_flex().w_full().gap(px(30.)).child(header);
         if let Some(add) = self.render_add_coordinator(&project, window, cx) {
             column = column.child(add);
-        }
-        if let Some(parts) = self.render_parts_section(&project, cx) {
-            column = column.child(parts);
         }
         column = column
             .child(self.render_text_section(&project, TextField::Goals, window, cx))
@@ -95,35 +92,12 @@ impl Threadbear {
         let faint = style::faint_text(cx);
         let title = self.project_title_field(project, window, cx);
         let made = rules::made_by(project, threads, &local_now());
-        let mut byline = h_flex()
+        let byline = h_flex()
             .gap(px(6.))
             .items_center()
             .text_size(px(style::size::LABEL))
             .line_height(px(16.))
             .child(div().text_color(faint).child(made));
-        // A part says whose, and goes up to it.
-        if let Some(parent) = project
-            .parent_id
-            .as_deref()
-            .and_then(|p| self.project(p))
-            .cloned()
-        {
-            let link = style::link_text(cx);
-            byline = byline.child(div().text_color(faint).child("·")).child(
-                crate::highlights::tipped(
-                    div()
-                        .id("project-parent")
-                        .cursor_pointer()
-                        .text_color(link)
-                        .hover(|s| s.underline()),
-                    format!("Open {}", parent.title),
-                )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.open_project_page(&parent.id, cx)
-                }))
-                .child(format!("Part of {}", parent.title)),
-            );
-        }
         let id = project.id.clone();
         // As tall as the Swift field (27), so who made it sits where it does,
         // and 2 up: AppKit's field puts its text that much nearer its top.
@@ -231,98 +205,6 @@ impl Threadbear {
         })
         .child(face)
         .into_any_element()
-    }
-
-    /// `PartsSection`: a parent's parts, each with its state's first line and
-    /// how many threads it has. A row opens the part's page.
-    fn render_parts_section(
-        &mut self,
-        project: &Project,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let parts: Vec<(Project, usize)> = {
-            let sections = Sections::build(
-                &self.projects.list,
-                self.threads.values().map(|t| &**t),
-                now_ms(),
-            );
-            sections
-                .parts_of(&project.id)
-                .iter()
-                .map(|s: &&Section| (s.project.clone(), s.threads.len()))
-                .collect()
-        };
-        if parts.is_empty() {
-            return None;
-        }
-        let mut section = v_flex().w_full().child(page_heading(
-            "Parts",
-            Some(parts.len().to_string()),
-            None,
-            cx,
-        ));
-        for (part, threads) in parts {
-            let key = format!("part:{}", part.id);
-            let hovering = self.projects.hovered.as_deref() == Some(key.as_str());
-            let id = part.id.clone();
-            let right = div()
-                .text_color(style::faint_text(cx))
-                .child(rules::thread_count_words(threads));
-            section = section.child(
-                crate::highlights::tipped(
-                    h_flex()
-                        .id(SharedString::from(format!("part-{}", part.id)))
-                        .w_full()
-                        .items_center()
-                        .gap(px(10.))
-                        .px(px(8.))
-                        .mx(px(-8.))
-                        .py(px(7.))
-                        .rounded(px(6.))
-                        .cursor_pointer()
-                        .when(hovering, |s| s.bg(style::sidebar_hover(cx))),
-                    format!("Open {}", part.title),
-                )
-                .on_hover(self.page_hover(key, cx))
-                .on_click(
-                    cx.listener(move |this, _: &ClickEvent, _, cx| this.open_project_page(&id, cx)),
-                )
-                .child(project_icon(Some(&part), "", 20., cx))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(px(style::size::LABEL))
-                                .line_height(px(16.))
-                                .font_semibold()
-                                .child(part.title.clone()),
-                        )
-                        .when_some(rules::part_line(&part), |s, line| {
-                            s.child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(style::size::DETAIL))
-                                    .line_height(px(15.))
-                                    .text_color(style::secondary_text(cx))
-                                    .child(line),
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(px(style::size::DETAIL))
-                        .line_height(px(15.))
-                        .font_medium()
-                        .child(right),
-                ),
-            );
-        }
-        Some(section.into_any_element())
     }
 
     /// Notes the pointer over one of the page's rows.

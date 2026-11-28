@@ -97,7 +97,6 @@ field-leak threadbear_core::projects::Project::icon
 field-leak threadbear_core::projects::Project::last_activity_ms
 field-leak threadbear_core::projects::Project::notes
 field-leak threadbear_core::projects::Project::notion
-field-leak threadbear_core::projects::Project::parent_id
 field-leak threadbear_core::projects::Project::state
 field-leak threadbear_core::projects::Project::state_updated_ms
 field-leak threadbear_core::projects::Project::tasks

@@ -33,7 +33,7 @@ test('the forms a citation takes: comma, colon, a bracket, backticks, across a c
     '// four (docs/protocol/needs-you.md,',
     '// "Needs',
     '// you")',
-    '// five docs/protocol/projects.md, Projects, "Parts"',
+    '// five docs/protocol/projects.md, Projects, "Links"',
     '// six protocol.md ("Warm start")',
     '// not one: docs/protocol.md has the rules',
   ].join('\n');
@@ -44,7 +44,7 @@ test('the forms a citation takes: comma, colon, a bracket, backticks, across a c
       ['needs-you', 'One reply', undefined],
       ['connection', 'Auth', undefined],
       ['needs-you', 'Needs you', undefined],
-      ['projects', 'Parts', 'Projects'],
+      ['projects', 'Links', 'Projects'],
       [undefined, 'Warm start', undefined],
     ],
   );

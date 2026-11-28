@@ -1301,17 +1301,7 @@ little about each project it's in, and gets the panels and Patches from
 the projects' folders. If one is wrong, Take out in its Highlights keeps
 it out for good.
 
-A project can be a part of a bigger one, for one body of work with
-separate strands: an app, its desktop port and its Android version, each
-with its own goals, state and notes. Right-click a project in Projects (or
-use the ... menu on its page) and pick Make a Part of, then the project it
-belongs to; Make Its Own Project undoes it. A part sits under its parent
-in the Projects view and inside its card on the Projects page, and the
-parent's page lists its parts. A thread in a part is told the parent's
-goals as well as the part's own; a thread in the parent is told which
-parts there are. One level only: a part can't have parts. Agents can do
-the same with update_project. The phone and the website list parts as
-projects of their own for now. When a project update needs your approval, its details show the current
+When a project update needs your approval, its details show the current
 project name and ID alongside the proposed changes.
 
 A project can show a task board from Notion. Give it a Notion page with a

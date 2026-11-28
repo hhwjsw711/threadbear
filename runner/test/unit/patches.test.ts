@@ -564,17 +564,17 @@ test('live state and list panels see the thread: its title and projects, so a pa
   const home = tmpDir();
   const app = project(home, 'dev/app', { 'package.json': '{}' });
   writePatch(path.join(app, '.threadbear/patches'), 'at.ts', `
-    const inAT = ({ thread }) => thread.projects.some((p) => p.title === "Acceptance testing" || p.parent?.title === "Acceptance testing");
+    const inAT = ({ thread }) => thread.projects.some((p) => p.title === "Acceptance testing");
     export default {
       panels: [
         { title: "AT runs", url: "http://127.0.0.1:1/", when: inAT },
-        { title: "Titled", items: ({ thread }) => [{ title: thread.title }, ...thread.projects.map((p) => ({ title: p.id + " " + p.title + " " + (p.parent?.id ?? "-") }))] },
+        { title: "Titled", items: ({ thread }) => [{ title: thread.title }, ...thread.projects.map((p) => ({ title: p.id + " " + p.title }))] },
       ],
     };
   `);
   const base = await loadPatchSet(app, home);
   const run = async (command: string, cwd: string) => runCommand(command, { cwd, env: process.env });
-  const at = { title: 'Login flow', projects: [{ id: 'p_l', title: 'Login', parent: { id: 'p_at', title: 'Acceptance testing' } }] };
+  const at = { title: 'Login flow', projects: [{ id: 'p_at', title: 'Acceptance testing' }] };
   const other = { title: 'Fix the header', projects: [{ id: 'p_w', title: 'Website' }] };
   const shown = await applyLive(base, { cwd: app, threadId: 't1', thread: at, run });
   assert.deepEqual(shown.panels.map((p) => p.title), ['AT runs', 'Titled']);
@@ -585,7 +585,7 @@ test('live state and list panels see the thread: its title and projects, so a pa
   assert.deepEqual(bare.panels.map((p) => p.title), ['Titled']);
   const titled = base.panels.find((p) => p.title === 'Titled')!;
   const rows = await renderListPanel(titled, base, { cwd: app, threadId: 't1', thread: at, run });
-  assert.deepEqual(rows.items?.map((r) => r.title), ['Login flow', 'p_l Login p_at']);
+  assert.deepEqual(rows.items?.map((r) => r.title), ['Login flow', 'p_at Acceptance testing']);
 });
 
 test('icons on chips: the patch file\'s, unless an action has its own', () => {

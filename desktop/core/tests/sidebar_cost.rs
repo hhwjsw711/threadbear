@@ -95,7 +95,7 @@ fn sidebar_cost() {
     println!("  the list, its badge and the arrow keys asked for it 3 to 4 times a frame: {:.2} to {:.2} ms a frame, now 0 unless a thread changed", one * 3., one * 4.);
     time("projects list sections", 200, || {
         Sections::build(&projects, threads.values(), now)
-            .top_level()
+            .sections
             .len()
     });
     // The Projects list's sorts, with each comparison reading both threads'
