@@ -107,6 +107,7 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | An edited message | `message.editOf` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
 | Narration (a paraphrase of what the agent wrote) | `message.narration` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
 | One reply's reply | `message.final` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
+| Queued CLI part boundary on a reply | `message.part` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
 
 ## Each ask on a needs-you or decision card (Ask, reducer/event.rs)
 

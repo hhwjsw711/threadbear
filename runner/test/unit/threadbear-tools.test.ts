@@ -1139,8 +1139,11 @@ test('queued CLI turn after an earlier end_turn does not inherit needs nothing, 
     const done = h.events(thread.id).filter((e) => e.type === 'turn.completed').at(-1) as { next?: string[] };
     assert.equal(done.next, undefined, 'no inherited follow-ups');
     assert.equal(t.preview, 'Staging build failed on tests; should I fix it?');
+    const m1 = h.events(thread.id).find((e) => e.type === 'assistant.text' && e.itemId === 'm1');
+    assert.equal(m1?.type === 'assistant.text' && m1.part, undefined, 'Part 1 text omits part');
     const m2 = h.events(thread.id).find((e) => e.type === 'assistant.text' && e.itemId === 'm2');
     assert.equal(m2?.type === 'assistant.text' && m2.final, undefined, 'queued turn text before end_turn is not marked final');
+    assert.equal(m2?.type === 'assistant.text' && m2.part, 1, 'queued Part 2 text carries part: 1');
   }
 });
 

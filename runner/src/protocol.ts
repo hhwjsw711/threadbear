@@ -913,7 +913,9 @@ export type EventBody =
   // narration: the provider sent only a summary of what the agent wrote
   // (Claude's narration blocks, normalize.ts); a later event with the
   // same itemId replaces it (docs/protocol.md, Transient events).
-  | { type: 'assistant.text'; itemId: string; text: string; summary?: true; givesWay?: true; narration?: true; final?: true }
+  // part: queued CLI part index (1, 2, …) after an earlier CLI part in this
+  // runner turn finished with queued messages left to answer.
+  | { type: 'assistant.text'; itemId: string; text: string; summary?: true; givesWay?: true; narration?: true; final?: true; part?: number }
   | { type: 'reasoning'; itemId: string; text: string }
   | { type: 'tool.call'; itemId: string; name: string; kind: ToolKind; title: string; input: Record<string, unknown> }
   | {

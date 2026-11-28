@@ -260,8 +260,10 @@ object Turns {
         val lastStep = body.indexOfLast(::isStep)
         if (summary >= 0 && lastStep < summary) {
             val words = ((lastStep + 1) until summary).filter { body[it].role == Role.ASSISTANT && !body[it].summary }
+            val tail = ((summary + 1) until body.size).filter { body[it].role == Role.ASSISTANT && !body[it].summary }
             val length = words.sumOf { body[it].text.length }
-            return if (length > body[summary].text.length) words else listOf(summary)
+            val base = if (length > body[summary].text.length) words else listOf(summary)
+            return base + tail
         }
         val last = body.indexOfLast { it.role == Role.ASSISTANT }
         return if (last >= 0) listOf(last) else emptyList()

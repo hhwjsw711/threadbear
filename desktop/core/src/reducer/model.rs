@@ -1072,6 +1072,7 @@ impl TranscriptModel {
                 text,
                 summary: true,
                 gives_way,
+                part,
                 ..
             } => {
                 // The turn's summary is its reply: what the agent wrote
@@ -1098,6 +1099,7 @@ impl TranscriptModel {
                     text: text.clone(),
                     is_summary: true,
                     gives_way: *gives_way,
+                    part: *part,
                     ..TextItem::default()
                 };
                 self.append(Row::new(&id, seq, turn_id, RowContent::Assistant(item)));
@@ -1108,6 +1110,7 @@ impl TranscriptModel {
                 text,
                 narration,
                 final_reply,
+                part,
                 ..
             } => {
                 self.streaming.remove(item_id);
@@ -1118,6 +1121,7 @@ impl TranscriptModel {
                     text: text.to_owned(),
                     is_narration: *narration,
                     is_final: *final_reply,
+                    part: *part,
                     ..TextItem::default()
                 };
                 let live_thought = match self.item_index.get(&thought) {
@@ -2136,17 +2140,73 @@ impl TranscriptModel {
     /// paraphrase of what the agent wrote, so it never beats the bullets.
     /// (`reply(of:)` in the Swift has the full history of each rule here.)
     fn reply_of(&self, turn: &[usize]) -> HashSet<usize> {
+        let mut out = HashSet::new();
+        let segments = self.reply_segments(turn);
+        let last_seg = segments.len().saturating_sub(1);
+        for (i, seg) in segments.into_iter().enumerate() {
+            out.extend(self.reply_of_segment(seg, i == last_seg));
+        }
+        out
+    }
+
+    /// Splits a turn into reply segments at visible (non-runner) steered user
+    /// messages and at queued CLI part rollovers (`TextItem.part` increases).
+    fn reply_segments<'a>(&self, turn: &'a [usize]) -> Vec<&'a [usize]> {
+        let mut cuts: Vec<usize> = Vec::new();
+        let mut cur_part: u32 = 0;
+        let mut last_in_part: Option<usize> = None;
+        for (p, &k) in turn.iter().enumerate() {
+            if p > 0
+                && matches!(
+                    &self.items[k].content,
+                    RowContent::User(u) if !u.is_from_runner()
+                )
+            {
+                cuts.push(p);
+                last_in_part = None;
+                continue;
+            }
+            if let Some(t) = self.text_item(k) {
+                if t.part > cur_part {
+                    if let Some(last) = last_in_part {
+                        cuts.push(last + 1);
+                    }
+                    cur_part = t.part;
+                }
+                last_in_part = Some(p);
+            } else if matches!(&self.items[k].content, RowContent::Tool(tool) if Self::is_taken_end_turn(tool))
+            {
+                last_in_part = Some(p);
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut segments = Vec::with_capacity(cuts.len() + 1);
+        let mut start = 0;
+        for cut in cuts {
+            if cut > start && cut < turn.len() {
+                segments.push(&turn[start..cut]);
+                start = cut;
+            }
+        }
+        if start < turn.len() {
+            segments.push(&turn[start..]);
+        }
+        segments
+    }
+
+    fn reply_of_segment(&self, seg: &[usize], is_last: bool) -> HashSet<usize> {
         let text = |k: usize| self.text_item(k);
-        // A message sent into the turn (the runner's "the app restarted")
-        // starts a fresh answer, so only an end_turn after it ends this one.
-        let fresh = turn
+        // Within a segment, a runner message (e.g. "the app restarted") starts
+        // a fresh answer, so only an end_turn after it ends this one.
+        let fresh = seg
             .iter()
             .rposition(|&k| matches!(self.items[k].content, RowContent::User(_)))
             .map_or(0, |p| p + 1);
         // The last end_turn that gave a card, not one that only added archive
         // or snooze ("Added: ...").
         let is_taken = |k: usize| matches!(&self.items[k].content, RowContent::Tool(tool) if Self::is_taken_end_turn(tool));
-        let end = turn[fresh..]
+        let end = seg[fresh..]
             .iter()
             .rposition(|&k| match &self.items[k].content {
                 RowContent::Tool(tool) => {
@@ -2160,65 +2220,33 @@ impl TranscriptModel {
             })
             .map(|p| p + fresh)
             .or_else(|| {
-                turn[fresh..]
+                seg[fresh..]
                     .iter()
                     .position(|&k| is_taken(k))
                     .map(|p| p + fresh)
             })
-            .unwrap_or(turn.len());
+            .unwrap_or(seg.len());
         // One reply: the agent's message after end_turn is the reply, and
-        // nothing else the turn wrote competes with it. Earlier replies before
-        // a steered message (`0..fresh`) stay visible above that message, while
-        // one between the fresh answer's start and its last card (`fresh..end`)
-        // belongs to a card that was replaced after a wake. If the fresh part
-        // wrote no final text of its own, keep earlier finals and still pick
-        // the fresh answer below instead of folding it away.
-        let mut out: HashSet<usize> = (0..fresh)
-            .filter(|&p| text(turn[p]).is_some_and(|t| t.is_final))
-            .map(|p| turn[p])
+        // nothing else the segment wrote competes with it.
+        let finals: Vec<usize> = (end..seg.len())
+            .filter(|&p| text(seg[p]).is_some_and(|t| t.is_final))
             .collect();
-        // Keep an earlier part's bullets summary visible above a steered
-        // non-runner user message too (unless that part already has a final
-        // reply after it).
-        if fresh > 0
-            && matches!(
-                &self.items[turn[fresh - 1]].content,
-                RowContent::User(u) if !u.is_from_runner()
-            )
-        {
-            if let Some(last_summary_pos) = (0..fresh)
-                .rev()
-                .find(|&p| text(turn[p]).is_some_and(|t| t.is_summary))
-            {
-                let superseded = (last_summary_pos + 1..fresh)
-                    .any(|p| text(turn[p]).is_some_and(|t| t.is_final));
-                if !superseded {
-                    out.insert(turn[last_summary_pos]);
-                }
-            }
-        }
-        let fresh_finals: Vec<usize> = (end..turn.len())
-            .filter(|&p| text(turn[p]).is_some_and(|t| t.is_final))
-            .collect();
-        if let Some(&last_final_pos) = fresh_finals.last() {
-            out.extend(fresh_finals.iter().map(|&p| turn[p]));
-            // A queued CLI part whose user message arrived before Part 1's
-            // end_turn writes non-final text after Part 1's final reply when
-            // it ends without end_turn; keep that answer visible too.
-            let after = &turn[last_final_pos + 1..];
+        if let Some(&last_final_pos) = finals.last() {
+            let mut out: HashSet<usize> = finals.iter().map(|&p| seg[p]).collect();
+            // Backwards compatibility for pre-`part` logs where a queued CLI
+            // part wrote non-final text after Part 1's final reply.
+            let after = &seg[last_final_pos + 1..];
             if after
                 .iter()
-                .any(|&k| text(k).is_some_and(|t| !t.is_summary))
+                .any(|&k| text(k).is_some_and(|t| !t.is_summary && !t.is_narration))
             {
                 out.extend(self.reply_in_tail(after));
             }
             return out;
         }
-        let before_end = &turn[..end];
+        let before_end = &seg[..end];
         // After the last step's row and after its result, as a message can
-        // land between a call and its result. A message sent into the
-        // running turn starts a new answer too; it counts by place, as live
-        // text carries the seq of the event before it.
+        // land between a call and its result.
         let steps: Vec<usize> = before_end
             .iter()
             .copied()
@@ -2244,53 +2272,12 @@ impl TranscriptModel {
             .collect();
         // The last card's own summary: one a wake replaced says what was true
         // before it (from Codex's review).
-        let summary_start = if end < turn.len() { end } else { fresh };
-        if let Some(summary_offset) = turn[summary_start..]
+        let summary_start = if end < seg.len() { end } else { fresh };
+        if let Some(&summary) = seg[summary_start..]
             .iter()
-            .rposition(|&k| text(k).is_some_and(|t| t.is_summary))
+            .rev()
+            .find(|&&k| text(k).is_some_and(|t| t.is_summary))
         {
-            let summary_pos = summary_start + summary_offset;
-            let summary = turn[summary_pos];
-            let after_summary = &turn[summary_pos + 1..];
-            let has_step_after = after_summary
-                .iter()
-                .any(|&k| Self::is_real_step(&self.items[k]));
-            let has_steered_user = turn
-                .iter()
-                .filter(|&&k| matches!(self.items[k].content, RowContent::User(_)))
-                .count()
-                > 1;
-            // Under Claude's accepted bullets end_turn ("Noted: this thread..."),
-            // reply-phase drops any single-part trailing text (unless it's a
-            // longer owed reply), whereas Codex's "Noted. Now write your final
-            // answer." lets its own trailing "Done." through. So when a steered
-            // user message is present, trailing text after an accepted bullets
-            // summary (or a second message after Codex's sign-off, or any text
-            // after a tool step) is Part 2's reply and stays visible alongside
-            // Part 1's summary instead of being hidden by the length rule.
-            let accepted_bullets = end < turn.len()
-                && matches!(
-                    &self.items[turn[end]].content,
-                    RowContent::Tool(tool)
-                        if tool.result.as_ref().is_some_and(|r| r.text.starts_with("Noted: this thread"))
-                );
-            let after_texts: Vec<usize> = after_summary
-                .iter()
-                .copied()
-                .filter(|&k| text(k).is_some_and(|t| !t.is_summary))
-                .collect();
-            if !after_texts.is_empty()
-                && (has_step_after
-                    || (has_steered_user && (accepted_bullets || after_texts.len() >= 2)))
-            {
-                out.insert(summary);
-                if has_step_after || accepted_bullets {
-                    out.extend(self.reply_in_tail(after_summary));
-                } else if let Some(&last_reply) = after_texts.last() {
-                    out.insert(last_reply);
-                }
-                return out;
-            }
             // A narration block is only a paraphrase, so it never beats the bullets.
             let mut words: Vec<usize> = final_words
                 .iter()
@@ -2298,10 +2285,10 @@ impl TranscriptModel {
                 .filter(|&k| text(k).is_some_and(|t| !t.is_narration))
                 .collect();
             if words.is_empty() {
-                let tail = if end < turn.len() {
-                    &turn[end..]
+                let tail = if end < seg.len() {
+                    &seg[end..]
                 } else {
-                    &turn[turn.len()..]
+                    &seg[seg.len()..]
                 };
                 words = tail
                     .iter()
@@ -2319,12 +2306,11 @@ impl TranscriptModel {
             } else {
                 text(summary).map_or(0, |t| super::text::count(&t.text))
             };
-            if said > bar {
-                out.extend(words);
+            return if said > bar {
+                words.into_iter().collect()
             } else {
-                out.insert(summary);
-            }
-            return out;
+                HashSet::from([summary])
+            };
         }
         // Words win over a narration paraphrase of them.
         let words: Vec<usize> = final_words
@@ -2333,17 +2319,20 @@ impl TranscriptModel {
             .filter(|&k| text(k).is_some_and(|t| !t.is_narration))
             .collect();
         if !words.is_empty() {
-            out.extend(words);
-            return out;
+            return words.into_iter().collect();
         }
         if !final_words.is_empty() {
-            out.extend(final_words);
-            return out;
+            return final_words.into_iter().collect();
         }
-        if let Some(&k) = turn.iter().rev().find(|&&k| text(k).is_some()) {
-            out.insert(k);
+        // Earlier segments (before a steered user or queued rollover) must not
+        // fall back to pre-tool working text or pre-restart summaries.
+        if !is_last {
+            return HashSet::new();
         }
-        out
+        match seg.iter().rev().find(|&&k| text(k).is_some()) {
+            Some(&k) => HashSet::from([k]),
+            None => HashSet::new(),
+        }
     }
 
     fn reply_in_tail(&self, after: &[usize]) -> Vec<usize> {
@@ -2377,7 +2366,10 @@ impl TranscriptModel {
             after
                 .iter()
                 .rev()
-                .find(|&&k| self.text_item(k).is_some_and(|t| !t.is_summary))
+                .find(|&&k| {
+                    self.text_item(k)
+                        .is_some_and(|t| !t.is_summary && !t.is_narration)
+                })
                 .copied()
                 .into_iter()
                 .collect()

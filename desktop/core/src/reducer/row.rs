@@ -121,6 +121,8 @@ pub struct TextItem {
     pub is_narration: bool,
     /// One reply's reply: the turn's reply, whatever else the turn wrote.
     pub is_final: bool,
+    /// Queued CLI part index (0 for the initial part, 1+ after a queued rollover).
+    pub part: u32,
 }
 
 impl TextItem {

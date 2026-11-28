@@ -198,8 +198,10 @@ public enum Turns {
         if let summary, lastStep < summary {
             let after = (lastStep + 1)..<summary
             let words = after.filter { body[$0].role == .assistant && !body[$0].summary }
+            let tail = ((summary + 1)..<body.count).filter { body[$0].role == .assistant && !body[$0].summary }
             let length = words.reduce(0) { $0 + body[$1].text.count }
-            return length > body[summary].text.count ? words : [summary]
+            let base = length > body[summary].text.count ? words : [summary]
+            return base + tail
         }
         if let last = body.lastIndex(where: { $0.role == .assistant }) { return [last] }
         return []

@@ -2099,6 +2099,7 @@ pub enum EventPayload {
         narration: bool,
         gives_way: bool,
         final_reply: bool,
+        part: u32,
     },
     Reasoning {
         item_id: String,
@@ -2258,6 +2259,7 @@ struct TextFields {
     narration: bool,
     gives_way: bool,
     final_reply: bool,
+    part: u32,
 }
 
 impl TextFields {
@@ -2277,6 +2279,9 @@ impl TextFields {
             narration: boolean(c, "narration").unwrap_or(false),
             gives_way: boolean(c, "givesWay").unwrap_or(false),
             final_reply: boolean(c, "final").unwrap_or(false),
+            part: lenient_int(c, "part")
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0),
         }
     }
 }
@@ -2308,6 +2313,7 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
                 narration: f.narration,
                 gives_way: f.gives_way,
                 final_reply: f.final_reply,
+                part: f.part,
             }
         }
         "reasoning" => {

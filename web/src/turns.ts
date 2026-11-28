@@ -278,8 +278,11 @@ export function replyIndexes(body: TurnMessage[]): number[] {
   if (summary >= 0 && lastStep < summary) {
     const words: number[] = [];
     for (let j = lastStep + 1; j < summary; j++) if (body[j]!.role === 'assistant' && !body[j]!.summary) words.push(j);
+    const tail: number[] = [];
+    for (let j = summary + 1; j < body.length; j++) if (body[j]!.role === 'assistant' && !body[j]!.summary) tail.push(j);
     const length = words.reduce((n, j) => n + body[j]!.text.length, 0);
-    return length > body[summary]!.text.length ? words : [summary];
+    const base = length > body[summary]!.text.length ? words : [summary];
+    return [...base, ...tail];
   }
   const last = lastIndex(body, (m) => m.role === 'assistant');
   return last >= 0 ? [last] : [];

@@ -77,6 +77,7 @@ export const DRAWN: Record<string, DrawRow> = {
   'message.narration': { what: 'Narration (a paraphrase of what the agent wrote)', ios: NOT_YET, android: NOT_YET, web: NOT_YET },
   'message.givesWay': { what: 'A summary that gives way to a longer reply', ios: NOT_YET, android: 'yes', web: NOT_YET, sign: { android: 'replyIndexes' } },
   'message.final': { what: "One reply's reply", ios: NOT_YET, android: NOT_YET, web: NOT_YET },
+  'message.part': { what: 'Queued CLI part boundary on a reply', ios: NOT_YET, android: NOT_YET, web: NOT_YET },
   'ask.action': { what: 'The ask itself', ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'paragraph', android: 'paragraph' } },
   'ask.taskId': { what: 'The decision task for an open coordinator ask', ios: CURRENT_ASK_CARD, android: CURRENT_ASK_CARD, web: CURRENT_ASK_CARD },
   'ask.options': { what: 'Answers to pick from', ios: 'yes', android: 'yes', web: 'yes', sign: { android: 'choices' } },

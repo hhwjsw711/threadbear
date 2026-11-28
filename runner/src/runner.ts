@@ -441,6 +441,10 @@ export type Turn = {
   // messages still to answer: MCP's end_turn checks only events after this so
   // the earlier part's end_turn cannot trigger ALREADY_ENDED for the next.
   replyResetSeq?: number;
+  // Queued CLI part index within this runner turn (incremented at each
+  // queued-part rollover, stamped onto assistant.text as `part` when > 0 so
+  // reducers split Part 1 and Part 2 cleanly without guessing).
+  part?: number;
 };
 
 export type TurnHold = 'save' | 'setup' | 'broken' | 'token' | 'handover';
@@ -3280,17 +3284,19 @@ export class Runner {
             }
           }
         }
+        const part = rt.turn?.part ? { part: rt.turn.part } : {};
+        if (ev.type === 'assistant.text' && rt.turn?.part) ev = { ...ev, part: rt.turn.part };
         this.emit(st, ev, rt.turn?.turnId);
         // The reply a reopened turn wrote, again under the card it was sent
         // back for: the apps take a turn's reply from after its last card.
         if (ev.type === 'tool.result' && ended?.restate !== undefined) {
-          this.emit(st, { type: 'assistant.text', itemId: `${ev.itemId}.reply`, text: ended.restate, final: true }, rt.turn?.turnId);
+          this.emit(st, { type: 'assistant.text', itemId: `${ev.itemId}.reply`, text: ended.restate, final: true, ...part }, rt.turn?.turnId);
         }
         // end_turn's summary, written as the turn's reply straight after
         // the call it came in (docs/protocol/needs-you.md, "The summary").
         if (ev.type === 'tool.result' && ended?.summary !== undefined) {
           rec.preview = oneLine(ended.summary, LIMITS.previewChars);
-          this.emit(st, { type: 'assistant.text', itemId: `${ev.itemId}.summary`, text: ended.summary, summary: true, ...(this.cfg.bulletReplies ? {} : { givesWay: true as const }) }, rt.turn?.turnId);
+          this.emit(st, { type: 'assistant.text', itemId: `${ev.itemId}.summary`, text: ended.summary, summary: true, ...(this.cfg.bulletReplies ? {} : { givesWay: true as const }), ...part }, rt.turn?.turnId);
         }
         break;
       }
@@ -3548,6 +3554,7 @@ export class Runner {
           turn.wake = undefined;
           if (r.outcome === 'failed' && r.error) this.emit(st, { type: 'error', message: r.error }, turn.turnId);
           turn.replyResetSeq = rec.lastSeq;
+          turn.part = (turn.part ?? 0) + 1;
           break;
         }
         this.completeTurn(st, r);

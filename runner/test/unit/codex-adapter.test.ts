@@ -543,6 +543,36 @@ test('a refused steer is held, counted in queuedTurns, and starts the next turn'
   await h.session.end();
 });
 
+test('unreadMessage is true while turn/steer is in flight or held, capped at two refusals, and clears once delivered', async () => {
+  const h = await open();
+  await started(h);
+  h.session.send({ id: 'm1', text: 'start', images: [] });
+  await turnStarts(h, 'u1');
+  assert.equal(h.session.unreadMessage(), false, 'active turn input already started');
+  h.session.send({ id: 'm2', text: 'also check staging', images: [] });
+  const steer = await h.conn.request('turn/steer');
+  assert.equal(h.session.unreadMessage(), true, 'steer in flight is unread (1/2)');
+  assert.equal(h.session.unreadMessage(), true, 'steer in flight is unread (2/2)');
+  assert.equal(h.session.unreadMessage(), false, 'capped at two refusals so turn cannot loop');
+  h.conn.respond(steer.id, { turnId: 'u1' });
+  await waitFor(() => h.session.unreadMessage() === false);
+  // A refused steer stays unread until the next turn starts on it.
+  h.session.send({ id: 'm3', text: 'one more', images: [] });
+  const steer2 = await h.conn.request('turn/steer');
+  assert.equal(h.session.unreadMessage(), true);
+  h.conn.fail(steer2.id, -32600, 'expected turn u1 is not active');
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(h.session.unreadMessage(), true, 'still unread while held for next turn (2/2)');
+  complete(h, 'u1');
+  const next = await h.conn.request('turn/start');
+  assert.equal(next.params.clientUserMessageId, 'm3');
+  assert.equal(h.session.unreadMessage(), false, 'cleared once turn/start picks up the held message');
+  h.conn.respond(next.id, { turn: { id: 'u2', status: 'inProgress' } });
+  complete(h, 'u2');
+  await waitFor(() => h.rec.results().length === 2);
+  await h.session.end();
+});
+
 test('a failed turn/start fails the turn with Codex\'s message', async () => {
   const h = await open();
   await started(h);

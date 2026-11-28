@@ -602,6 +602,10 @@ export class CodexSession implements AgentSession {
   private threadId?: string;
   private turn?: ActiveTurn;
   private held: UserInput[] = [];
+  // Steered/queued messages not yet acknowledged by Codex (in held, steerQueue,
+  // or with turn/steer in flight), mapped to how many end_turn calls were
+  // refused for each (capped at UNREAD_REFUSALS, like ClaudeSession).
+  private notDelivered = new Map<UserInput, number>();
   private early: [string, unknown][] = []; // thread traffic before the thread id is known
   private unknown = new Map<string, [string, unknown][]>(); // traffic from threads being looked up
   private resumePending = false;
@@ -1059,6 +1063,24 @@ export class CodexSession implements AgentSession {
     else this.held.splice(at, 0, input);
   }
 
+  private notePending(input: UserInput): void {
+    this.notDelivered.set(input, 0);
+    while (this.notDelivered.size > 50) this.notDelivered.delete(this.notDelivered.keys().next().value!);
+  }
+
+  // Whether a steered or queued message has not yet been acknowledged by Codex
+  // (waiting in held/steerQueue or with turn/steer in flight), so an end_turn
+  // written before Codex took it is refused with UNREAD_MESSAGE.
+  unreadMessage(): boolean {
+    let unread = false;
+    for (const [input, refused] of this.notDelivered) {
+      if (refused >= 2) continue;
+      this.notDelivered.set(input, refused + 1);
+      unread = true;
+    }
+    return unread;
+  }
+
   send(input: UserInput): void {
     this.sendOrder.set(input, this.sends++);
     switch (this.state) {
@@ -1067,6 +1089,7 @@ export class CodexSession implements AgentSession {
         this.deps.log.warn('a message reached a codex session that has ended', { threadId: this.opts.threadId });
         return;
       case 'starting':
+        this.notePending(input);
         this.held.push(input);
         return;
       case 'ready':
@@ -1077,6 +1100,7 @@ export class CodexSession implements AgentSession {
         return;
       case 'turnPending':
       case 'turnActive': {
+        this.notePending(input);
         const turn = this.turn!;
         if (turn.interruptRequested) return this.holdBehindInterrupt(input);
         if (turn.ending) {
@@ -1135,6 +1159,7 @@ export class CodexSession implements AgentSession {
   }
 
   private startTurn(input: UserInput, steerLater: UserInput[] = []): void {
+    this.notDelivered.delete(input);
     const turn = this.newTurn({ ids: input.id ? [input.id] : [], own: false });
     turn.steerQueue.push(...steerLater);
     this.turn = turn;
@@ -1235,6 +1260,7 @@ export class CodexSession implements AgentSession {
   private turnStartFailed(turn: ActiveTurn, e: unknown): void {
     if (this.turn !== turn || this.state === 'closing' || this.state === 'closed') return;
     if (e instanceof CodexExitedError) return; // the exit handler reports it
+    for (const m of turn.steerQueue) this.notDelivered.delete(m);
     const steerIds = turn.steerQueue.map((m) => m.id).filter((x): x is string => Boolean(x));
     this.turn = undefined;
     this.state = 'ready';
@@ -1253,6 +1279,7 @@ export class CodexSession implements AgentSession {
     const queued = turn.steerQueue;
     turn.steerQueue = [];
     if (turn.interruptRequested) {
+      for (const m of queued) this.notDelivered.delete(m);
       turn.dropped.push(...queued.map((m) => m.id).filter((x): x is string => Boolean(x)));
       void this.sendInterrupt(turn).catch(() => undefined);
       return;
@@ -1293,6 +1320,7 @@ export class CodexSession implements AgentSession {
         input: inputItems(input),
       })
       .then(() => {
+        this.notDelivered.delete(input);
         if (input.id) {
           turn.ids.push(input.id);
           this.normalizer.steered?.(input.id);
@@ -1301,6 +1329,7 @@ export class CodexSession implements AgentSession {
       .catch((e: unknown) => {
         this.deps.log.info('codex refused a steer; holding the message for the next turn', { threadId: this.opts.threadId, error: errText(e) });
         if (turn.interruptRequested) {
+          this.notDelivered.delete(input);
           if (input.id) turn.dropped.push(input.id);
         } else {
           this.hold(input);
@@ -1406,6 +1435,7 @@ export class CodexSession implements AgentSession {
 
   private failHeld(error: string): void {
     this.clearWaitTimers();
+    for (const m of this.held) this.notDelivered.delete(m);
     const ids = this.held.map((m) => m.id).filter((x): x is string => Boolean(x));
     this.held = [];
     if (!ids.length) return;
@@ -1434,7 +1464,9 @@ export class CodexSession implements AgentSession {
       if (!this.proc.alive) throw new Error('The Codex process has already exited.');
       return;
     }
-    const dropped = [...this.held, ...(this.turn?.steerQueue ?? [])].map((m) => m.id).filter((x): x is string => Boolean(x));
+    const droppedInputs = [...this.held, ...(this.turn?.steerQueue ?? [])];
+    for (const m of droppedInputs) this.notDelivered.delete(m);
+    const dropped = droppedInputs.map((m) => m.id).filter((x): x is string => Boolean(x));
     this.held = [];
     const turn = this.turn;
     if (turn) turn.steerQueue = [];

@@ -1300,7 +1300,7 @@ fn testQueuedAnswerWithoutEndTurnStaysVisibleWhenMessagePrecededPart1EndTurn() {
 
 #[test]
 fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
-    // Part 2 runs a tool step after Part 1's long bullets summary and writes a shorter reply:
+    // Part 2 (part: 1) runs a tool step after Part 1's long bullets summary and writes a shorter reply:
     // both Part 1's summary and Part 2's reply stay visible, while pre-tool commentary folds.
     let model = from_events(vec![
         user(1, "First request"),
@@ -1322,7 +1322,7 @@ fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
         event_turn(
             7,
             "assistant.text",
-            json!({"itemId": "pre", "text": "Checking staging logs..."}),
+            json!({"itemId": "pre", "text": "Checking staging logs...", "part": 1}),
             Some("t1"),
         ),
         call(8, "c2").with_turn("t1"),
@@ -1330,7 +1330,7 @@ fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
         event_turn(
             10,
             "assistant.text",
-            json!({"itemId": "m2", "text": "Staging failed; fix it?"}),
+            json!({"itemId": "m2", "text": "Staging failed; fix it?", "part": 1}),
             Some("t1"),
         ),
         done(11),
@@ -1349,7 +1349,7 @@ fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
     );
     assert!(model.row("t:c2").is_none(), "Part 2 tool call stays folded");
 
-    // A single-part folded steer in bullets mode with a short "Done." sign-off still folds "Done.".
+    // A single-part folded steer in bullets mode with a short "Done." sign-off still folds "Done." (even with narration).
     let folded = from_events(vec![
         user(1, "First request"),
         started(2),
@@ -1370,105 +1370,270 @@ fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
         event_turn(
             7,
             "assistant.text",
+            json!({"itemId": "n1", "text": "Wrapped up.", "narration": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            8,
+            "assistant.text",
             json!({"itemId": "m2", "text": "Done."}),
             Some("t1"),
         ),
-        done(8),
+        done(9),
     ]);
     assert!(
         folded.row("a:e1.summary").is_some(),
         "summary stays visible"
     );
     assert!(
+        folded.row("a:n1").is_none(),
+        "narration after summary stays folded"
+    );
+    assert!(
         folded.row("a:m2").is_none(),
         "short sign-off after folded steer still folds"
     );
 
-    // Direct Part 2 reply with no tool calls after Claude's accepted bullets summary stays visible.
-    let direct_claude = from_events(vec![
-        user(1, "Start the dev server"),
-        started(2),
-        event_turn(
-            3,
-            "user.message",
-            json!({"text": "What port is it running on?"}),
-            Some("t1"),
-        ),
-        end_turn_call(4, "e1"),
-        result_text(5, "e1", "Noted: this thread is done.").with_turn("t1"),
-        event_turn(
-            6,
-            "assistant.text",
-            json!({"itemId": "e1.summary", "text": "- Started the dev server with detailed verification across all packages.", "summary": true}),
-            Some("t1"),
-        ),
-        event_turn(
-            7,
-            "assistant.text",
-            json!({"itemId": "m2", "text": "Port 3000."}),
-            Some("t1"),
-        ),
-        done(8),
-    ]);
-    assert!(
-        direct_claude.row("a:e1.summary").is_some(),
-        "Part 1 summary stays visible"
-    );
-    assert!(
-        direct_claude.row("a:m2").is_some(),
-        "short direct Part 2 answer without tools stays visible"
-    );
+    // Direct Part 2 reply with no tool calls after Claude's or Codex's bullets summary (even without a Part 1 sign-off).
+    for result_str in [
+        "Noted: this thread is done.",
+        "Noted. Now write your final answer.",
+    ] {
+        let direct = from_events(vec![
+            user(1, "Start the dev server"),
+            started(2),
+            event_turn(
+                3,
+                "user.message",
+                json!({"text": "What port is it running on?"}),
+                Some("t1"),
+            ),
+            end_turn_call(4, "e1"),
+            result_text(5, "e1", result_str).with_turn("t1"),
+            event_turn(
+                6,
+                "assistant.text",
+                json!({"itemId": "e1.summary", "text": "- Started the dev server with detailed verification across all packages.", "summary": true}),
+                Some("t1"),
+            ),
+            event_turn(
+                7,
+                "assistant.text",
+                json!({"itemId": "m2", "text": "Port 5173.", "part": 1}),
+                Some("t1"),
+            ),
+            done(8),
+        ]);
+        assert!(
+            direct.row("a:e1.summary").is_some(),
+            "{result_str}: Part 1 summary stays visible"
+        );
+        assert!(
+            direct.row("a:m2").is_some(),
+            "{result_str}: direct Part 2 answer without tools stays visible"
+        );
+    }
 
-    // Direct Part 2 reply with no tool calls after Codex's bullets summary and Part 1's "Done." sign-off.
-    let direct_codex = from_events(vec![
+    // Two queued follow-ups after Codex's bullets summary and Part 1's "Done." sign-off:
+    // Part 1's "Done." and trailing narration fold, while both queued answers stay visible.
+    let multi_codex = from_events(vec![
         user(1, "Start the dev server"),
         started(2),
         event_turn(3, "user.message", json!({"text": "What port?"}), Some("t1")),
-        end_turn_call(4, "e1"),
-        result_text(5, "e1", "Noted. Now write your final answer.").with_turn("t1"),
         event_turn(
-            6,
+            4,
+            "user.message",
+            json!({"text": "Is it public?"}),
+            Some("t1"),
+        ),
+        end_turn_call(5, "e1"),
+        result_text(6, "e1", "Noted. Now write your final answer.").with_turn("t1"),
+        event_turn(
+            7,
             "assistant.text",
             json!({"itemId": "e1.summary", "text": "- Started the dev server with full checks.", "summary": true}),
             Some("t1"),
         ),
         event_turn(
-            7,
+            8,
             "assistant.text",
             json!({"itemId": "m1", "text": "Done."}),
             Some("t1"),
         ),
         event_turn(
-            8,
+            9,
             "assistant.text",
-            json!({"itemId": "m2", "text": "Port 5173."}),
+            json!({"itemId": "m2", "text": "Port 5173.", "part": 1}),
             Some("t1"),
         ),
-        done(9),
+        event_turn(
+            10,
+            "assistant.text",
+            json!({"itemId": "m3", "text": "Bound to localhost only.", "part": 2}),
+            Some("t1"),
+        ),
+        event_turn(
+            11,
+            "assistant.text",
+            json!({"itemId": "n2", "text": "Answered host binding.", "narration": true, "part": 2}),
+            Some("t1"),
+        ),
+        done(12),
     ]);
+    assert!(multi_codex.row("a:e1.summary").is_some());
+    assert!(multi_codex.row("a:m1").is_none(), "Part 1 sign-off folds");
     assert!(
-        direct_codex.row("a:e1.summary").is_some(),
-        "Part 1 Codex summary stays visible"
+        multi_codex.row("a:m2").is_some(),
+        "first queued answer stays visible"
     );
     assert!(
-        direct_codex.row("a:m1").is_none(),
-        "Part 1 Codex sign-off stays folded"
+        multi_codex.row("a:m3").is_some(),
+        "second queued answer stays visible"
     );
     assert!(
-        direct_codex.row("a:m2").is_some(),
-        "Part 2 direct answer stays visible"
+        multi_codex.row("a:n2").is_none(),
+        "narration does not beat real answer"
     );
+}
 
-    // Steered message arriving after Part 1's bullets summary keeps both the earlier summary and Part 2's reply.
-    let steered_after_summary = from_events(vec![
-        user(1, "First request"),
+#[test]
+fn testFoldedSteerBulletsGivesWayAndOwedReplyReplaceSummary() {
+    // Folded steer with givesWay: true or longer BULLETS_ONLY owed reply replaces the summary cleanly (no duplication).
+    for gives_way in [true, false] {
+        let owed = from_events(vec![
+            user(1, "Fix the parser"),
+            started(2),
+            event_turn(
+                3,
+                "user.message",
+                json!({"text": "Also update docs"}),
+                Some("t1"),
+            ),
+            end_turn_call(4, "e1"),
+            result_text(5, "e1", "Noted: this thread is done.").with_turn("t1"),
+            event_turn(
+                6,
+                "assistant.text",
+                json!({"itemId": "e1.summary", "text": "- Fixed parser.", "summary": true, "givesWay": gives_way}),
+                Some("t1"),
+            ),
+            event_turn(
+                7,
+                "assistant.text",
+                json!({"itemId": "m2", "text": "Fixed the parser edge case and updated the docs in full."}),
+                Some("t1"),
+            ),
+            done(8),
+        ]);
+        assert!(
+            owed.row("a:e1.summary").is_none(),
+            "gives_way={gives_way}: replaced summary stays folded"
+        );
+        assert!(
+            owed.row("a:m2").is_some(),
+            "gives_way={gives_way}: full reply stays visible"
+        );
+    }
+}
+
+#[test]
+fn testSteeredAndRunnerSegmentsKeepOnlyValidEarlierSummaries() {
+    // Multiple steered messages: an unrelated final reply to u2 does not supersede Part 1's summary s1.
+    let multi_steer = from_events(vec![
+        user(1, "First"),
         started(2),
         end_turn_call(3, "e1"),
         result_text(4, "e1", "Noted: this thread is done.").with_turn("t1"),
         event_turn(
             5,
             "assistant.text",
-            json!({"itemId": "e1.summary", "text": "- First part finished.", "summary": true}),
+            json!({"itemId": "s1", "text": "- First part finished.", "summary": true}),
+            Some("t1"),
+        ),
+        event_turn(6, "user.message", json!({"text": "Second"}), Some("t1")),
+        end_turn_call(7, "e2"),
+        result_text(8, "e2", "Noted: this thread is done. Now write your reply.").with_turn("t1"),
+        event_turn(
+            9,
+            "assistant.text",
+            json!({"itemId": "f2", "text": "Second part finished.", "final": true}),
+            Some("t1"),
+        ),
+        event_turn(10, "user.message", json!({"text": "Third"}), Some("t1")),
+        event_turn(
+            11,
+            "assistant.text",
+            json!({"itemId": "m3", "text": "Third part answered."}),
+            Some("t1"),
+        ),
+        done(12),
+    ]);
+    assert!(
+        multi_steer.row("a:s1").is_some(),
+        "s1 stays visible above u2 even though f2 is final"
+    );
+    assert!(
+        multi_steer.row("a:f2").is_some(),
+        "f2 stays visible above u3"
+    );
+    assert!(
+        multi_steer.row("a:m3").is_some(),
+        "m3 stays visible below u3"
+    );
+
+    // Pre-restart summary before a runner message is not resurrected when Mike later steers.
+    let after_runner = from_events(vec![
+        user(1, "Land it"),
+        started(2),
+        end_turn_call(3, "e1"),
+        result_text(4, "e1", "Noted: this thread is done.").with_turn("t1"),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "s1", "text": "- Waiting for restart.", "summary": true}),
+            Some("t1"),
+        ),
+        event_turn(
+            6,
+            "user.message",
+            json!({"text": "The app restarted.", "origin": "runner"}),
+            Some("t1"),
+        ),
+        call(7, "c2").with_turn("t1"),
+        result(8, "c2").with_turn("t1"),
+        event_turn(
+            9,
+            "user.message",
+            json!({"text": "How does it look?"}),
+            Some("t1"),
+        ),
+        event_turn(
+            10,
+            "assistant.text",
+            json!({"itemId": "m3", "text": "Looks good on the new build."}),
+            Some("t1"),
+        ),
+        done(11),
+    ]);
+    assert!(
+        after_runner.row("a:s1").is_none(),
+        "pre-restart summary stays folded across runner message"
+    );
+    assert!(
+        after_runner.row("a:m3").is_some(),
+        "latest answer stays visible"
+    );
+
+    // Summary above Mike's visible steer stays visible even if a runner message arrives after Mike's steer.
+    let before_runner = from_events(vec![
+        user(1, "First"),
+        started(2),
+        end_turn_call(3, "e1"),
+        result_text(4, "e1", "Noted: this thread is done.").with_turn("t1"),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "s1", "text": "- First part finished.", "summary": true}),
             Some("t1"),
         ),
         event_turn(
@@ -1479,18 +1644,21 @@ fn testQueuedAnswerWithoutEndTurnStaysVisibleAfterBulletsSummary() {
         ),
         event_turn(
             7,
-            "assistant.text",
-            json!({"itemId": "m2", "text": "Staging failed; fix it?"}),
+            "user.message",
+            json!({"text": "The app restarted.", "origin": "runner"}),
             Some("t1"),
         ),
-        done(8),
+        event_turn(
+            8,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Staging looks good."}),
+            Some("t1"),
+        ),
+        done(9),
     ]);
     assert!(
-        steered_after_summary.row("a:e1.summary").is_some(),
-        "Part 1 bullets summary stays visible above the steered message"
+        before_runner.row("a:s1").is_some(),
+        "s1 stays visible above Mike's steered message even when a runner message follows"
     );
-    assert!(
-        steered_after_summary.row("a:m2").is_some(),
-        "Part 2 answer stays visible below the steered message"
-    );
+    assert!(before_runner.row("a:m2").is_some());
 }

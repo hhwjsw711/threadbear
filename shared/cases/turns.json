@@ -268,6 +268,17 @@
         {"seq": 4, "role": "assistant", "text": "So far", "at": 3}
       ] },
       "expect": ["m1", "tools 2", "note 3", "m4"]
+    },
+    {
+      "name": "a direct queued answer after a summary stays visible instead of folding into Worked",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Start the server", "at": 0, "turn": "t1"},
+        {"seq": 2, "role": "user", "text": "What port?", "at": 5, "turn": "t1"},
+        {"seq": 3, "role": "tool", "text": "threadbear: end_turn", "at": 10, "turn": "t1"},
+        {"seq": 4, "role": "assistant", "text": "- Started the server", "at": 11, "summary": true, "turn": "t1"},
+        {"seq": 5, "role": "assistant", "text": "Port 3000.", "at": 15, "turn": "t1"}
+      ] },
+      "expect": ["m1", "m2", "Worked for 10s: tools 3", "m4", "m5"]
     }
   ]
 }
