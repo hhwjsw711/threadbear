@@ -35,7 +35,7 @@ Feature: The thread's bar, banners and notes
     And the limit box carries on by itself
     And the model chip is marked "Limit reached"
 
-  @banner.limit.picker @swift-pending
+  @banner.limit @swift-pending
   Scenario: Continue now opens the model picker on the logins with room, and a pick there carries on
     When I open the thread "Draft the release notes for 0.4"
     And I click the limit box's Continue now
