@@ -183,6 +183,38 @@ test('hidden helpers run one at a time, stay invisible to inbox/search/notificat
   c.stop();
 });
 
+test('releasing an idle coordinator CLI leaves its independent helper running', async () => {
+  const { h, c, project, antigravity } = setup();
+  const { coordinator } = c.create({ projectId: project.id, accountId: 'antigravity-main' });
+  await tick();
+  const cli = antigravity.sessions.find((s) => s.opts.threadId === coordinator.threadId)!;
+  cli.result();
+  await tick();
+
+  const { helperId, taskId } = c.startHelper(project.id, { brief: 'Check pantry stock' });
+  await tick();
+  const helper = antigravity.sessions.find((s) => s.opts.threadId === helperId)!;
+  const parent = h.runner.threads.get(coordinator.threadId)!;
+  h.runner.updateSubagent(parent, { id: 'cli-native', agentType: 'coordinator-worker', status: 'running' });
+
+  h.runner.releaseSession(parent);
+  await tick();
+  assert.equal(cli.ended, true);
+  assert.equal(helper.ended, false);
+  assert.equal(c.get(project.id).tasks.find((t) => t.id === taskId)?.run?.status, 'running');
+  assert.equal(h.runner.subagent(coordinator.threadId, helperId).subagent?.status, 'running');
+  assert.equal(h.runner.get(coordinator.threadId).subagents?.find((a) => a.id === 'cli-native')?.status, 'stopped');
+
+  helper.text('report', 'Four tins left.');
+  helper.result();
+  await tick();
+  assert.equal(c.get(project.id).tasks.find((t) => t.id === taskId)?.run?.status, 'completed');
+  const transcript = h.runner.subagent(coordinator.threadId, helperId);
+  assert.equal(transcript.subagent?.status, 'completed');
+  assert.ok(transcript.events.some((e) => e.type === 'assistant.text' && e.text === 'Four tins left.'));
+  c.stop();
+});
+
 test('a coordinator with a helper still working reads as busy, not hibernating for its schedule (Omi, 26 Nov)', async () => {
   const { h, c, project, antigravity } = setup();
   const { coordinator } = c.create({ projectId: project.id, accountId: 'antigravity-main', model: 'gemini-4-neon' });

@@ -664,8 +664,8 @@ of the way unless opened. These fields remain the same canonical records
 `projects.get` and `projects.update` read and write. The conversation is the
 audit trail. Routine work uses runner-managed hidden helper sessions (started
 and resumed through the `coordinator` tool, never separate inbox threads),
-surfaced in Activity and readable via `threads.subagent`. Questions and
-permission requests from helpers go to the coordinator. Only it asks the user.
+shown in Activity and `threads.subagent` even when the coordinator's idle CLI
+exits. The coordinator alone brings helper questions and permission requests to the user.
 
 `projects.update` optionally takes `ifUnchanged: { goals?, state?, notes? }`.
 The owning runner compares every supplied baseline before writing anything. A

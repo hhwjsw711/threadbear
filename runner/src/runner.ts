@@ -4036,8 +4036,8 @@ export class Runner {
     this.cli(st, { kind: 'stopTasks' });
     rt.finished = [];
     rt.taskEndedInTurn = false;
-    // Its sub-agents went with it.
-    this.stopSubagents(st);
+    // Native sub-agents went with this CLI. Coordinator helpers have their own sessions.
+    this.stopSubagents(st, { keepCoordinatorHelpers: true });
     rt.wakeTimer?.cancel();
     rt.wakeTimer = undefined;
     // No CLI to open a turn reading a background result: a done card held
@@ -5242,12 +5242,13 @@ export class Runner {
     this.markDirty(st);
   }
 
-  // Marks the thread's running sub-agents stopped once the CLI running them
-  // has gone.
-  stopSubagents(st: ThreadState): void {
+  // Marks running sub-agents stopped when their CLI or the runner goes away.
+  stopSubagents(st: ThreadState, { keepCoordinatorHelpers = false } = {}): void {
     let any = false;
     for (const a of st.rec.subagents ?? []) {
       if (a.status !== 'running') continue;
+      if (keepCoordinatorHelpers && a.itemId && this.threads.get(a.id)?.rec.coordinatorHelperFor === st.rec.id &&
+          this.coordinators?.helperRunActive(a.id, a.itemId)) continue;
       a.status = 'stopped';
       a.endedAt = this.isoNow();
       delete a.activity;
