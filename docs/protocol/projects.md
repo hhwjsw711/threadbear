@@ -946,10 +946,10 @@ Only the user pauses a coordinator or answers its helpers' questions
 coordinator's `coordinator` tool may read its own registry, add tasks,
 select/complete/archive tasks, start or resume hidden helpers, manage open loops
 (`openLoop`, `updateLoop`, `closeLoop`), update its charter and interests, set a
-wake time and record answers to helper questions. It may also use `add_button`
-to offer a side job outside the project as a new thread; only the user's press
-starts it, so it can't use one to get round its own boundary. A coordinator may also call
-Agent Archive's read tools (exact names in `coordinator-policy.ts`) to look
+wake time and use `answer` with a helper question ID from `get` under `questions`.
+Read the user's recorded decisions in `get` under Tasks (`taskBoard`). Only the
+user can start a side job offered with `add_button` outside the project. The
+coordinator can call Agent Archive's read tools (`coordinator-policy.ts`) to look
 back before asking the user something already settled: on Claude by tool name;
 on Antigravity (which gets
 the archive as a stdio server in `session/new`, unless its own or the folder's

@@ -2945,6 +2945,48 @@ test('legacy task actions explain how to edit a loop-backed Tasks board entry', 
   assert.equal(answered?.state, 'ready_to_close');
 });
 
+test('coordinator answers use helper question IDs and guide the agent to Tasks for board IDs', async (t) => {
+  const { c, h, project, projects } = setup();
+  t.after(() => c.stop());
+  const { coordinator } = c.create({ projectId: project.id });
+  const tool = buildThreadbearTools(h.runner, coordinator.threadId, () => h.clock.now(), undefined, undefined, undefined, { coordinators: () => c })
+    .find((item) => item.name === 'coordinator')!;
+  const { taskId: decisionId } = c.addBoardTask(project.id, {
+    title: 'Which room should we book?', doneWhen: 'The user has chosen a room', kind: 'decision', owner: { kind: 'user' },
+    decisionOptions: [{ label: 'Blue room' }, { label: 'Red room' }], recommendation: 'Blue room',
+  });
+  coordinatorMethods(c)['coordinators.answerDecision']({ projectId: project.id, taskId: decisionId, answer: 'Blue room' });
+  const { taskId: actionId } = c.addBoardTask(project.id, { title: 'Book the room', doneWhen: 'Booking confirmed' });
+  const other = projects.create({ title: 'An unrelated project', by: 'mike' });
+  c.create({ projectId: other.id });
+  const { taskId: foreignId } = c.addBoardTask(other.id, { title: 'Other task', doneWhen: 'Finished' });
+  const { helperId } = c.startHelper(project.id, { brief: 'Find available rooms' });
+  c.recordHelperQuestion(helperId, [{
+    header: 'Room', question: 'How many seats?', multiSelect: false,
+    options: [{ label: 'Ten seats', description: 'Smaller room' }, { label: 'Twenty seats', description: 'Larger room' }],
+  }]);
+  const before = c.get(project.id);
+  const answer = (questionId: string, text: string) => tool.handler({ action: 'answer', questionId, answer: text } as never, {});
+
+  for (const [id, message] of [
+    [decisionId, /user decision.*Tasks.*get.*recorded answer/],
+    [actionId, /Tasks board entry.*updateWorkTask.*taskId/],
+    [foreignId, /That helper question is not in this project\./],
+  ] as const) {
+    const refused = await answer(id, 'Red room');
+    assert.equal(refused.isError, true);
+    assert.match(said(refused), message);
+  }
+  assert.deepEqual(c.get(project.id).taskBoard, before.taskBoard);
+  assert.deepEqual(c.get(project.id).questions, before.questions);
+  assert.equal(before.taskBoard.tasks.find(({ id }) => id === decisionId)?.decision?.answer, 'Blue room');
+
+  const result = await answer(before.questions[0]!.id, 'Twenty seats');
+  assert.equal(result.isError, undefined, said(result));
+  assert.equal(c.get(project.id).questions[0]!.state, 'answered');
+  assert.equal(c.get(project.id).questions[0]!.answer, 'Twenty seats');
+});
+
 test('a new named helper through the coordinator tool leaves an unrelated to-do alone', async (t) => {
   const { c, h, project } = setup();
   t.after(() => c.stop());

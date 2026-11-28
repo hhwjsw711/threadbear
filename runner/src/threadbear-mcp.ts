@@ -2266,7 +2266,7 @@ export function buildThreadbearTools(
     endTurn(),
     ...(isCoordinator ? [tool(
       'coordinator',
-      'Organize your project Tasks board. addWorkTask and addTask need title and doneWhen. Use moveWorkTask for groups and parents, and updateWorkTask for state. startHelper takes a taskId or title. Use resumeHelper for existing runs. Ask for decisions via end_turn with taskId if on the board.',
+      'Organize your project Tasks board. addWorkTask and addTask need title and doneWhen. Use moveWorkTask for groups and parents, and updateWorkTask for state. startHelper takes a taskId or title. Use resumeHelper for existing runs. Ask for decisions via end_turn with taskId if on the board. Use answer for helper questions only.',
       {
         action: z.enum(['get', 'addWorkItem', 'updateWorkItem', 'removeWorkItem', 'addWorkTask', 'updateWorkTask', 'moveWorkTask', 'postponeTask', 'addTask', 'selectTask', 'completeTask', 'archiveTask', 'dropTask', 'startHelper', 'resumeHelper', 'openLoop', 'updateLoop', 'closeLoop', 'update', 'answer']),
         ...workTaskEditShape,
@@ -2284,7 +2284,7 @@ export function buildThreadbearTools(
         charter: z.string().max(8000).optional(),
         interests: z.array(z.string().max(200)).max(40).optional(),
         wakeAt: z.string().nullable().optional(),
-        questionId: z.string().optional(),
+        questionId: z.string().optional().describe('For answer, use an ID from questions in coordinator get.'),
         answer: z.string().max(4000).optional(),
         loopId: z.string().optional().describe('The loop id for updateLoop / closeLoop, from your desk.'),
         loopKind: z.enum(['user_question', 'waiting_on_user']).optional(),

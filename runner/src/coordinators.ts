@@ -1054,7 +1054,14 @@ export class Coordinators {
     this.requireOn();
     const row = this.must(projectId);
     const q = row.questions.find((item) => item.id === id);
-    if (!q) throw bad('That helper question is not in this project.');
+    if (!q) {
+      const task = boardRecords(row).find((item) => item.id === id);
+      if (!task) throw bad('That helper question is not in this project.');
+      if (isUserDecision(task)) {
+        throw bad('That ID belongs to a user decision in Tasks. Use coordinator get to read the recorded answer. If you need to ask the user, use end_turn with its taskId.');
+      }
+      throw bad('That ID belongs to a Tasks board entry. Use updateWorkTask with its taskId to record progress.');
+    }
     q.answer = text(answer, 4000); q.state = 'answered';
     this.changed(row); return this.get(projectId);
   }
