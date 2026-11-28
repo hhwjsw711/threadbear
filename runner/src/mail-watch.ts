@@ -494,9 +494,9 @@ function senderAddress(from?: string): string {
 }
 
 const GH_BUILD_SUBJECT = /^\[[^\]]+\]\s+(?:(?:(?:PR|Workflow)\s+)?Run\s+(?:failed|cancelled|canceled|succeeded|skipped)|Some jobs were not successful)\s*:/i;
-const GH_BUILD_BODY = /^\[[^\]]+\]\s+.+\bworkflow run\b[\s\S]{0,200}\r?\nRepository:\s+\S+\s*\r?\nWorkflow:\s+/i;
+const GH_BUILD_BODY = /^\[[^\]]+\]\s+.+\bworkflow run\b[\s\S]{0,200}\bRepository:\s+\S+\s+Workflow:\s+/i;
 const GL_BUILD_SUBJECT = /(?:^|\|\s*)(?:Failed|Fixed|Successful|Canceled|Cancelled)\s+pipeline\s+for\s+/i;
-const GL_BUILD_BODY = /^Pipeline\b[^\r\n]{0,120}\b(?:failed|passed|canceled|cancelled)![\s\S]{0,120}\r?\nProject:\s+/i;
+const GL_BUILD_BODY = /^Pipeline\b[\s\S]{0,120}\b(?:failed|passed|canceled|cancelled)!?[\s\S]{0,120}\bProject:\s+/i;
 
 // Automated CI/build run notifications (GitHub Actions, GitLab pipelines):
 // dropped before sorting so they never wake threads, pile up as held mail,
@@ -507,14 +507,17 @@ export function isBuildEmail(e: Email): boolean {
   const subject = (e.subject ?? '').trim();
   const body = (e.text ?? '').trimStart();
   if (!addr || !subject) return false;
+  // Subjects near the 300-char cap without a middle ellipsis may have been
+  // end-truncated by an earlier version of parseEmails (cutting off an issue
+  // suffix or a trailing commit hash), so confirm them from the CI body header.
+  const maybeEndTruncated = subject.length >= 290 && !subject.includes('…');
   if (addr === 'notifications@github.com' && GH_BUILD_SUBJECT.test(subject)) {
-    if (/\([0-9a-f]{7,40}\)\s*$/i.test(subject)) return true;
-    // Fallback for pre-upgrade queued copies whose subject was end-truncated before the hash.
-    if (!/\((?:Issue|PR|Discussion)\s+#\d+\)\s*$/i.test(subject) && GH_BUILD_BODY.test(body)) return true;
+    if (/\((?:Issue|PR|Discussion)\s+#\d+\)\s*$/i.test(subject)) return false;
+    return maybeEndTruncated ? GH_BUILD_BODY.test(body) : /\([0-9a-f]{7,40}\)\s*$/i.test(subject);
   }
   if (addr.startsWith('gitlab@') && !/^(?:re|fwd?)\s*:/i.test(subject) && GL_BUILD_SUBJECT.test(subject)) {
-    if (/\|\s*[0-9a-f]{7,40}\s*$/i.test(subject)) return true;
-    if (!/\([#!&]\d+\)\s*$/.test(subject) && GL_BUILD_BODY.test(body)) return true;
+    if (/\([#!&]\d+\)\s*$/.test(subject)) return false;
+    return maybeEndTruncated ? GL_BUILD_BODY.test(body) : /\|\s*[0-9a-f]{7,40}\s*$/i.test(subject);
   }
   return false;
 }

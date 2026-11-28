@@ -486,12 +486,19 @@ test('mailWatch: automated CI build emails are recognised, while human GitHub/Gi
       {
         id: 'g:gl:10',
         from: 'GitLab <gitlab@mg.gitlab.com>',
-        subject: `Data | Failed pipeline for ${'x'.repeat(260)} | 05900d8f`,
+        subject: `Data | Failed pipeline for ${'x'.repeat(270)} | 05900d8f`,
       },
     ]),
   );
   assert.equal(isBuildEmail(longIssue), false);
   assert.equal(isBuildEmail(longIssueWithHash), false);
+  assert.equal(
+    isBuildEmail({
+      ...longIssue,
+      text: '[mikecann/threadbear] CI workflow run\n\nRepository: mikecann/threadbear\nWorkflow: CI',
+    }),
+    false,
+  );
   assert.equal(isBuildEmail(longGitlabIssue), false);
   assert.equal(isBuildEmail(longGhBuild), true);
   assert.equal(isBuildEmail(longGitlabBuild), true);
@@ -531,30 +538,53 @@ test('mailWatch: automated CI build emails are recognised, while human GitHub/Gi
   assert.match(SORT_SYSTEM, /CI\/build/);
 });
 
-test('mailWatch: build emails already sitting in the persisted pile are dropped before the next digest', async () => {
+test('mailWatch: build emails already sitting in the persisted pile are dropped before the next digest, while truncated human issues stay', async () => {
   const home = tmpDir();
   fs.mkdirSync(path.join(home, 'runner'), { recursive: true });
-  // Includes both normal build emails and pre-upgrade copies whose subjects were end-truncated before the hash.
+  // Includes normal build emails, pre-upgrade copies whose subjects were end-truncated before the hash
+  // (both multi-line bodies and flattened Gmail snippets), and a pre-upgrade truncated human issue
+  // that happened to end with "(deadbee)" after its "(Issue #42)" suffix was chopped at 300 chars.
   const oldTruncatedGh: Email = {
     id: 'g:gh:old',
     from: 'Mike Cann <notifications@github.com>',
     subject: `[mikecann/threadbear] Run failed: ${'x'.repeat(267)}`,
     text: '[mikecann/threadbear] CI workflow run\n\nRepository: mikecann/threadbear\nWorkflow: CI\nDuration: 3m',
   };
-  const oldTruncatedGl: Email = {
-    id: 'g:gl:old',
+  const oldFlattenedGh: Email = {
+    id: 'g:gh:flat',
+    from: 'notifications@github.com',
+    subject: `[mikecann/threadbear] Run failed: ${'x'.repeat(267)}`,
+    text: '[mikecann/threadbear] CI workflow run Repository: mikecann/threadbear Workflow: CI Duration: 3m',
+  };
+  const oldFlattenedGl: Email = {
+    id: 'g:gl:flat',
     from: 'GitLab <gitlab@mg.gitlab.com>',
     subject: `Data | Failed pipeline for ${'x'.repeat(273)}`,
-    text: 'Pipeline #3096995664 has failed!\n\nProject: Data ( https://gitlab.com/mikecann/fdroiddata )',
+    text: 'Pipeline #3096995664 has failed! Project: Data ( https://gitlab.com/mikecann/fdroiddata )',
+  };
+  const oldTruncatedHumanIssue: Email = {
+    id: 'g:gh:human',
+    from: 'Alice <notifications@github.com>',
+    subject: `[mikecann/${'r'.repeat(50)}] Run failed: ${'x'.repeat(216)} (deadbee)`,
+    text: 'Please review the fix.',
+  };
+  const oldTruncatedGitlabIssue: Email = {
+    id: 'g:gl:human',
+    from: 'Alice <gitlab@mg.gitlab.com>',
+    subject: `Data | Failed pipeline for ${'x'.repeat(262)} | deadbeef`,
+    text: 'Please review the fix.',
   };
   fs.writeFileSync(
     path.join(home, 'runner', 'mail-watch.json'),
     JSON.stringify({
-      seen: [GH_RUN_FAILED.id, oldTruncatedGh.id, oldTruncatedGl.id],
+      seen: [GH_RUN_FAILED.id, oldTruncatedGh.id, oldFlattenedGh.id, oldFlattenedGl.id, oldTruncatedHumanIssue.id, oldTruncatedGitlabIssue.id],
       pile: [
         { email: GH_RUN_FAILED, action: 'Fix CI', at: '2026-11-28T01:00:00Z' },
         { email: oldTruncatedGh, action: 'Fix CI', at: '2026-11-28T01:05:00Z' },
-        { email: oldTruncatedGl, action: 'Fix pipeline', at: '2026-11-28T01:10:00Z' },
+        { email: oldFlattenedGh, action: 'Fix CI', at: '2026-11-28T01:06:00Z' },
+        { email: oldFlattenedGl, action: 'Fix pipeline', at: '2026-11-28T01:10:00Z' },
+        { email: oldTruncatedHumanIssue, action: 'Review Alice fix', at: '2026-11-28T01:15:00Z' },
+        { email: oldTruncatedGitlabIssue, action: 'Review GitLab fix', at: '2026-11-28T01:20:00Z' },
       ],
       done: [],
       digest: { slot: '2026-11-28 09:00' },
@@ -564,8 +594,12 @@ test('mailWatch: build emails already sitting in the persisted pile are dropped 
   const t = watcher({ home, emails: [[]] });
   t.clock.set(Date.parse('2026-11-28T08:05:00Z')); // 16:05 Australia/Perth
   const out = await t.w.look();
-  assert.equal(out?.digest, undefined);
-  assert.equal(t.started.length, 0);
+  assert.ok(out?.digest);
+  assert.equal(t.started.length, 1);
+  assert.match(t.started[0].text, /Review Alice fix/);
+  assert.match(t.started[0].text, /Review GitLab fix/);
+  assert.doesNotMatch(t.started[0].text, /Fix CI/);
+  assert.doesNotMatch(t.started[0].text, /Fix pipeline/);
   assert.deepEqual(t.state().pile, []);
 });
 
