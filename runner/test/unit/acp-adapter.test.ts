@@ -1316,6 +1316,37 @@ test('ACP coordinator refusals show the policy reason, including when the agent 
   for (const o of denied) assert.match(o.text, /^Threadbear blocked this tool call\..*startHelper/);
 });
 
+test('Antigravity coordinators are guided to delegate unclassified web search without allowing the call', async () => {
+  const r = agy({ mode: 'full', opts: { resume: true, sessionId: 'ses-old', coordinator: { role: 'coordinator', checkTool: () => undefined } } });
+  const s = r.start();
+  await ready(r, s);
+  const search = { toolCallId: 'web-1', title: 'websearch', kind: 'other', rawInput: { query: 'example search' } };
+  frame(s, search);
+  const unclassified = fakeRequest(r, s, { toolCallId: search.toolCallId });
+  const missingKind = fakeRequest(r, s, { toolCallId: 'web-2', name: 'websearch', rawInput: search.rawInput });
+  const typed = fakeRequest(r, s, { ...search, toolCallId: 'typed-1', kind: 'search' });
+  const external = { ...search, toolCallId: 'mcp-1', _meta: { is_mcp_tool_call: true, mcp: { server: 'other', tool: 'websearch' } } };
+  const mcp = fakeRequest(r, s, external);
+  frame(s, { toolCallId: 'mixed-1', kind: 'edit', name: 'edit_file' });
+  const mixed = fakeRequest(r, s, { ...search, toolCallId: 'mixed-1', name: 'websearch' });
+  await turn(r, s, 'next', 'next');
+
+  assert.deepEqual(unclassified, [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  assert.deepEqual(missingKind, unclassified);
+  assert.deepEqual(typed, [{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+  assert.deepEqual(mcp, unclassified);
+  assert.deepEqual(mixed, unclassified);
+  assert.equal(r.cards.length, 0);
+  const prompts = r.log().filter((l) => l.prompt).map((l) => String(l.prompt));
+  assert.equal(prompts.length, 2);
+  for (const prompt of prompts) assert.match(prompt, /web search.*startHelper/);
+  const denied = r.outputs.flatMap((o) => o.kind === 'event' && o.event.type === 'tool.result' ? [o.event] : []);
+  assert.match(denied.find((o) => o.itemId === 'web-1')?.text ?? '', /verify this web search as read-only.*startHelper/);
+  assert.match(denied.find((o) => o.itemId === 'web-2')?.text ?? '', /verify this web search as read-only.*startHelper/);
+  assert.match(denied.find((o) => o.itemId === 'mcp-1')?.text ?? '', /Delegate external tool calls/);
+  assert.match(denied.find((o) => o.itemId === 'mixed-1')?.text ?? '', /Delegate implementation/);
+});
+
 test('ACP shows the policy refusal when the end_turn MCP server never receives the call', async () => {
   let calls = 0;
   const paused = 'The coordinator is paused. Wait for Resume.';

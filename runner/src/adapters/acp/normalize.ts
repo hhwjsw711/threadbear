@@ -465,7 +465,7 @@ export class AcpNormalizer {
   // it, or when the call's own updates say it runs: one allowed without a
   // card may be run under another id (Antigravity's create_file, 20 Nov
   // 2026), and a row for the request would be left open, then failed.
-  noteCall(call: AcpToolCall): { id: string; row: string; paths: string[]; kind?: string; input: Record<string, unknown>; title?: string } {
+  noteCall(call: AcpToolCall): { id: string; row: string; paths: string[]; kind?: string; input: Record<string, unknown>; title?: string; name?: string } {
     const id = typeof call.toolCallId === 'string' && call.toolCallId ? call.toolCallId : crypto.randomUUID();
     const t = this.tool(id);
     t.asked = true;
@@ -473,7 +473,7 @@ export class AcpNormalizer {
     const diffs = (Array.isArray(call.content) ? call.content : []).filter((c) => c?.type === 'diff');
     if (diffs.length) t.askedDiffs = diffs;
     t.askedFiles = namedFiles(call);
-    return { id, row: t.row, paths: [...t.paths], kind: t.acpKind, input: t.input, title: t.title };
+    return { id, row: t.row, paths: [...t.paths], kind: t.acpKind, input: t.input, title: t.title, name: t.name };
   }
 
   // How a request was answered: only one let go ahead can be the call an

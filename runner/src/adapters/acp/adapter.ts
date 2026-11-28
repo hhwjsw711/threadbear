@@ -1242,9 +1242,17 @@ export class AcpSession implements AgentSession {
       const rawArgs = isPlainObject(p.toolCall?.rawInput) ? (p.toolCall.rawInput as Record<string, unknown>) : seen.input;
       const policy = acpCoordinatorTool({ role: coord.role, kind: seen.kind, name: toolName, mcpName: mcpNameEarly, external: externalEarly, readOnlyMcp: this.archiveRead(mcpNameEarly, frames) });
       const checkName = mcpNameEarly ? `mcp__${mcpNameEarly}` : (toolName ?? seen.kind ?? 'tool');
+      // Antigravity can report websearch as `other`. Its name only explains
+      // the refusal. Neither the name nor the query proves it is read-only.
+      const unclassifiedSearch = coord.role === 'coordinator' && this.deps.agent.provider === 'antigravity' && !mcpCall && mcpNameEarly === undefined &&
+        (seen.name ?? seen.title) === 'websearch' && (seen.kind === 'other' || seen.kind === undefined) &&
+        ![...(frames?.kinds ?? [])].some((kind) => kind !== 'other');
+      const policyReason = policy.reason && unclassifiedSearch
+        ? 'Threadbear could not verify this web search as read-only. Delegate the lookup to a helper with the coordinator tool (startHelper).'
+        : policy.reason;
       let refused: string | undefined;
       try {
-        refused = coord.checkTool({ name: checkName, input: rawArgs, agentId: coord.role === 'helper' ? this.opts.threadId : undefined }) ?? policy.reason;
+        refused = coord.checkTool({ name: checkName, input: rawArgs, agentId: coord.role === 'helper' ? this.opts.threadId : undefined }) ?? policyReason;
       } catch {
         refused = 'The runner could not verify this coordinator operation.';
       }
@@ -1642,6 +1650,11 @@ export class AcpSession implements AgentSession {
     if (this.preamble) {
       blocks.push({ type: 'text', text: this.preamble });
       this.preamble = undefined;
+    }
+    // ACP cannot tell the agent why a permission was refused. Explain the
+    // route before every turn, including in a resumed coordinator session.
+    if (this.deps.agent.provider === 'antigravity' && this.opts.coordinator?.role === 'coordinator') {
+      blocks.push({ type: 'text', text: 'For web search, delegate the lookup with the coordinator tool (startHelper) and ask the helper for source links. Antigravity can report web search without a read-only classification, so the runner may block it.' });
     }
     const canSee = this.init.agentCapabilities?.promptCapabilities?.image === true;
     const parts = placePictures(input.text, input.images);
