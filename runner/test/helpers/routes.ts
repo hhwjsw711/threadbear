@@ -19,6 +19,7 @@ import { call, load, memoryBackend } from './convex-memory.ts';
 import { ConvexSync } from '../../src/sync.ts';
 import { Relay } from '../../src/relay.ts';
 import { nullLogger } from '../../src/log.ts';
+import { isPlaceNote } from '../../src/place-notes.ts';
 import type { Ask, ImageRef, LabReviewLedger } from '../../src/protocol.ts';
 import type { Post, Upload } from '../../src/sync.ts';
 
@@ -316,9 +317,10 @@ function plansOf(events: Record<string, any>[]): string[] {
     });
 }
 
-// A login's notes (system.note with `login`), as their words.
+// The notes that go up to the backend (a login's, a saved message's, and a
+// move to or from Hibernating or the archive), as their words.
 function loginNotes(events: Record<string, any>[]): string[] {
-  return events.filter((e) => e.type === 'system.note' && (e.login === true || e.savedMessage === true)).map((e) => String(e.text));
+  return events.filter((e) => e.type === 'system.note' && (e.login === true || e.savedMessage === true || isPlaceNote(String(e.text)))).map((e) => String(e.text));
 }
 
 function lastFailed(events: Record<string, any>[]): boolean {

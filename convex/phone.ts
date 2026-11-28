@@ -1426,8 +1426,8 @@ export const setViewing = mutation({
       .unique();
     // Not registered for notifications: nothing to hold back.
     if (!row) return null;
-    if (open) await ctx.db.patch(row._id, { viewing: { threadId, at: Date.now() } });
-    else if (row.viewing?.threadId === threadId) await ctx.db.patch(row._id, { viewing: undefined });
+    if (open) await ctx.db.patch('devices', row._id, { viewing: { threadId, at: Date.now() } });
+    else if (row.viewing?.threadId === threadId) await ctx.db.patch('devices', row._id, { viewing: undefined });
     return null;
   },
 });
