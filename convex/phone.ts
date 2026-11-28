@@ -1408,6 +1408,30 @@ export const setNotifications = mutation({
   },
 });
 
+// The thread this phone has on screen, with the app in front: sent when it
+// opens and every half minute while it stays open, so push.notify skips this
+// phone for that thread (pushTargets.ts viewingThread). open: false when it
+// leaves the thread or the app goes to the background; it clears only that
+// thread's mark, so a late clear for the last thread can't undo the next
+// one's. No API bump: a phone ignores a backend without it, and gets pushes
+// as before.
+export const setViewing = mutation({
+  args: { token: v.string(), apnsToken: v.string(), threadId: v.string(), open: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { token, apnsToken, threadId, open }) => {
+    await checkPhoneToken(ctx, token);
+    const row = await ctx.db
+      .query('devices')
+      .withIndex('by_apnsToken', (q) => q.eq('apnsToken', apnsToken))
+      .unique();
+    // Not registered for notifications: nothing to hold back.
+    if (!row) return null;
+    if (open) await ctx.db.patch(row._id, { viewing: { threadId, at: Date.now() } });
+    else if (row.viewing?.threadId === threadId) await ctx.db.patch(row._id, { viewing: undefined });
+    return null;
+  },
+});
+
 async function findThread(ctx: QueryCtx, threadId: string) {
   const t = await ctx.db
     .query('threads')

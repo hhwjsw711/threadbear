@@ -407,6 +407,23 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
     @Volatile private var pairingEpoch = 0
 
     /**
+     * The thread open on screen with the app in front, or left ([open]
+     * false): no push for it comes to this phone meanwhile (phone:setViewing).
+     * In order with registering, quiet on failure: at worst a push comes.
+     */
+    fun viewing(threadId: String, open: Boolean) {
+        val b = _backend.value ?: return
+        val epoch = pairingEpoch
+        scope.launch {
+            pushLock.withLock {
+                val token = _pushToken.value ?: return@withLock
+                if (epoch != pairingEpoch || _backend.value !== b) return@withLock
+                runCatching { b.setViewing(token, threadId, open) }
+            }
+        }
+    }
+
+    /**
      * The pairing changed (unpaired, or paired with something else): what's
      * queued for the old one is dropped, and with [forget] the old backend
      * loses this phone (Push.forget: the transport forgets its address) and

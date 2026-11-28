@@ -383,6 +383,16 @@ phone names must be one that has heartbeated (or `"any"`), else
   true }`, `{ unarchive: true }`, `{ markSeen: true }`, `{ title }`,
   `{ star }`, or (API 107) `{ accountId?, poolId?, provider?, model?,
   effort? }`.
+- `phone:setViewing({ token, apnsToken, threadId, open })` (no API number):
+  the thread this phone has on screen with the app in front. The phone sends
+  `open: true` when the thread opens and every 30 seconds while it stays
+  open, and `open: false` when it leaves the thread or the app goes to the
+  background. The device row keeps `viewing: { threadId, at }`; `push.notify`
+  sends no push for that thread to that phone while `at` is under 90 seconds
+  old (`convex/pushTargets.ts`), so a killed app stops counting by itself.
+  `open: false` clears only a mark for that same thread. A phone that hasn't
+  registered for notifications is ignored. An older backend refuses the
+  call; the phones ignore that, and get pushes as before.
 - `phone:setRunnerOrder({ token, runnerIds })` (API 56): Mike's order for
   his runners, from the phone's Settings (or the Mac's, through its runner:
   `sync:runnerOrder` and `sync:setRunnerOrder`, API 58, the owner key only), at most 50 ids, kept in the one

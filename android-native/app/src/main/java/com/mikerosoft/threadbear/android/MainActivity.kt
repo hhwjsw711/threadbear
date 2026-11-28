@@ -18,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -143,6 +144,7 @@ private fun Root(model: AppModel, openThread: MutableStateFlow<String?>) {
             composable("thread/{id}") { entry ->
                 val context = androidx.compose.ui.platform.LocalContext.current
                 LaunchedEffect(entry.arguments?.getString("id")) { entry.arguments?.getString("id")?.let { Push.clear(context, it) } }
+                entry.arguments?.getString("id")?.let { ReportViewing(model, it) }
                 ThreadScreen(threadId = entry.arguments?.getString("id") ?: "", back = { nav.popBackStack() },
                     open = { nav.openThread(it) })
             }
@@ -158,6 +160,30 @@ private fun Root(model: AppModel, openThread: MutableStateFlow<String?>) {
             confirmButton = { TextButton(onClick = { model.acceptPair(request) }) { Text("Pair") } },
             dismissButton = { TextButton(onClick = { model.cancelPair() }) { Text("Cancel") } },
         )
+    }
+}
+
+/**
+ * Tells the backend this thread is on screen while its page is the one in
+ * front and the app is resumed, again every 30 seconds, so its pushes skip
+ * this phone (phone:setViewing). Leaving the thread, the app going to the
+ * background or the screen locking stops the page's RESUMED state, which
+ * clears it; a killed app stops counting after 90 seconds by itself.
+ */
+@Composable
+private fun ReportViewing(model: AppModel, threadId: String) {
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(threadId, lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            try {
+                while (true) {
+                    model.viewing(threadId, open = true)
+                    kotlinx.coroutines.delay(30_000)
+                }
+            } finally {
+                model.viewing(threadId, open = false)
+            }
+        }
     }
 }
 

@@ -139,6 +139,20 @@ final class AppModel {
             }
         }
     }
+    /// The thread open on screen with the app in front, or left (`open`
+    /// false): no push for it comes to this phone meanwhile (phone:setViewing).
+    /// Each waits for the one before, so a clear can't overtake the open
+    /// after it. Quiet on failure: at worst a push comes.
+    func viewing(_ threadId: String, open: Bool) {
+        guard let backend, let apnsToken, !isFake else { return }
+        let before = viewingSend
+        viewingSend = Task {
+            await before?.value
+            try? await backend.setViewing(apnsToken: apnsToken, threadId: threadId, open: open)
+        }
+    }
+    @ObservationIgnored private var viewingSend: Task<Void, Never>?
+
     /// Ticks every 15 s so "5m" and "Mac offline" stay right.
     private(set) var now = Date.now
     /// A thread a notification tap asked for, for the inbox to open.

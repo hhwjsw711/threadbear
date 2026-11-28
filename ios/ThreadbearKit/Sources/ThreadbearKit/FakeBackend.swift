@@ -1160,6 +1160,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     }
 
     public func setNotifications(apnsToken: String, notify: NotifyMode) async throws {}
+    public func setViewing(apnsToken: String, threadId: String, open: Bool) async throws {}
 
     public func setRunnerOrder(_ runnerIds: [String]) async throws {
         mutate { s in

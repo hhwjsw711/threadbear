@@ -268,7 +268,8 @@ function both(a: SendSummary, b: SendSummary): SendSummary {
 }
 
 async function deliver(ctx: ActionCtx, alert: { title: string; body: string; threadId: string }, which: (notify: 'away' | 'always' | 'off') => boolean): Promise<SendSummary> {
-  const all: Target[] = await ctx.runQuery(internal.devices.targets, {});
+  // Not to a phone that has this thread open on screen (phone:setViewing).
+  const all: Target[] = await ctx.runQuery(internal.devices.targets, { about: alert.threadId });
   const chosen = all.filter((t) => which(t.notify));
   if (!chosen.length) return { sent: 0, failed: 0, skipped: 'noDevices' };
   // UnifiedPush phones are sent to from here, whatever else is set up.

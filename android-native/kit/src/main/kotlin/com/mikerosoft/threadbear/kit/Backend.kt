@@ -318,6 +318,17 @@ class PhoneBackend(private val transport: ConvexTransport, private val token: St
         transport.mutation("phone:setNotifications", args("apnsToken" to JsonPrimitive(pushToken), "notify" to JsonPrimitive(notify.wire)))
     }
 
+    /**
+     * This phone has [threadId] open on screen ([open]), or has left it: no
+     * push for that thread comes to this phone while it's open. Sent again
+     * every half minute while it stays open; the backend stops counting it
+     * after 90 seconds without one. A backend without it refuses the call,
+     * and pushes come as before.
+     */
+    suspend fun setViewing(pushToken: String, threadId: String, open: Boolean) {
+        transport.mutation("phone:setViewing", args("apnsToken" to JsonPrimitive(pushToken), "threadId" to JsonPrimitive(threadId), "open" to JsonPrimitive(open)))
+    }
+
     /** New threads start on the first of these that's online (backend API 56). */
     suspend fun setRunnerOrder(runnerIds: List<String>) {
         transport.mutation("phone:setRunnerOrder", args("runnerIds" to JsonArray(runnerIds.map(::JsonPrimitive))))

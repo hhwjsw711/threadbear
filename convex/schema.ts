@@ -1397,6 +1397,10 @@ export const appSchema = defineSchema({
     platform: v.optional(v.union(v.literal('android'), v.literal('webpush'))),
     // For "webpush": the subscription's p256dh and auth, base64url (RFC 8291).
     webPush: v.optional(v.object({ p256dh: v.string(), auth: v.string() })),
+    // The thread this phone has open on screen (phone:setViewing), stamped
+    // each half minute while it stays open: no push for that thread goes to
+    // this phone while it's fresh (pushTargets.ts viewingThread).
+    viewing: v.optional(v.object({ threadId: v.string(), at: v.number() })),
   })
     .index('by_apnsToken', ['apnsToken'])
     // A token's phones: at most MAX_DEVICES_PER_TOKEN (phone:registerDevice),

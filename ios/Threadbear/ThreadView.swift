@@ -5,6 +5,7 @@ struct ThreadView: View {
     @Environment(AppModel.self) private var model
     @Environment(QuickAskModel.self) private var quick
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     /// In a quick ask's thread, the keyboard's been asked for in place of the big mic.
     @State private var typing = false
     let threadId: String
@@ -158,6 +159,18 @@ struct ThreadView: View {
         .task(id: "\(threadId):\(model.connection)") { await follow() }
         // Opening a thread takes its notification down, as on Android.
         .task(id: threadId) { if !model.isFake { await DeliveredNotifications.clear(threadId: threadId) } }
+        // While it's on screen with the app in front, its pushes skip this
+        // phone: said every 30 s, and cleared on leaving it, going to the
+        // background or locking (phone:setViewing). A killed app stops
+        // counting after 90 s by itself.
+        .task(id: "\(threadId):\(scenePhase == .active)") {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                model.viewing(threadId, open: true)
+                try? await Task.sleep(for: .seconds(30))
+            }
+            model.viewing(threadId, open: false)
+        }
         .task {
             if model.isFake, ProcessInfo.processInfo.arguments.contains("-ThreadbearReview") {
                 designReviewShown = DesignReviewTarget(id: "sample-review")

@@ -5,7 +5,7 @@ import { internalMutation, internalQuery, type MutationCtx } from './_generated/
 import type { Id } from './_generated/dataModel';
 import { relayInstall } from './machines';
 import { RELAY_FRESH_MS, RELAY_REGISTER_TIMEOUT_MS, RELAY_VERIFY_SPARE_MS } from './relayInstallStates';
-import { hasLiveToken } from './pushTargets';
+import { hasLiveToken, viewingThread } from './pushTargets';
 import { runnerName } from './sync';
 import { internal } from './_generated/api';
 import { hasLiveKey, PRESENCE_FRESH_MS, presentAt } from './lib';
@@ -14,15 +14,18 @@ import { nextHealth } from './pushHealth';
 // Only phones whose token is still good (pushTargets.ts): revoking deletes
 // a phone's row (tokens.ts), but an expired token's phone, or an old row
 // with no tokenId (from before 5 Nov 2026), is skipped here.
+// `about`: the thread a push is for. A phone that has it open on screen is
+// left out (pushTargets.ts viewingThread).
 export const targets = internalQuery({
-  args: {},
+  args: { about: v.optional(v.string()) },
   returns: v.array(v.object({ apnsToken: v.string(), environment: v.union(v.literal('sandbox'), v.literal('production')), notify: v.union(v.literal('away'), v.literal('always'), v.literal('off')), pushKey: v.optional(v.string()), platform: v.optional(v.union(v.literal('android'), v.literal('webpush'))), webPush: v.optional(v.object({ p256dh: v.string(), auth: v.string() })) })),
-  handler: async (ctx) => {
+  handler: async (ctx, { about }) => {
     const now = Date.now();
     const tokens = await ctx.db.query('tokens').collect();
     const out = [];
     for await (const d of ctx.db.query('devices')) {
       if (!hasLiveToken(d, tokens, now)) continue;
+      if (about !== undefined && viewingThread(d, about, now)) continue;
       out.push({ apnsToken: d.apnsToken, environment: d.environment, notify: d.notify ?? ('away' as const), ...(d.pushKey ? { pushKey: d.pushKey } : {}), ...(d.platform ? { platform: d.platform } : {}), ...(d.webPush ? { webPush: d.webPush } : {}) });
     }
     return out;

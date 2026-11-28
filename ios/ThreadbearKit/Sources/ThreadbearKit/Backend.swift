@@ -129,6 +129,11 @@ public protocol Backend: Sendable {
     func registerDevice(apnsToken: String, environment: String, pushKey: String?) async throws
     /// Backend API 3: when this phone (by its APNs token) is notified.
     func setNotifications(apnsToken: String, notify: NotifyMode) async throws
+    /// This phone has `threadId` open on screen (`open`), or has left it: no
+    /// push for that thread comes to this phone while it's open. Sent again
+    /// every 30 s while it stays open; the backend stops counting it after
+    /// 90 s without one. A backend without it refuses, and pushes come as before.
+    func setViewing(apnsToken: String, threadId: String, open: Bool) async throws
     /// Puts the runners in this order (backend API 57): new threads start on
     /// the first one online, and runners() lists them so.
     func setRunnerOrder(_ runnerIds: [String]) async throws
@@ -471,6 +476,12 @@ public final class ConvexBackend: Backend, @unchecked Sendable {
     public func setNotifications(apnsToken: String, notify: NotifyMode) async throws {
         _ = try await transport.mutation("phone:setNotifications", args([
             "apnsToken": .string(apnsToken), "notify": .string(notify.rawValue),
+        ]))
+    }
+
+    public func setViewing(apnsToken: String, threadId: String, open: Bool) async throws {
+        _ = try await transport.mutation("phone:setViewing", args([
+            "apnsToken": .string(apnsToken), "threadId": .string(threadId), "open": .bool(open),
         ]))
     }
 

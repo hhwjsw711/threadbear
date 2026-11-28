@@ -1044,6 +1044,25 @@ test('an F-Droid phone registers its UnifiedPush endpoint and keys (API 93), and
   assert.equal(await reg('fXyZ1234567890abcdef:APA91bHexample_token-with-dashes_0123456789abcdefghij', { p256dh, auth }, 'android'), 'invalid');
 });
 
+test('a phone with a thread open gets no push for that thread, and a late clear for another thread leaves it be', async () => {
+  const s = await setup();
+  const tok = 'fXyZ1234567890abcdef:APA91bHexample_token-with-dashes_0123456789abcdefghij';
+  await call(s.ctx, phone.registerDevice, { token: TOKEN, apnsToken: tok, environment: 'production', platform: 'android' });
+  const to = async (about: string) => ((await call(s.ctx, devices.targets, { about })) as { apnsToken: string }[]).length;
+  await call(s.ctx, phone.setViewing, { token: TOKEN, apnsToken: tok, threadId: 'A', open: true });
+  assert.equal(await to('A'), 0);
+  assert.equal(await to('B'), 1);
+  // Opened B, then the clear for A arrived late: B still counts.
+  await call(s.ctx, phone.setViewing, { token: TOKEN, apnsToken: tok, threadId: 'B', open: true });
+  await call(s.ctx, phone.setViewing, { token: TOKEN, apnsToken: tok, threadId: 'A', open: false });
+  assert.equal(await to('B'), 0);
+  assert.equal(await to('A'), 1);
+  await call(s.ctx, phone.setViewing, { token: TOKEN, apnsToken: tok, threadId: 'B', open: false });
+  assert.equal(await to('B'), 1);
+  // A phone that never registered for notifications: nothing to hold back, no error.
+  await call(s.ctx, phone.setViewing, { token: TOKEN, apnsToken: 'unknown', threadId: 'B', open: true });
+});
+
 test('phone:webPushKey makes one VAPID key for the deployment and hands every phone the same public half', async () => {
   const s = await setup();
   const actx = {

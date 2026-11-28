@@ -29,3 +29,14 @@ export function tiedToRevoked(device: DeviceLink, revoked: { _id: string; name: 
   if (device.tokenId) return device.tokenId === revoked._id;
   return device.tokenName === revoked.name;
 }
+
+// A phone with the thread open on screen right now (phone:setViewing) gets no
+// push for it: Mike is reading it already. The phone says so again every
+// half minute while it stays open, so a phone that was killed, or lost its
+// signal, stops counting after VIEWING_FRESH_MS and gets its pushes again.
+export const VIEWING_FRESH_MS = 90_000;
+export type Viewing = { threadId: string; at: number };
+export function viewingThread(device: { viewing?: Viewing }, threadId: string, now: number): boolean {
+  const v = device.viewing;
+  return v !== undefined && v.threadId === threadId && now - v.at < VIEWING_FRESH_MS;
+}

@@ -3,7 +3,7 @@
 // both, without a deployment.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { hasLiveToken, tiedToRevoked } from '../../../convex/pushTargets.ts';
+import { hasLiveToken, tiedToRevoked, VIEWING_FRESH_MS, viewingThread } from '../../../convex/pushTargets.ts';
 import { convexSite, deploymentVouches } from '../../../relay/convex/verify.ts';
 
 const now = 1_000_000;
@@ -78,4 +78,14 @@ test('a registration counts as the deployment\'s only when it answers ok for the
   // The static site's index.html for an old backend with no such route.
   assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', (async (url: string) => answered(new Response('<html>', { status: 200 }), url)) as typeof fetch), false);
   assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', (async () => { throw new Error('offline'); }) as typeof fetch), false);
+});
+
+test('a phone with the thread open gets no push for it, until its heartbeat goes stale', () => {
+  const d = { viewing: { threadId: 't1', at: now - 1000 } };
+  assert.equal(viewingThread(d, 't1', now), true);
+  // Another thread still notifies.
+  assert.equal(viewingThread(d, 't2', now), false);
+  // A killed app stops counting by itself.
+  assert.equal(viewingThread({ viewing: { threadId: 't1', at: now - VIEWING_FRESH_MS } }, 't1', now), false);
+  assert.equal(viewingThread({}, 't1', now), false);
 });
