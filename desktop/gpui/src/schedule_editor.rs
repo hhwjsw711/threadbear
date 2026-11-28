@@ -12,7 +12,7 @@ use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::radio::Radio;
 use gpui_kit::component::time_field::{
     HourCycle, TimeField, TimeFieldEvent, TimeFieldState, TimePrecision,
@@ -884,34 +884,45 @@ impl ScheduleEditor {
             .a11y_role(Role::GenericContainer)
             .aria_label(tip.to_owned())
             .flex_none()
-            .child(button.dropdown_menu(move |menu: PopupMenu, _window, _cx| {
-                let mut menu = menu;
-                for choice in &choices {
-                    match choice.clone() {
-                        Choice::Separator => menu = menu.separator(),
-                        Choice::Label(title) => menu = menu.label(title),
-                        Choice::Item {
-                            title,
-                            symbol,
-                            checked,
-                            pick,
-                        } => {
-                            let editor = editor.clone();
-                            let mut item = PopupMenuItem::new(title).checked(checked).on_click(
-                                move |_, window, cx| {
-                                    let pick = pick.clone();
-                                    editor.update(cx, |e, cx| pick(e, window, cx)).ok();
-                                },
-                            );
-                            if let Some(symbol) = symbol.filter(|_| !checked) {
-                                item = item.icon(icons::symbol(symbol));
+            .child(crate::popup_host::dropdown_button(
+                SharedString::from(format!("schedule-editor-{id}")),
+                button,
+                px(180.),
+                move |menu: PopupMenu, owner_handle, _window, _cx| {
+                    let mut menu = menu;
+                    for choice in &choices {
+                        match choice.clone() {
+                            Choice::Separator => menu = menu.separator(),
+                            Choice::Label(title) => menu = menu.label(title),
+                            Choice::Item {
+                                title,
+                                symbol,
+                                checked,
+                                pick,
+                            } => {
+                                let editor = editor.clone();
+                                let mut item = PopupMenuItem::new(title).checked(checked).on_click(
+                                    move |_, _, cx| {
+                                        let (editor, pick) = (editor.clone(), pick.clone());
+                                        cx.defer(move |cx| {
+                                            let _ = owner_handle.update(cx, |_, owner_w, cx| {
+                                                editor
+                                                    .update(cx, |e, cx| pick(e, owner_w, cx))
+                                                    .ok();
+                                            });
+                                        });
+                                    },
+                                );
+                                if let Some(symbol) = symbol.filter(|_| !checked) {
+                                    item = item.icon(icons::symbol(symbol));
+                                }
+                                menu = menu.item(item);
                             }
-                            menu = menu.item(item);
                         }
                     }
-                }
-                menu
-            }))
+                    menu
+                },
+            ))
             .into_any_element()
     }
 

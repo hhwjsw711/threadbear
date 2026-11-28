@@ -16,7 +16,7 @@ use crate::{call, icons, now_ms, style};
 use gpui_kit::base::A11yDisabledExt as _;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, Disableable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -782,38 +782,40 @@ impl Threadbear {
                 .test_support()
                 .a11y_role(Role::GenericContainer)
                 .aria_label(tip.to_owned())
-                .child(
+                .child(crate::popup_host::dropdown_button(
+                    "librarian-pool",
                     Button::new("librarian-pool-button")
                         .label(current)
                         .small()
                         .outline()
                         .dropdown_caret(true)
-                        .tooltip(tip)
-                        .dropdown_menu(move |menu: PopupMenu, _, _| {
-                            let mut menu = menu;
-                            for (id, title, symbol) in &choices {
-                                let (app, id) = (app.clone(), id.clone());
-                                let checked = set_for_menu.as_deref() == Some(id.as_str());
-                                let mut item = PopupMenuItem::new(title.clone())
-                                    .checked(checked)
-                                    .on_click(move |_, _, cx| {
-                                        let id = id.clone();
-                                        app.update(cx, |app, cx| {
-                                            app.update_runner_settings(
-                                                json!({ "models": { "pool": id } }),
-                                                cx,
-                                            )
-                                        })
-                                        .ok();
-                                    });
-                                if !checked {
-                                    item = item.icon(icons::symbol(symbol));
-                                }
-                                menu = menu.item(item);
+                        .tooltip(tip),
+                    px(180.),
+                    move |menu: PopupMenu, _, _, _| {
+                        let mut menu = menu;
+                        for (id, title, symbol) in &choices {
+                            let (app, id) = (app.clone(), id.clone());
+                            let checked = set_for_menu.as_deref() == Some(id.as_str());
+                            let mut item = PopupMenuItem::new(title.clone())
+                                .checked(checked)
+                                .on_click(move |_, _, cx| {
+                                    let id = id.clone();
+                                    app.update(cx, |app, cx| {
+                                        app.update_runner_settings(
+                                            json!({ "models": { "pool": id } }),
+                                            cx,
+                                        )
+                                    })
+                                    .ok();
+                                });
+                            if !checked {
+                                item = item.icon(icons::symbol(symbol));
                             }
-                            menu
-                        }),
-                )
+                            menu = menu.item(item);
+                        }
+                        menu
+                    },
+                ))
                 .into_any_element(),
         )
     }

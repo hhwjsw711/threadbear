@@ -973,7 +973,11 @@ fn step(
             Ok(json!("ok"))
         }
         "escape" => {
-            window.press("escape", cx);
+            if crate::popup_host::is_open() {
+                crate::popup_host::close(cx);
+            } else {
+                window.press("escape", cx);
+            }
             Ok(json!("ok"))
         }
         // The Swift app's `paste-image` and `drop`: a file through the same

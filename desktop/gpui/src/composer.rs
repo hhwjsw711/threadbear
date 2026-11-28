@@ -402,7 +402,7 @@ impl Composer {
     fn render_limit_box(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         use gpui_kit::base::TestSupportExt as _;
         use gpui_kit::component::button::{Button, ButtonVariants as _};
-        use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+        use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
         use gpui_kit::component::Disableable as _;
         let thread_id = self.thread_id.clone()?;
         let app = self.app.upgrade()?;
@@ -500,13 +500,16 @@ impl Composer {
                 );
                 let targets = advice.targets.clone();
                 let (app_m, id) = (self.app.clone(), thread.id.clone());
-                let menu = Button::new("limit-login-button")
-                    .label(title)
-                    .small()
-                    .secondary()
-                    .dropdown_caret(true)
-                    .tooltip("Which login to carry on with")
-                    .dropdown_menu(move |menu: PopupMenu, _, _| {
+                let menu = crate::popup_host::dropdown_button(
+                    "limit-login",
+                    Button::new("limit-login-button")
+                        .label(title)
+                        .small()
+                        .secondary()
+                        .dropdown_caret(true)
+                        .tooltip("Which login to carry on with"),
+                    px(180.),
+                    move |menu: PopupMenu, _, _, _| {
                         let mut menu = menu;
                         for (account, title) in &targets {
                             let (app, id, account) = (app_m.clone(), id.clone(), account.clone());
@@ -523,7 +526,8 @@ impl Composer {
                             );
                         }
                         menu
-                    });
+                    },
+                );
                 row = row.child(div().id("limit-login").test_support().child(menu));
             }
             if let Some((account, tip)) = advice.reset.clone() {
@@ -554,49 +558,12 @@ impl Composer {
                 );
             }
             if advice.stopped {
-                let on = thread.carry_on_at_reset;
-                let tip: String = if on {
-                    format!("It carries on from where it stopped {}. No to leave it until you send a message", when.unwrap_or_else(|| "once its limit resets".into()))
-                } else {
-                    "It waits for you to send a message. Yes to carry on from where it stopped once there's room".into()
-                };
-                let (app, id) = (self.app.clone(), thread.id.clone());
-                let menu = Button::new("limit-carry-on-button")
-                    .label(if on { "Yes" } else { "No" })
-                    .small()
-                    .secondary()
-                    .dropdown_caret(true)
-                    .tooltip(tip.clone())
-                    .dropdown_menu(move |menu: PopupMenu, _, _| {
-                        let mut menu = menu;
-                        for (label, value) in [("Yes", true), ("No", false)] {
-                            let (app, id) = (app.clone(), id.clone());
-                            menu =
-                                menu.item(PopupMenuItem::new(label).checked(on == value).on_click(
-                                    move |_, _, cx| {
-                                        app.update(cx, |a, cx| {
-                                            a.set_carry_on_at_reset(&id, value, cx)
-                                        })
-                                        .ok();
-                                    },
-                                ));
-                        }
-                        menu
-                    });
-                row = row.child(
-                    h_flex()
-                        .gap(px(6.))
-                        .items_center()
-                        .child(div().text_color(secondary).child("Carry on by itself"))
-                        .child(
-                            div()
-                                .id("limit-carry-on")
-                                .test_support()
-                                .a11y_role(Role::GenericContainer)
-                                .aria_label(tip)
-                                .child(menu),
-                        ),
-                );
+                row = row.child(self.render_limit_carry_on(
+                    &thread.id,
+                    thread.carry_on_at_reset,
+                    when.as_deref(),
+                    secondary,
+                ));
             }
             column = column.child(row);
         }
@@ -607,6 +574,62 @@ impl Composer {
                 .child(div().w_full().h(gpui_kit::px(1.)).bg(style::hairline(cx)))
                 .into_any_element(),
         )
+    }
+
+    fn render_limit_carry_on(
+        &self,
+        thread_id: &str,
+        on: bool,
+        when: Option<&str>,
+        secondary: Hsla,
+    ) -> AnyElement {
+        use gpui_kit::component::button::{Button, ButtonVariants as _};
+        use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+        let tip: String = if on {
+            format!(
+                "It carries on from where it stopped {}. No to leave it until you send a message",
+                when.unwrap_or("once its limit resets")
+            )
+        } else {
+            "It waits for you to send a message. Yes to carry on from where it stopped once there's room".into()
+        };
+        let (app, id) = (self.app.clone(), thread_id.to_owned());
+        let menu = crate::popup_host::dropdown_button(
+            "limit-carry-on",
+            Button::new("limit-carry-on-button")
+                .label(if on { "Yes" } else { "No" })
+                .small()
+                .secondary()
+                .dropdown_caret(true)
+                .tooltip(tip.clone()),
+            px(120.),
+            move |menu: PopupMenu, _, _, _| {
+                let mut menu = menu;
+                for (label, value) in [("Yes", true), ("No", false)] {
+                    let (app, id) = (app.clone(), id.clone());
+                    menu = menu.item(PopupMenuItem::new(label).checked(on == value).on_click(
+                        move |_, _, cx| {
+                            app.update(cx, |a, cx| a.set_carry_on_at_reset(&id, value, cx))
+                                .ok();
+                        },
+                    ));
+                }
+                menu
+            },
+        );
+        h_flex()
+            .gap(px(6.))
+            .items_center()
+            .child(div().text_color(secondary).child("Carry on by itself"))
+            .child(
+                div()
+                    .id("limit-carry-on")
+                    .test_support()
+                    .a11y_role(Role::GenericContainer)
+                    .aria_label(tip)
+                    .child(menu),
+            )
+            .into_any_element()
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {

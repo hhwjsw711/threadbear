@@ -15,7 +15,7 @@ use crate::activity_panels::{
 use crate::app::Threadbear;
 use crate::{call, icons, now_ms, shell, style};
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -1315,55 +1315,52 @@ impl Threadbear {
         let current = cli.policy.clone();
         let app = cx.entity().downgrade();
         let words = format!("Updates: {}", rules::policy_title(&cli.policy));
-        let holder = div()
-            .id(SharedString::from(format!(
-                "updates-policy-{}",
-                cli.provider
-            )))
-            .flex_none()
-            .test_support()
-            .a11y_role(Role::GenericContainer)
-            .aria_label(tip)
-            .tip(tip);
+        let tag = SharedString::from(format!("updates-policy-{}", cli.provider));
+        let label_id = SharedString::from(format!("updates-policy-{provider}-label"));
         if busy {
             // Taking no other choice until the runner has this one.
-            return holder
+            return div()
+                .id(tag)
+                .flex_none()
+                .test_support()
+                .a11y_role(Role::GenericContainer)
+                .aria_label(tip)
+                .tip(tip)
                 .opacity(0.5)
-                .child(MenuLabel::new(
-                    SharedString::from(format!("updates-policy-{provider}-label")),
-                    words,
-                    11.,
-                    style::label_text(cx),
-                ))
+                .child(MenuLabel::new(label_id, words, 11., style::label_text(cx)))
                 .into_any_element();
         }
-        let menu = MenuLabel::new(
-            SharedString::from(format!("updates-policy-{provider}-label")),
-            words,
-            11.,
-            style::label_text(cx),
-        )
-        .dropdown_menu(move |menu: PopupMenu, _, _| {
-            let mut menu = menu;
-            for policy in rules::POLICIES {
-                let (app, p) = (app.clone(), provider.clone());
-                let checked = current == policy;
-                let mut item = PopupMenuItem::new(rules::policy_title(policy))
-                    .checked(checked)
-                    .on_click(move |_, _, cx| {
-                        app.update(cx, |t, cx| t.set_cli_policy(&p, policy, cx))
-                            .ok();
-                    });
-                // A real tick beside the icon: the tick used to be the
-                // icon, so it was hidden along with all of them.
-                if !checked {
-                    item = item.icon(icons::symbol(rules::policy_symbol(policy)));
+        let menu_label =
+            MenuLabel::new(label_id.clone(), words.clone(), 11., style::label_text(cx));
+        let inner = MenuLabel::new(label_id, words, 11., style::label_text(cx)).into_inner();
+        crate::popup_host::dropdown_trigger(
+            tag.clone(),
+            tag,
+            menu_label,
+            inner,
+            tip,
+            px(180.),
+            move |menu: PopupMenu, _, _, _| {
+                let mut menu = menu;
+                for policy in rules::POLICIES {
+                    let (app, p) = (app.clone(), provider.clone());
+                    let checked = current == policy;
+                    let mut item = PopupMenuItem::new(rules::policy_title(policy))
+                        .checked(checked)
+                        .on_click(move |_, _, cx| {
+                            app.update(cx, |t, cx| t.set_cli_policy(&p, policy, cx))
+                                .ok();
+                        });
+                    // A real tick beside the icon: the tick used to be the
+                    // icon, so it was hidden along with all of them.
+                    if !checked {
+                        item = item.icon(icons::symbol(rules::policy_symbol(policy)));
+                    }
+                    menu = menu.item(item);
                 }
-                menu = menu.item(item);
-            }
-            menu
-        });
-        holder.child(menu).into_any_element()
+                menu
+            },
+        )
     }
 
     // For scripts and the specs.

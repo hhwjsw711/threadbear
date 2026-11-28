@@ -11,7 +11,7 @@ use crate::tips::Tip as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -66,13 +66,17 @@ impl Composer {
         let composer = cx.entity().downgrade();
         let for_arrow = composer.clone();
         let tip = "Send later: tonight, tomorrow or when tokens reset";
-        let arrow = Button::new("composer-send-later-button")
-            // As quiet as the chips' arrows beside it, not the full white
-            // a ghost button's icon takes.
-            .icon(Icon::from(IconName::ChevronDown).text_color(crate::style::quiet_text(cx)))
-            .small()
-            .ghost()
-            .dropdown_menu(move |menu: PopupMenu, _, cx| send_menu(menu, &for_arrow, cx));
+        let arrow = crate::popup_host::dropdown_button(
+            "composer-send-later",
+            Button::new("composer-send-later-button")
+                // As quiet as the chips' arrows beside it, not the full white
+                // a ghost button's icon takes.
+                .icon(Icon::from(IconName::ChevronDown).text_color(crate::style::quiet_text(cx)))
+                .small()
+                .ghost(),
+            px(180.),
+            move |menu, owner_handle, _, cx| send_menu(menu, &for_arrow, Some(owner_handle), cx),
+        );
         h_flex()
             .flex_none()
             .items_center()
@@ -81,7 +85,7 @@ impl Composer {
                     .id("composer-send-menu")
                     .flex_none()
                     .child(button)
-                    .context_menu(move |menu, _, cx| send_menu(menu, &composer, cx)),
+                    .context_menu(move |menu, _, cx| send_menu(menu, &composer, None, cx)),
             )
             .child(
                 div()
@@ -98,7 +102,12 @@ impl Composer {
 }
 
 /// The quick times, then Schedule…, for the arrow and the right-click alike.
-fn send_menu(menu: PopupMenu, composer: &WeakEntity<Composer>, cx: &mut App) -> PopupMenu {
+fn send_menu(
+    menu: PopupMenu,
+    composer: &WeakEntity<Composer>,
+    owner_window: Option<AnyWindowHandle>,
+    cx: &mut App,
+) -> PopupMenu {
     let Some(c) = composer.upgrade() else {
         return menu;
     };
@@ -112,23 +121,33 @@ fn send_menu(menu: PopupMenu, composer: &WeakEntity<Composer>, cx: &mut App) -> 
                 .icon(crate::icons::symbol("clock"))
                 .disabled(choice.at.is_none())
                 .on_click(move |_, window, cx| {
-                    let Some(c) = composer.upgrade() else {
-                        return;
+                    let composer = composer.clone();
+                    let run = move |window: &mut Window, cx: &mut App| {
+                        let Some(c) = composer.upgrade() else {
+                            return;
+                        };
+                        // Worked out again as it's picked: a menu can stay up
+                        // past 9 pm, midnight or a reset.
+                        let now = Local::now();
+                        let at = match preset {
+                            Preset::Tonight => send_later::tonight(&now),
+                            Preset::Tomorrow => send_later::tomorrow(&now),
+                            Preset::TokenReset => c.read(cx).token_reset_at(cx),
+                        };
+                        let Some(app) = c.read(cx).app.upgrade() else {
+                            return;
+                        };
+                        app.update(cx, |app, cx| {
+                            app.new_schedule_from_composer_at(&c, at, window, cx)
+                        });
                     };
-                    // Worked out again as it's picked: a menu can stay up
-                    // past 9 pm, midnight or a reset.
-                    let now = Local::now();
-                    let at = match preset {
-                        Preset::Tonight => send_later::tonight(&now),
-                        Preset::Tomorrow => send_later::tomorrow(&now),
-                        Preset::TokenReset => c.read(cx).token_reset_at(cx),
-                    };
-                    let Some(app) = c.read(cx).app.upgrade() else {
-                        return;
-                    };
-                    app.update(cx, |app, cx| {
-                        app.new_schedule_from_composer_at(&c, at, window, cx)
-                    });
+                    if let Some(owner_handle) = owner_window {
+                        cx.defer(move |cx| {
+                            let _ = owner_handle.update(cx, |_, owner_w, cx| run(owner_w, cx));
+                        });
+                    } else {
+                        run(window, cx);
+                    }
                 }),
         );
     }
@@ -137,15 +156,25 @@ fn send_menu(menu: PopupMenu, composer: &WeakEntity<Composer>, cx: &mut App) -> 
         PopupMenuItem::new(SCHEDULE_TITLE)
             .icon(crate::icons::symbol("clock"))
             .on_click(move |_, window, cx| {
-                let Some(composer) = composer.upgrade() else {
-                    return;
+                let composer = composer.clone();
+                let run = move |window: &mut Window, cx: &mut App| {
+                    let Some(composer) = composer.upgrade() else {
+                        return;
+                    };
+                    let Some(app) = composer.read(cx).app.upgrade() else {
+                        return;
+                    };
+                    app.update(cx, |app, cx| {
+                        app.new_schedule_from_composer(&composer, window, cx)
+                    });
                 };
-                let Some(app) = composer.read(cx).app.upgrade() else {
-                    return;
-                };
-                app.update(cx, |app, cx| {
-                    app.new_schedule_from_composer(&composer, window, cx)
-                });
+                if let Some(owner_handle) = owner_window {
+                    cx.defer(move |cx| {
+                        let _ = owner_handle.update(cx, |_, owner_w, cx| run(owner_w, cx));
+                    });
+                } else {
+                    run(window, cx);
+                }
             }),
     )
 }

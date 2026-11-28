@@ -108,12 +108,18 @@ typedef void (*tb_popup_event_fn)(uint64_t gen, uint32_t kind);
       return event;
     }
     if (event.type == NSEventTypeKeyDown) {
-      // Forward menu navigation keys while keeping activation on the owner window.
-      NSEventModifierFlags mods = event.modifierFlags &
-                                  (NSEventModifierFlagCommand |
-                                   NSEventModifierFlagControl |
-                                   NSEventModifierFlagOption);
-      if (mods == 0) {
+      // Forward menu navigation keys while keeping activation on the owner
+      // window. Block plain typing/Backspace from editing inputs behind the
+      // menu, and dismiss the menu before letting Cmd/Ctrl shortcuts through.
+      NSEventModifierFlags cmdOrCtrl =
+          event.modifierFlags &
+          (NSEventModifierFlagCommand | NSEventModifierFlagControl);
+      if (cmdOrCtrl != 0) {
+        [strongSelf fireDismiss:TBPopupEventDismiss];
+        return event;
+      }
+      NSEventModifierFlags opt = event.modifierFlags & NSEventModifierFlagOption;
+      if (opt == 0) {
         switch (event.keyCode) {
           case 53: // Escape
             [strongSelf fireDismiss:TBPopupEventDismiss];
@@ -132,7 +138,7 @@ typedef void (*tb_popup_event_fn)(uint64_t gen, uint32_t kind);
             break;
         }
       }
-      return event;
+      return nil;
     }
     if (event.window != strongSelf.panel) {
       BOOL onToggle = NO;

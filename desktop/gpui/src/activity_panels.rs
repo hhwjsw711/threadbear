@@ -342,6 +342,10 @@ impl MenuLabel {
             );
         Self { inner }
     }
+
+    pub(crate) fn into_inner(self) -> Stateful<Div> {
+        self.inner
+    }
 }
 
 impl RenderOnce for MenuLabel {

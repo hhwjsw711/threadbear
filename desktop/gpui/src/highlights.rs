@@ -255,10 +255,13 @@ impl MenuItem {
 }
 
 /// Builds the kit's popup menu from `items`, submenus included.
+/// When `owner_window` is `Some`, actions run against that owner window on the
+/// next tick (for menus hosted in the floating popup window).
 fn fill_menu(
     mut menu: PopupMenu,
     items: &[MenuItem],
     entity: WeakEntity<SidePane>,
+    owner_window: Option<AnyWindowHandle>,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -275,7 +278,9 @@ fn fill_menu(
                 item.title.clone(),
                 window,
                 cx,
-                move |sub, window, cx| fill_menu(sub, &children, entity2.clone(), window, cx),
+                move |sub, window, cx| {
+                    fill_menu(sub, &children, entity2.clone(), owner_window, window, cx)
+                },
             );
             continue;
         }
@@ -285,7 +290,23 @@ fn fill_menu(
             .checked(item.checked)
             .disabled(action.is_none())
             .on_click(move |_, window, cx| {
-                if let Some(action) = action.clone() {
+                let Some(action) = action.clone() else {
+                    return;
+                };
+                if let Some(owner_handle) = owner_window {
+                    let target = target.clone();
+                    cx.defer(move |cx| {
+                        let _ = owner_handle.update(cx, |_, owner_w, cx| {
+                            target
+                                .update(cx, |this, cx| {
+                                    if let Some(thread) = this.thread(cx) {
+                                        this.run_menu_action(action, &thread, owner_w, cx);
+                                    }
+                                })
+                                .ok();
+                        });
+                    });
+                } else {
                     target
                         .update(cx, |this, cx| {
                             if let Some(thread) = this.thread(cx) {
@@ -835,6 +856,7 @@ impl SidePane {
         self.chosen.insert(thread_id.to_owned(), id.to_owned());
         self.remember_section(thread_id);
         self.menu = None;
+        crate::popup_host::close(cx);
         self.section_shown(id, thread_id, cx);
         cx.notify();
     }
@@ -1054,6 +1076,7 @@ impl SidePane {
             .or_insert_with(|| preview.from.clone());
         self.previews.insert(thread_id.to_owned(), preview);
         self.menu = None;
+        crate::popup_host::close(cx);
         if let Some(thread) = self.thread(cx) {
             self.begin_preview(&thread, cx);
         }
@@ -1334,9 +1357,28 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) {
         let entity = cx.entity().downgrade();
+        let has_submenu = items.iter().any(|item| !item.children.is_empty());
+        if crate::popup_host::supported() && !has_submenu {
+            self.menu = None;
+            let owner_handle = window.window_handle();
+            let anchor = Bounds::new(position, size(px(1.), px(1.)));
+            crate::popup_host::open_menu(
+                "hl-side-menu",
+                false,
+                anchor,
+                px(180.),
+                window,
+                cx,
+                move |menu, popup_window, cx| {
+                    fill_menu(menu, &items, entity, Some(owner_handle), popup_window, cx)
+                },
+            );
+            cx.notify();
+            return;
+        }
         let build = items;
         let view = PopupMenu::build(window, cx, move |menu, window, cx| {
-            fill_menu(menu, &build, entity.clone(), window, cx)
+            fill_menu(menu, &build, entity.clone(), None, window, cx)
         });
         let (menu_focus, before) =
             crate::sidebar::focus_menu(&view, self.menu.as_ref().map(|m| &m.view), window, cx);

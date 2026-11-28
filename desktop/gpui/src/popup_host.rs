@@ -67,8 +67,22 @@ unsafe extern "C" {
 }
 
 /// Whether this platform hosts floating dropdown popups in a child panel.
+/// Synthetic single-window Cucumber runs bypass AppKit's local event monitor,
+/// so scripted test runs (unless filming) keep in-window popovers.
 pub(crate) fn supported() -> bool {
-    cfg!(target_os = "macos")
+    cfg!(target_os = "macos") && (!crate::scripted::scripted() || crate::scripted::filming())
+}
+
+/// Whether a floating popup menu is currently open.
+pub(crate) fn is_open() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        ACTIVE_GEN.load(Ordering::SeqCst) != 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 /// The reusable popup window's id, if created, so `app_update` and `media_view`
@@ -151,7 +165,7 @@ static ACTIVE_GEN: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static EVENT_TX: OnceLock<futures::channel::mpsc::UnboundedSender<(u64, u32)>> = OnceLock::new();
 #[cfg(target_os = "macos")]
-static ACTIVE_INFO: Mutex<Option<(u64, &'static str, bool)>> = Mutex::new(None);
+static ACTIVE_INFO: Mutex<Option<(u64, String, bool)>> = Mutex::new(None);
 
 #[cfg(target_os = "macos")]
 extern "C" fn on_native_event(gen: u64, kind: u32) {
@@ -214,7 +228,7 @@ enum RevealState {
 #[cfg(target_os = "macos")]
 struct ActivePopup {
     gen: u64,
-    tag: &'static str,
+    tag: String,
     owner: AnyWindowHandle,
     anchor: Bounds<Pixels>,
     menu: Entity<PopupMenu>,
@@ -243,7 +257,7 @@ struct PopupHostView {
     on_step: OnLayoutStep,
     /// Last measured panel size per dropdown tag so re-opens already start at
     /// the exact final size with zero resize frames.
-    cached_sizes: std::collections::HashMap<&'static str, Size<Pixels>>,
+    cached_sizes: std::collections::HashMap<String, Size<Pixels>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -254,6 +268,13 @@ impl PopupHostView {
             on_step,
             cached_sizes: std::collections::HashMap::new(),
         }
+    }
+
+    fn remember_size(&mut self, tag: String, size: Size<Pixels>) {
+        if self.cached_sizes.len() >= 64 && !self.cached_sizes.contains_key(&tag) {
+            self.cached_sizes.clear();
+        }
+        self.cached_sizes.insert(tag, size);
     }
 }
 
@@ -440,9 +461,9 @@ fn reposition_active(
         if active.reveal != RevealState::Shown {
             active.reveal = RevealState::Sized { tries: 0 };
         }
-        let tag = active.tag;
+        let tag = active.tag.clone();
         let out = (active.owner, active.anchor);
-        host.cached_sizes.insert(tag, target);
+        host.remember_size(tag, target);
         cx.notify();
         Some(out)
     });
@@ -516,8 +537,8 @@ fn reveal_active(view: WeakEntity<PopupHostView>, gen: u64, target: Size<Pixels>
             return false;
         }
         active.reveal = RevealState::Shown;
-        let tag = active.tag;
-        host.cached_sizes.insert(tag, target);
+        let tag = active.tag.clone();
+        host.remember_size(tag, target);
         true
     });
     if !should_reveal {
@@ -598,7 +619,7 @@ fn close_inner(cx: &mut App) {
 /// the same `tag` while open (or right after a click-outside dismissed it)
 /// closes it instead of reopening.
 pub(crate) fn open_menu(
-    tag: &'static str,
+    tag: impl Into<SharedString>,
     toggle: bool,
     anchor: Bounds<Pixels>,
     min_width: Pixels,
@@ -606,6 +627,7 @@ pub(crate) fn open_menu(
     cx: &mut App,
     build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
 ) -> bool {
+    let tag: String = tag.into().into();
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (tag, toggle, anchor, min_width, owner, cx, build);
@@ -617,7 +639,7 @@ pub(crate) fn open_menu(
             let currently_same = ACTIVE_INFO
                 .lock()
                 .ok()
-                .is_some_and(|active| active.is_some_and(|(_, t, _)| t == tag));
+                .is_some_and(|active| active.as_ref().is_some_and(|(_, t, _)| *t == tag));
             if currently_same {
                 close(cx);
                 return true;
@@ -634,7 +656,7 @@ pub(crate) fn open_menu(
         let initial_size = host_view
             .read(cx)
             .cached_sizes
-            .get(tag)
+            .get(&tag)
             .copied()
             .unwrap_or_else(|| {
                 size(
@@ -643,6 +665,7 @@ pub(crate) fn open_menu(
                 )
             });
         let mut build = Some(build);
+        let active_tag = tag.clone();
         let placed = host_window.update(cx, |_, popup_window, cx| {
             let build = build.take()?;
             let menu = PopupMenu::build(popup_window, cx, build);
@@ -653,7 +676,7 @@ pub(crate) fn open_menu(
                 });
                 host.active = Some(ActivePopup {
                     gen,
-                    tag,
+                    tag: active_tag,
                     owner: owner_handle,
                     anchor,
                     menu,
@@ -692,4 +715,121 @@ pub(crate) fn open_menu(
         }
         true
     }
+}
+
+/// Hosts a `Button`'s dropdown menu in the reusable floating popup window on
+/// macOS so it floats cleanly above native web/media views and past narrow
+/// window edges, falling back to GPUI's in-window `.dropdown_menu` elsewhere.
+pub(crate) fn dropdown_button(
+    tag: impl Into<SharedString>,
+    button: gpui_kit::component::button::Button,
+    min_width: Pixels,
+    build: impl Fn(PopupMenu, AnyWindowHandle, &mut Window, &mut Context<PopupMenu>) -> PopupMenu
+        + 'static,
+) -> AnyElement {
+    use gpui_kit::component::menu::DropdownMenu as _;
+    let tag: SharedString = tag.into();
+    let build = std::rc::Rc::new(build);
+    if supported() {
+        let bounds_cell = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
+        let capture = bounds_cell.clone();
+        return div()
+            .relative()
+            .flex_none()
+            .child(button.on_click(move |event: &ClickEvent, window, cx| {
+                let mut anchor = bounds_cell.get();
+                if anchor.is_empty() {
+                    anchor =
+                        Bounds::new(event.position(), size(gpui_kit::px(1.), gpui_kit::px(1.)));
+                }
+                let owner_handle = window.window_handle();
+                let build = build.clone();
+                open_menu(
+                    tag.clone(),
+                    true,
+                    anchor,
+                    min_width,
+                    window,
+                    cx,
+                    move |menu, popup_window, cx| build(menu, owner_handle, popup_window, cx),
+                );
+            }))
+            .child(
+                canvas(move |bounds, _, _| capture.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
+            .into_any_element();
+    }
+    button
+        .dropdown_menu(move |menu: PopupMenu, window, cx| {
+            let owner_handle = window.window_handle();
+            build(menu, owner_handle, window, cx)
+        })
+        .into_any_element()
+}
+
+/// Hosts a custom `Stateful<Div>` dropdown trigger (`VisibilityLabel`,
+/// `ModeLabel`, `MenuLabel`) in the reusable floating popup window on macOS.
+pub(crate) fn dropdown_trigger<T>(
+    tag: impl Into<SharedString>,
+    holder_id: impl Into<ElementId>,
+    trigger: T,
+    inner: Stateful<Div>,
+    tip: impl Into<SharedString>,
+    min_width: Pixels,
+    build: impl Fn(PopupMenu, AnyWindowHandle, &mut Window, &mut Context<PopupMenu>) -> PopupMenu
+        + 'static,
+) -> AnyElement
+where
+    T: gpui_kit::component::menu::DropdownMenu,
+{
+    use crate::tips::Tip as _;
+    use gpui_kit::base::TestSupportExt as _;
+    let tag: SharedString = tag.into();
+    let tip: SharedString = tip.into();
+    let build = std::rc::Rc::new(build);
+    if supported() {
+        let bounds_cell = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
+        let capture = bounds_cell.clone();
+        let trigger_el = inner.relative().child(
+            canvas(move |bounds, _, _| capture.set(bounds), |_, _, _, _| {})
+                .absolute()
+                .inset_0(),
+        );
+        return crate::a11y::A11yRole::a11y_role(trigger_el.test_support(), gpui_kit::Role::Button)
+            .aria_label(tip.clone())
+            .tip(tip)
+            .on_click(move |event: &ClickEvent, window, cx| {
+                let mut anchor = bounds_cell.get();
+                if anchor.is_empty() {
+                    anchor =
+                        Bounds::new(event.position(), size(gpui_kit::px(1.), gpui_kit::px(1.)));
+                }
+                let owner_handle = window.window_handle();
+                let build = build.clone();
+                open_menu(
+                    tag.clone(),
+                    true,
+                    anchor,
+                    min_width,
+                    window,
+                    cx,
+                    move |menu, popup_window, cx| build(menu, owner_handle, popup_window, cx),
+                );
+            })
+            .into_any_element();
+    }
+    let holder = crate::a11y::A11yRole::a11y_role(
+        div().id(holder_id).flex_none().test_support(),
+        gpui_kit::Role::GenericContainer,
+    )
+    .aria_label(tip.clone())
+    .tip(tip);
+    holder
+        .child(trigger.dropdown_menu(move |menu: PopupMenu, window, cx| {
+            let owner_handle = window.window_handle();
+            build(menu, owner_handle, window, cx)
+        }))
+        .into_any_element()
 }

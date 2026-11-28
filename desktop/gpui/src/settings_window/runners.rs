@@ -12,7 +12,7 @@ use crate::highlights::tipped_as;
 use crate::{icons, style};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -217,14 +217,17 @@ impl SettingsWindow {
         let app = self.app.clone();
         let choices = shown.choices.clone();
         let default = shown.default.clone();
-        let button = Button::new("settings-default-runner-menu")
-            .label(label)
-            .icon(icons::symbol(symbol))
-            .small()
-            .secondary()
-            .dropdown_caret(true)
-            .tooltip(rules::DEFAULT_TIP)
-            .dropdown_menu(move |menu: PopupMenu, _, _| {
+        let button = crate::popup_host::dropdown_button(
+            "settings-default-runner-menu",
+            Button::new("settings-default-runner-menu")
+                .label(label)
+                .icon(icons::symbol(symbol))
+                .small()
+                .secondary()
+                .dropdown_caret(true)
+                .tooltip(rules::DEFAULT_TIP),
+            px(180.),
+            move |menu: PopupMenu, _, _, _| {
                 let mut menu = menu;
                 for (id, name, symbol) in &choices {
                     let checked = *id == default;
@@ -240,7 +243,8 @@ impl SettingsWindow {
                     );
                 }
                 menu
-            });
+            },
+        );
         div()
             .id("settings-default-runner-holder")
             .test_support()

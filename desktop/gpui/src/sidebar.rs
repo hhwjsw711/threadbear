@@ -2479,6 +2479,7 @@ impl Threadbear {
     /// `app.newThread()`: leaves the open thread for a fresh start, the
     /// cursor in the new box.
     pub(crate) fn new_thread(&mut self, cx: &mut Context<Self>) {
+        crate::popup_host::close(cx);
         self.leave_pane(cx);
         self.archive.open = None;
         self.selected = None;
