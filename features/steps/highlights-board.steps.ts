@@ -7,11 +7,23 @@ import type { ThreadbearWorld } from '../support/world.ts';
 import { checkBoardGestures } from '../tools/board-gestures.ts';
 import type { GpuiDriver } from '../support/gpui.ts';
 
+// The board scrolls only sideways, so a wheel over Highlights scrolls the
+// pane. Each thread's project brief now sits above its board, and the board's
+// lower cards can start below the pane (28 Nov).
+async function scrollPaneDown(world: ThreadbearWorld) {
+  const size = /([\d.]+)x([\d.]+)/.exec(await world.app.do({ cmd: 'window' }));
+  if (!size) return;
+  await world.app.do({ cmd: 'point', x: Number(size[1]) - 60, y: Number(size[2]) / 2, scrollY: -4 });
+}
+
 async function point(world: ThreadbearWorld, label: string, scroll = true) {
   let last: unknown;
   for (let n = 0; n < 20; n += 1) {
     try { return (await world.app.do({ cmd: 'label-point', label })).trim().split(/\s+/).slice(-2).map(Number); }
     catch (e) { last = e; }
+    if (scroll && n % 3 === 1) {
+      try { await scrollPaneDown(world); } catch {}
+    }
     if (scroll && n % 3 === 2) {
       try { await world.app.do({ cmd: 'click', tip: 'Next board column' }); } catch {}
     }
