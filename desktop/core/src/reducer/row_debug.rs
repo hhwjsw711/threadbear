@@ -183,7 +183,6 @@ impl RowDebug {
             RowContent::Group(group) => group.summary.clone(),
             RowContent::Working(_) => "Working".to_owned(),
             RowContent::Background(status) => BackgroundWork::line_with_detail(&status.tasks),
-            RowContent::Changes(card) => card.title(),
             RowContent::Gap(gap) => gap.label(),
             // Another lab's review, as the Swift RowDebug says it.
             RowContent::LabReview(r) => {
@@ -365,28 +364,16 @@ pub fn seq_ranges(seqs: &[i64]) -> String {
 
 /// The seqs of the loaded events a row was built from, oldest first
 /// (`TranscriptModel.sourceSeqs`): a tool's call, result and diff; an
-/// approval's request and its answer; a group's members; a changes card's
-/// edits; the turn's start for the working line.
+/// approval's request and its answer; a group's members; the turn's start
+/// for the working line.
 pub fn source_seqs(model: &super::model::TranscriptModel, row_id: &str) -> Vec<i64> {
     let mut wanted: BTreeSet<String> = BTreeSet::from([row_id.to_owned()]);
-    match model
+    if let Some(RowContent::Group(group)) = model
         .row(row_id)
         .or_else(|| model.item(row_id))
         .map(|r| &r.content)
     {
-        Some(RowContent::Group(group)) => wanted = group.member_ids.iter().cloned().collect(),
-        Some(RowContent::Changes(card)) => {
-            wanted = model
-                .items()
-                .iter()
-                .filter(|i| {
-                    i.turn_id.as_deref() == Some(card.turn_id.as_str())
-                        && i.kind() == super::row::RowKind::Diff
-                })
-                .map(|i| i.id.clone())
-                .collect();
-        }
-        _ => {}
+        wanted = group.member_ids.iter().cloned().collect();
     }
     let mut plan_rows = std::collections::HashMap::new();
     model

@@ -152,15 +152,6 @@ pub(crate) fn message_text(row: &Row) -> Option<String> {
         RowContent::Error { message, .. } => format!("**Error**: {message}"),
         RowContent::Group(group) => format!("_{}_", group.summary),
         RowContent::Working(_) | RowContent::Background(_) => return None,
-        RowContent::Changes(card) => {
-            let mut lines = vec![format!("{}:", card.title())];
-            lines.extend(
-                card.files
-                    .iter()
-                    .map(|f| format!("- `{}` +{} −{}", f.path, f.added, f.removed)),
-            );
-            lines.join("\n")
-        }
         RowContent::Gap(gap) => format!("_{}_", gap.label()),
         // As MarkdownExport's: the heading, then each finding and its answer.
         RowContent::LabReview(review) => {

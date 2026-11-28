@@ -1424,13 +1424,10 @@ fn step(
         "expand" | "collapse" => {
             let open = text(cmd, "cmd") == "expand";
             let row = text(cmd, "row").to_string();
-            let file = (!cmd["file"].is_null()).then(|| cmd["file"].clone());
             let all = cmd["all"].as_bool().unwrap_or(false);
-            if file.is_some() || all {
+            if all {
                 app.update(cx, |t, cx| {
-                    t.update_pane(cx, |p, cx| {
-                        p.expand_detail(&row, file.as_ref(), all, open, cx)
-                    })
+                    t.update_pane(cx, |p, cx| p.expand_detail(&row, all, open, cx))
                 })??;
             } else {
                 app.update(cx, |t, cx| t.set_row_open(&row, open, cx))?;

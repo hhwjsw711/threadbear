@@ -67,7 +67,6 @@ pub enum RowKind {
     Group,
     Working,
     Background,
-    Changes,
     Gap,
     PlanCard,
     /// Another lab's review of the turn's change: a quiet line in the
@@ -97,7 +96,6 @@ impl RowKind {
             RowKind::Group => "group",
             RowKind::Working => "working",
             RowKind::Background => "background",
-            RowKind::Changes => "changes",
             RowKind::Gap => "gap",
             RowKind::PlanCard => "planCard",
             RowKind::LabReview => "labReview",
@@ -588,7 +586,6 @@ pub enum RowContent {
     Group(WorkGroup),
     Working(WorkingStatus),
     Background(BackgroundStatus),
-    Changes(ChangedFiles),
     /// "6 min later · Mine the repo finished" before a turn background work
     /// woke.
     Gap(TurnGap),
@@ -633,7 +630,6 @@ impl RowContent {
             RowContent::Group(_) => RowKind::Group,
             RowContent::Working(_) => RowKind::Working,
             RowContent::Background(_) => RowKind::Background,
-            RowContent::Changes(_) => RowKind::Changes,
             RowContent::Gap(_) => RowKind::Gap,
             RowContent::LabReview(_) => RowKind::LabReview,
         }
@@ -882,27 +878,4 @@ pub struct WorkingStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BackgroundStatus {
     pub tasks: Vec<BackgroundTask>,
-}
-
-/// The "Edited 3 files" card at the end of a turn that changed files
-/// (`ChangedFiles`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChangedFiles {
-    pub turn_id: String,
-    pub files: Vec<ChangedFile>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChangedFile {
-    pub path: String,
-    pub added: i64,
-    pub removed: i64,
-    /// Every successful edit to the file in the turn, in order.
-    pub diffs: Vec<EditDiff>,
-    /// Its diff is open under it in the card.
-    pub is_expanded: bool,
-    /// Its open diff shows every line, not just the first few.
-    pub shows_all: bool,
-    /// The thread's working folder.
-    pub root: Option<String>,
 }

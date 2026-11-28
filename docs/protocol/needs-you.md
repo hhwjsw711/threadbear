@@ -235,8 +235,8 @@ sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks. No sa
   then the Needs you card. Once any turn is over (`turn.completed`), the
   app shows it as Mike's messages, one "Worked for 2m 13s" line holding
   everything else, its reply, errors, a review still waiting, pictures
-  the agent made, the changes card, the footer and the card (Mike, 29
-  Oct: like Codex desktop). The reply is the turn's messages after its
+  the agent made, the footer and the card (Mike, 29
+  Oct: like Codex desktop; no separate changes card). The reply is the turn's messages after its
   last step and before its taken `end_turn`, when they're longer than
   the summary; else the summary; else its last `assistant.text`. A
   `narration: true` text never beats the summary, as it's only the API's
@@ -260,7 +260,7 @@ sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks. No sa
   schedule's, another agent's): one line of work holding all of them and
   the notes between (their earlier summaries and the runner's messages
   too), one reply (the last summary, plus the last `assistant.text` of
-  any later turn, each picked as above), one changes card and one footer with their time and
+  any later turn, each picked as above), and one footer with their time and
   cost added up. A note from an edit (`thread.rewound`) stays out.
   A wake-up, a turn the CLI started itself as a background job ended, joins
   the same way, but its summary doesn't take the last one's place: it

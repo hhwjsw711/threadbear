@@ -80,14 +80,17 @@ final class GoldenTranscriptTests: XCTestCase {
         _ = model.setLooseEnds(thread.looseEnds)
         model.load(events: events)
         _ = model.setBackground(thread.background)
-        let closed = model.rows.map(Self.golden)
+        // GPUI retired the fallback "Edited N files" changes card (28 Nov
+        // 2026); the Swift reducer is frozen, so filter its changes rows when
+        // checking the shared golden files.
+        let closed = model.rows.filter { $0.kind != .changes }.map(Self.golden)
 
         // Every group open, so the steps folded in them show. Opening a
         // group only adds rows under it and never makes another group.
         for row in model.rows where row.kind == .group {
             _ = model.setExpanded(row.id, true)
         }
-        let open = model.rows.map(Self.golden)
+        let open = model.rows.filter { $0.kind != .changes }.map(Self.golden)
 
         let produced = GoldenFile(closed: closed, open: open)
         let file = Self.golden.appendingPathComponent(name + ".json")

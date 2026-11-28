@@ -1802,21 +1802,6 @@ impl ThreadPane {
         cx.notify();
     }
 
-    /// A file's line in the changes card: its diff opens and closes in the model.
-    pub(crate) fn toggle_changed_file(&mut self, key: &str, cx: &mut Context<Self>) {
-        let open = !self.feed.model().is_expanded(key);
-        let change = self.feed.set_expanded(key, open);
-        self.apply(change, cx);
-        cx.notify();
-    }
-
-    /// "Show all" on a changes card's diff: the model's to open.
-    pub(crate) fn show_all_changed(&mut self, key: &str, cx: &mut Context<Self>) {
-        let change = self.feed.set_expanded(key, true);
-        self.apply(change, cx);
-        cx.notify();
-    }
-
     /// Older events have been reached, or the list moved: asks for an older
     /// page when the top is near, and remembers where the view is.
     fn after_list_change(&mut self, cx: &mut Context<Self>) {
@@ -2468,11 +2453,10 @@ impl ThreadPane {
         Ok(())
     }
 
-    /// `expand`/`collapse` with `file` on a changes card, or `all` for a diff.
+    /// `expand`/`collapse` with `all` for a diff.
     pub fn expand_detail(
         &mut self,
         row: &str,
-        file: Option<&Value>,
         all: bool,
         open: bool,
         cx: &mut Context<Self>,
@@ -2487,25 +2471,6 @@ impl ThreadPane {
         let Some(found) = found else {
             return Err(format!("no row starting {row:?}"));
         };
-        if let (RowContent::Changes(changes), Some(file)) = (&found.content, file) {
-            let index = file.as_u64().map(|n| n as usize).or_else(|| {
-                changes
-                    .files
-                    .iter()
-                    .position(|f| Some(f.path.as_str()) == file.as_str())
-            });
-            let Some(changed) = index.and_then(|i| changes.files.get(i)) else {
-                return Err("no such file on that card".into());
-            };
-            let key = threadbear_core::reducer::ChangedFiles::expansion_key(
-                &changes.turn_id,
-                &changed.path,
-            );
-            let change = self.feed.set_expanded(&key, open);
-            self.apply(change, cx);
-            cx.notify();
-            return Ok(());
-        }
         if all {
             let key = threadbear_core::reducer::DiffPreview::all_key(&found.id);
             if open {

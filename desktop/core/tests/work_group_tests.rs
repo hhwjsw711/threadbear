@@ -787,10 +787,10 @@ fn testATurnThatStartedOnAnOlderPageIsStillRunning() {
     assert_eq!(finished.open_turn(), None);
 }
 
-// MARK: Changed files card
+// MARK: No fallback changes card
 
 #[test]
-fn testAChangedFilesCardComesBeforeTheFooter() {
+fn testATurnWithEditsAndNoEndTurnHasNoChangesCard() {
     let mut model = from_events(vec![
         user(1, "Change things"),
         started(2),
@@ -804,108 +804,24 @@ fn testAChangedFilesCardComesBeforeTheFooter() {
         result_with(10, "c4", false, "old_string not found", json!([])),
         text(11, "m1", "Done."),
     ]);
-    assert!(
-        model.rows().iter().all(|r| r.kind() != RowKind::Changes),
-        "no card until the turn ends"
-    );
+    assert!(model.row("cf:t1").is_none());
     let mut table = ids(&model);
     let c = model.apply(vec![done(12)]);
     replay(&c, &mut table, &model);
-    assert_eq!(
-        ids(&model)[ids(&model).len() - 3..],
-        ["a:m1", "cf:t1", "f:t1"]
+    assert_eq!(ids(&model)[ids(&model).len() - 2..], ["a:m1", "f:t1"]);
+    assert!(
+        model.row("cf:t1").is_none(),
+        "edits stay in the folded work group with no fallback changes card"
     );
-    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else {
-        panic!("a card")
-    };
-    assert_eq!(card.title(), "Edited 2 files");
-    assert_eq!(
-        card.files
-            .iter()
-            .map(|f| f.path.clone())
-            .collect::<Vec<_>>(),
-        ["/repo/Sources/A.swift", "/repo/README.md"]
-    );
-    assert_eq!(
-        card.files.iter().map(|f| f.added).collect::<Vec<_>>(),
-        [3, 3]
-    );
-    assert_eq!(
-        card.files.iter().map(|f| f.removed).collect::<Vec<_>>(),
-        [2, 0]
-    );
-    assert_eq!(card.files[0].diffs.len(), 2, "both edits to A.swift");
-    assert_eq!(card.files[0].name(), "A.swift");
-    assert_eq!(card.files[0].folder(), "repo/Sources");
 
-    let version = model.row("cf:t1").unwrap().version;
-    let index = model.index_of("cf:t1").unwrap();
-    let c = model.set_expanded(&ChangedFiles::expansion_key("t1", "/repo/README.md"), true);
-    assert_eq!(c, change(&[], &[], &[index]));
-    let Some(RowContent::Changes(opened)) = model.row("cf:t1").map(|r| &r.content) else {
-        panic!("a card")
-    };
-    assert_eq!(
-        opened
-            .files
-            .iter()
-            .map(|f| f.is_expanded)
-            .collect::<Vec<_>>(),
-        [false, true]
-    );
-    assert_ne!(model.row("cf:t1").map(|r| r.version), Some(version));
-}
-
-/// A file opened in the card shows the first lines of its diff; "Show N
-/// more lines" opens the rest through its own key, and closing the file
-/// forgets that, so it opens short again.
-#[test]
-fn testShowingAllOfAChangedFilesDiffRoundTrips() {
-    let long: String = (1..=40)
-        .map(|n| format!("line {n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut model = from_events(vec![
+    // Even a turn with edits and no reply message gets no changes card.
+    let no_reply = from_events(vec![
         user(1, "Write it"),
-        edit_with(2, "c1", "/repo/Long.swift", "a", &long, "Write"),
+        edit_with(2, "c1", "/repo/Long.swift", "a", "b", "Write"),
         result(3, "c1"),
         done(4),
     ]);
-    fn file(model: &TranscriptModel) -> Option<ChangedFile> {
-        match model.row("cf:t1").map(|r| &r.content) {
-            Some(RowContent::Changes(card)) => card.files.first().cloned(),
-            _ => None,
-        }
-    }
-    let key = ChangedFiles::expansion_key("t1", "/repo/Long.swift");
-    let all = DiffPreview::all_key(&key);
-    assert_eq!(all, "cf:t1|/repo/Long.swift|all");
-    model.set_expanded(&key, true);
-    assert_eq!(file(&model).map(|f| f.is_expanded), Some(true));
-    assert_eq!(file(&model).map(|f| f.shows_all), Some(false));
-
-    let version = model.row("cf:t1").unwrap().version;
-    let index = model.index_of("cf:t1").unwrap();
-    let c = model.set_expanded(&all, true);
-    assert_eq!(c, change(&[], &[], &[index]), "only the card changes");
-    assert_ne!(
-        model.row("cf:t1").map(|r| r.version),
-        Some(version),
-        "so its height is measured again"
-    );
-    assert_eq!(file(&model).map(|f| f.shows_all), Some(true));
-    assert!(model.is_expanded(&all));
-
-    model.set_expanded(&key, false);
-    assert_eq!(file(&model).map(|f| f.is_expanded), Some(false));
-    assert_eq!(file(&model).map(|f| f.shows_all), Some(false));
-    assert!(!model.is_expanded(&all));
-    model.set_expanded(&key, true);
-    assert_eq!(
-        file(&model).map(|f| f.shows_all),
-        Some(false),
-        "opens short again"
-    );
+    assert!(no_reply.row("cf:t1").is_none());
 }
 
 #[test]
@@ -959,10 +875,10 @@ fn testAThoughtIsSummedUpByItsFirstSentence() {
     assert_eq!(WorkSummary::thought(""), "");
 }
 
-/// A diff that lands after its turn finished updates the turn's card, and
-/// only the rows for that turn change.
+/// A diff that lands after its turn finished updates the folded tool item
+/// without touching later turns' rows.
 #[test]
-fn testALateDiffUpdatesItsTurnsCard() {
+fn testALateDiffUpdatesItsFoldedToolWithoutTouchingLaterTurns() {
     let mut model = from_events(vec![
         user(1, "Edit it"),
         edit(2, "c1", "/a.swift"),
@@ -983,11 +899,6 @@ fn testALateDiffUpdatesItsTurnsCard() {
     ]}))]);
     replay(&c, &mut table, &model);
     assert_eq!(
-        c.updated,
-        set(&[3]),
-        "its turn's card; the edit is folded in the turn's line"
-    );
-    assert_eq!(
         model.rows()[model.rows().len() - 3..]
             .iter()
             .map(|r| r.version)
@@ -995,10 +906,12 @@ fn testALateDiffUpdatesItsTurnsCard() {
         after,
         "the next turn's rows are untouched"
     );
-    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else {
-        panic!("a card")
+    assert!(model.row("cf:t1").is_none());
+    let Some(RowContent::Tool(tool)) = model.item("t:c1").map(|r| &r.content) else {
+        panic!("a tool")
     };
-    assert_eq!(card.files.first().map(|f| f.added), Some(2));
+    assert_eq!(tool.diffs.len(), 1);
+    assert_eq!(DiffBuilder::stats(&tool.diffs[0]), (2, 1));
 }
 
 /// Opening a group near the top of a long thread only touches that group's
@@ -1059,7 +972,7 @@ fn testASummarizedTurnHasNoCard() {
         done(6),
     ]);
     assert!(model.row("a:m1").is_some());
-    assert!(model.rows().iter().all(|r| r.kind() != RowKind::Changes));
+    assert!(model.row("cf:t1").is_none());
 }
 
 /// One reply: the final message is the reply, as the summary was, so the
@@ -1080,7 +993,7 @@ fn testAOneReplyTurnHasNoCard() {
         done(6),
     ]);
     assert!(model.row("a:m1").is_some());
-    assert!(model.rows().iter().all(|r| r.kind() != RowKind::Changes));
+    assert!(model.row("cf:t1").is_none());
 }
 
 fn end_turn_call(seq: i64, id: &str) -> Event {
@@ -1302,5 +1215,5 @@ fn testATurnWithNoEditsHasNoCard() {
         text(3, "m1", "Hello"),
         done(4),
     ]);
-    assert!(model.rows().iter().all(|r| r.kind() != RowKind::Changes));
+    assert!(model.row("cf:t1").is_none());
 }

@@ -42,14 +42,6 @@
       "turn" : "turn_1"
     },
     {
-      "id" : "cf:turn_1",
-      "inGroup" : false,
-      "kind" : "changes",
-      "seq" : 24,
-      "text" : "Edited 3 files",
-      "turn" : "turn_1"
-    },
-    {
       "id" : "f:turn_1",
       "inGroup" : false,
       "kind" : "footer",
@@ -235,14 +227,6 @@
       "kind" : "assistant",
       "seq" : 23,
       "text" : "The November meetup is on the events page with its poster, and the build is still running in the ba…",
-      "turn" : "turn_1"
-    },
-    {
-      "id" : "cf:turn_1",
-      "inGroup" : false,
-      "kind" : "changes",
-      "seq" : 24,
-      "text" : "Edited 3 files",
       "turn" : "turn_1"
     },
     {

@@ -5,11 +5,9 @@
 // There are two lists. `items` has one row per thing the agent did (a
 // message, a tool call with its result, a thinking block). `rows` is what the
 // table shows: each run of work inside a turn folded into a group row (with
-// its items under it when it's open), plus the derived rows: the "Edited 3
-// files" card before a turn's footer and the "Working for 12s" line while a
-// turn runs. Live changes only rebuild `rows` from the first run they touch
-// to the end, which is nearly always the current turn.
-use super::diff::DiffBuilder;
+// its items under it when it's open), plus derived rows such as the "Working
+// for 12s" line while a turn runs. Live changes only rebuild `rows` from the
+// first run they touch to the end, which is nearly always the current turn.
 use super::event::*;
 use super::format::{duration, TurnTokens};
 use super::groups::*;
@@ -133,11 +131,6 @@ pub struct TranscriptModel {
     completed_turns: HashSet<String>,
     /// Turns with a summary from end_turn: their other messages are work.
     summarized_turns: HashSet<String>,
-    /// Turns with a One reply final message: like a summary, it's the reply,
-    /// so the turn gets no changes card either.
-    replied_turns: HashSet<String>,
-    /// Edit and Write tool items per turn, in order, for the changes card.
-    edits_by_turn: HashMap<String, Vec<String>>,
     /// The seq each tool row's result came at, by row id.
     result_seqs: HashMap<String, i64>,
     /// Approval and question rows still waiting, and their turn. A turn
@@ -752,21 +745,14 @@ impl TranscriptModel {
         self.refresh_rows()
     }
 
-    /// Opens or closes a group (`g:` id) or a file in a changes card
-    /// (`ChangedFiles::expansion_key`, or its `DiffPreview::all_key` to show
-    /// all of the file's diff). Opening a group inserts its items under it;
-    /// the group keeps its id, so its cached height survives.
+    /// Opens or closes a group (`g:` id). Opening a group inserts its items
+    /// under it; the group keeps its id, so its cached height survives.
     pub fn set_expanded(&mut self, key: &str, open: bool) -> TranscriptChange {
         if self.expanded.contains(key) == open {
             return TranscriptChange::default();
         }
         DiffPreview::set(key, open, &mut self.expanded);
-        let row_id = if key.starts_with("cf:") {
-            key.split('|').next().unwrap_or(key)
-        } else {
-            key
-        };
-        let Some(&position) = self.index.get(row_id) else {
+        let Some(&position) = self.index.get(key) else {
             return TranscriptChange::default();
         };
         self.mark_updated(self.row_starts[position]);
@@ -803,8 +789,6 @@ impl TranscriptModel {
         self.hidden = Self::hidden_ranges(&self.events);
         self.completed_turns.clear();
         self.summarized_turns.clear();
-        self.replied_turns.clear();
-        self.edits_by_turn.clear();
         self.result_seqs.clear();
         self.pending_cards.clear();
         self.approval_for_tool.clear();
@@ -900,21 +884,6 @@ impl TranscriptModel {
         }
         self.dirty_update = Some(self.dirty_update.map_or(item_index, |d| d.min(item_index)));
         self.dirty_update_end = self.dirty_update_end.max(self.run_end(item_index as isize));
-        // An edit in a finished turn changes its changes card too.
-        if let RowContent::Tool(tool) = &self.items[item_index].content {
-            if !tool.diffs.is_empty()
-                || tool
-                    .call
-                    .as_ref()
-                    .map(DiffBuilder::is_edit_tool)
-                    .unwrap_or(false)
-            {
-                let turn = self.items[item_index].turn_id.clone().unwrap_or_default();
-                if let Some(&footer) = self.item_index.get(&format!("f:{turn}")) {
-                    self.dirty_update_end = self.dirty_update_end.max(footer + 1);
-                }
-            }
-        }
     }
 
     /// A turn id starting or ending again changes how its earlier items are
@@ -1002,16 +971,6 @@ impl TranscriptModel {
                 item.tool_shown = true;
             }
         });
-    }
-
-    fn note_edit(&mut self, item_id: &str, turn_id: Option<&str>) {
-        let edits = self
-            .edits_by_turn
-            .entry(turn_id.unwrap_or("").to_owned())
-            .or_default();
-        if !edits.iter().any(|e| e == item_id) {
-            edits.push(item_id.to_owned());
-        }
     }
 
     #[expect(
@@ -1152,11 +1111,6 @@ impl TranscriptModel {
                 ..
             } => {
                 self.streaming.remove(item_id);
-                if *final_reply {
-                    if let Some(turn) = &turn_id {
-                        self.replied_turns.insert(turn.clone());
-                    }
-                }
                 let id = format!("a:{item_id}");
                 let thought = format!("r:{item_id}");
                 let make = |item_id: &str, text: &str| TextItem {
@@ -1340,9 +1294,6 @@ impl TranscriptModel {
                     self.append(Row::new(&id, seq, turn_id.clone(), RowContent::Tool(tool)));
                     self.note_tool_row(&id);
                 }
-                if DiffBuilder::is_edit_tool(call) {
-                    self.note_edit(&id, turn_id.as_deref());
-                }
             }
 
             EventPayload::ToolResult(result) => {
@@ -1423,7 +1374,6 @@ impl TranscriptModel {
                     self.append(Row::new(&id, seq, turn_id.clone(), RowContent::Tool(tool)));
                     self.note_tool_row(&id);
                 }
-                self.note_edit(&id, turn_id.as_deref());
             }
 
             EventPayload::ApprovalRequested(request)
@@ -2728,7 +2678,7 @@ impl TranscriptModel {
                 });
                 // A stretch with the runner's turns in it has a footer for
                 // each: the last one stands for them all, with their time and
-                // cost added up, and the changes card has every turn's edits.
+                // cost added up.
                 let footers: Vec<(usize, TurnCompletion)> = turn
                     .clone()
                     .filter_map(|k| match &self.items[k].content {
@@ -2833,29 +2783,6 @@ impl TranscriptModel {
                     } else if let RowContent::Footer(done) = &row.content {
                         if Some(k) != footers.last().map(|(index, _)| *index) {
                             continue;
-                        }
-                        let stretch: Vec<String> = footers
-                            .iter()
-                            .map(|(index, _)| {
-                                self.items[*index].turn_id.clone().unwrap_or_default()
-                            })
-                            .collect();
-                        // A turn that ended with a summary has no changes
-                        // card: the summary says what changed, and the edits
-                        // are still in the folded work (Mike, 30 Oct). One
-                        // reply's final message counts too (6 Nov).
-                        if !stretch.iter().any(|t| {
-                            self.summarized_turns.contains(t) || self.replied_turns.contains(t)
-                        }) {
-                            if let Some(card) = self.changed_files(&stretch) {
-                                out.push(derived(
-                                    &format!("cf:{}", card.turn_id),
-                                    row.seq,
-                                    row.turn_id.clone(),
-                                    RowContent::Changes(card),
-                                ));
-                                starts.push(turn.start);
-                            }
                         }
                         if footers.len() > 1 {
                             let mut done = done.clone();
@@ -2965,19 +2892,6 @@ impl TranscriptModel {
             {
                 i += 1;
             } else {
-                if matches!(item.content, RowContent::Footer(_)) {
-                    if let Some(card) =
-                        self.changed_files(&[item.turn_id.clone().unwrap_or_default()])
-                    {
-                        out.push(derived(
-                            &format!("cf:{}", card.turn_id),
-                            item.seq,
-                            item.turn_id.clone(),
-                            RowContent::Changes(card),
-                        ));
-                        starts.push(i);
-                    }
-                }
                 out.push(item.clone());
                 starts.push(i);
                 i += 1;
@@ -3050,79 +2964,5 @@ impl TranscriptModel {
             }
         }
         (out, starts)
-    }
-
-    /// Claude's plan mode writes its plan to ~/.claude/plans/<name>.md.
-    /// That's the CLI's own note, shown as the plan card; "Edited 1 file"
-    /// for it, in a turn that changed nothing of the project's, read as a
-    /// change.
-    pub fn is_plan_file(path: &str) -> bool {
-        path.contains("/.claude/plans/") && path.ends_with(".md")
-    }
-
-    /// The files a turn (or a stretch's turns) changed, from its Edit and
-    /// Write calls that didn't fail, each with its edits' line counts added
-    /// up, as one card under the last one's footer.
-    fn changed_files(&self, turns: &[String]) -> Option<ChangedFiles> {
-        let turn = turns.last()?;
-        let ids: Vec<&String> = turns
-            .iter()
-            .flat_map(|t| self.edits_by_turn.get(t).into_iter().flatten())
-            .collect();
-        if ids.is_empty() {
-            return None;
-        }
-        let mut order: Vec<String> = Vec::new();
-        let mut files: HashMap<String, ChangedFile> = HashMap::new();
-        for id in ids {
-            let Some(&i) = self.item_index.get(id) else {
-                continue;
-            };
-            let RowContent::Tool(tool) = &self.items[i].content else {
-                continue;
-            };
-            if tool.failed() {
-                continue;
-            }
-            // Every file a tool changed: a Codex patch can touch several.
-            for diff in tool.effective_diffs() {
-                if diff.hunks.is_empty() || Self::is_plan_file(&diff.path) {
-                    continue;
-                }
-                let path = if diff.path.is_empty() {
-                    tool.title()
-                } else {
-                    diff.path.clone()
-                };
-                let (added, removed) = DiffBuilder::stats(&diff);
-                if let Some(file) = files.get_mut(&path) {
-                    file.added += added;
-                    file.removed += removed;
-                    file.diffs.push(diff);
-                } else {
-                    order.push(path.clone());
-                    let key = ChangedFiles::expansion_key(turn, &path);
-                    files.insert(
-                        path.clone(),
-                        ChangedFile {
-                            path,
-                            added,
-                            removed,
-                            diffs: vec![diff],
-                            is_expanded: self.expanded.contains(&key),
-                            shows_all: self.expanded.contains(&DiffPreview::all_key(&key)),
-                            root: self.root.clone(),
-                        },
-                    );
-                }
-            }
-        }
-        if order.is_empty() {
-            return None;
-        }
-        Some(ChangedFiles {
-            turn_id: turn.clone(),
-            files: order.iter().filter_map(|p| files.get(p).cloned()).collect(),
-        })
     }
 }

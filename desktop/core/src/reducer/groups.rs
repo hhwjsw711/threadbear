@@ -2,9 +2,9 @@
 // Transcript/WorkGroups.swift and the words from Threads/BackgroundWork.swift.
 use super::diff::DiffBuilder;
 use super::event::{BackgroundKind, BackgroundTask, ToolKind};
-use super::row::{ChangedFile, ChangedFiles, Row, RowContent, ToolItem, WorkGroup};
+use super::row::{Row, RowContent, ToolItem, WorkGroup};
 use super::text;
-use super::tool_presentation::{PathDisplay, ToolPresentation};
+use super::tool_presentation::ToolPresentation;
 use std::collections::HashSet;
 
 impl WorkGroup {
@@ -36,42 +36,6 @@ impl WorkGroup {
     }
 }
 
-/// The "Working for 12s" line at the end of a running turn (`WorkingStatus`).
-impl ChangedFiles {
-    pub fn title(&self) -> String {
-        if self.files.len() == 1 {
-            "Edited 1 file".to_owned()
-        } else {
-            format!("Edited {} files", self.files.len())
-        }
-    }
-
-    pub fn added(&self) -> i64 {
-        self.files.iter().map(|f| f.added).sum()
-    }
-
-    pub fn removed(&self) -> i64 {
-        self.files.iter().map(|f| f.removed).sum()
-    }
-
-    /// The key `TranscriptModel::set_expanded` takes to open one file's diff.
-    pub fn expansion_key(turn_id: &str, path: &str) -> String {
-        format!("cf:{turn_id}|{path}")
-    }
-}
-
-impl ChangedFile {
-    pub fn name(&self) -> String {
-        text::last_path_component(&self.path).to_owned()
-    }
-
-    /// The file's folder inside the thread's folder ("Sources/Upload",
-    /// empty at its top), or short for a file outside it.
-    pub fn folder(&self) -> String {
-        PathDisplay::folder_relative(&self.path, self.root.as_deref())
-    }
-}
-
 /// How much of an opened diff shows (`DiffPreview`).
 pub struct DiffPreview;
 
@@ -89,8 +53,8 @@ impl DiffPreview {
         }
     }
 
-    /// The expansion key that shows all of an opened diff: a tool row's id,
-    /// or a changes card file's `ChangedFiles::expansion_key`, plus "|all".
+    /// The expansion key that shows all of an opened diff: a tool row's id
+    /// plus "|all".
     pub fn all_key(key: &str) -> String {
         format!("{key}|all")
     }

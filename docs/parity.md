@@ -83,7 +83,6 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | A tool's pictures | `row.images` | No: Not drawn yet. | No: Not drawn yet. | Yes |
 | Turn footer ("Worked for 3m") | `row.footer` | No: Not drawn yet. | No: Not drawn yet. | Yes |
 | Plan checklist (plan.updated) | `row.plan` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
-| Changed files card | `row.changes` | No: Not drawn yet. | No: Not drawn yet. | No: Not drawn yet. |
 
 ## Who sent a message, when it isn't the user (reducer/row.rs)
 

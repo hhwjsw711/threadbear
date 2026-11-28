@@ -60,7 +60,6 @@ export const DRAWN: Record<string, DrawRow> = {
   'row.group': { what: "A turn's work folded into one line", ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'WorkedView', android: 'WorkedView', web: 'workedTitle' } },
   'row.working': { what: 'Working indicator', ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'WorkingLine', android: 'WorkingLine' } },
   'row.background': { what: 'Background jobs still going', ios: 'yes', android: 'yes', web: NOT_YET, sign: { ios: 'working', android: 'working' } },
-  'row.changes': { what: 'Changed files card', ios: NOT_YET, android: NOT_YET, web: NOT_YET },
   'row.gap': { what: '"6 min later" divider before a woken turn', ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'wokeBy', android: 'wokeBy', web: 'gapLabel' } },
   'row.planCard': { what: 'Plan first card, waiting for approval', ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'PlanCard', android: 'PlanCard', web: 'PlanCard' } },
   'row.labReview': { what: "Another lab's review of the turn", ios: 'yes', android: 'yes', web: 'yes', sign: { ios: 'ReviewRow', android: 'ReviewRow', web: 'ReviewRow' } },

@@ -26,14 +26,6 @@
       "turn" : "turn_1"
     },
     {
-      "id" : "cf:turn_1",
-      "inGroup" : false,
-      "kind" : "changes",
-      "seq" : 20,
-      "text" : "Edited 2 files",
-      "turn" : "turn_1"
-    },
-    {
       "id" : "f:turn_1",
       "inGroup" : false,
       "kind" : "footer",
@@ -194,14 +186,6 @@
       "kind" : "assistant",
       "seq" : 19,
       "text" : "Uploads now pick up where they stopped. What changed: - `UploadJournal` stores the confirmed offset…",
-      "turn" : "turn_1"
-    },
-    {
-      "id" : "cf:turn_1",
-      "inGroup" : false,
-      "kind" : "changes",
-      "seq" : 20,
-      "text" : "Edited 2 files",
       "turn" : "turn_1"
     },
     {

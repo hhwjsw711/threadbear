@@ -35,9 +35,9 @@ pub use model::{PrependResult, TranscriptChange, TranscriptModel};
 pub use pending::PendingMessage;
 pub use review_note::ReviewNote;
 pub use row::{
-    AgentHeader, ApprovalItem, AskNote, AsksCard, BackgroundStatus, ChangedFile, ChangedFiles,
-    Pending, PlanCard, PlanCardState, QuestionItem, Row, RowContent, RowKind, ScheduledHeader,
-    SecretItem, TextItem, ToolItem, UserMessage, WorkGroup, WorkingStatus, QUIET_INBOX_TIP,
+    AgentHeader, ApprovalItem, AskNote, AsksCard, BackgroundStatus, Pending, PlanCard,
+    PlanCardState, QuestionItem, Row, RowContent, RowKind, ScheduledHeader, SecretItem, TextItem,
+    ToolItem, UserMessage, WorkGroup, WorkingStatus, QUIET_INBOX_TIP,
 };
 pub use row_debug::RowDebug;
 pub use tool_presentation::{

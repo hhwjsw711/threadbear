@@ -166,16 +166,6 @@ fn testSentBackStaysAPlanWithNoButtons() {
 }
 
 #[test]
-fn testThePlanFileIsntAChange() {
-    assert!(TranscriptModel::is_plan_file(
-        "/Users/alex/.claude/plans/plan-add-csv-tender-puffin.md"
-    ));
-    assert!(!TranscriptModel::is_plan_file(
-        "/Users/alex/dev/app/plans/next.md"
-    ));
-}
-
-#[test]
 fn testAHeadingBecomesTheTitle() {
     assert_eq!(
         PlanCardText::split("# Plan: add CSV\n\n## Steps\n1. A")

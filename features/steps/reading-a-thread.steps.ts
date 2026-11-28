@@ -27,8 +27,10 @@ Then('a turn ends with a line saying {string}', async function (this: Threadbear
   await this.until(`a footer "${text}"`, (d) => d.transcript.rows.some((r) => r.kind === 'footer' && r.text === text));
 });
 
-Then('the transcript has a card saying {string}', async function (this: ThreadbearWorld, text: string) {
-  await this.until(`a changes card "${text}"`, (d) => d.transcript.rows.some((r) => r.kind === 'changes' && r.text === text));
+Then('the transcript has no changes card', async function (this: ThreadbearWorld) {
+  await this.until('a transcript with no changes card', (d) =>
+    d.transcript.rows.some((r) => r.kind === 'footer') && d.transcript.rows.every((r) => r.kind !== 'changes'),
+  );
 });
 
 Then('the transcript shows an error', async function (this: ThreadbearWorld) {
@@ -94,17 +96,6 @@ When('I show every line of the step called {string}', async function (this: Thre
 Then('the step called {string} got taller', async function (this: ThreadbearWorld, title: string) {
   const before = recalled(this, `${title}|open`);
   await this.until(`"${title}" taller than ${before}`, (d) => d.transcript.rows.some((r) => openable(r) && r.text === title && (r.height ?? 0) > before));
-});
-
-When('I open the first file in the card saying {string}', async function (this: ThreadbearWorld, title: string) {
-  const row = await this.until(`a changes card "${title}"`, (d) => d.transcript.rows.find((r) => r.kind === 'changes' && r.text === title));
-  remember(this, title, await drawnHeight(this, row.id));
-  await this.app.do({ cmd: 'expand', row: row.id, file: 0 });
-});
-
-Then('the card saying {string} got taller', async function (this: ThreadbearWorld, title: string) {
-  const before = recalled(this, title);
-  await this.until(`"${title}" taller than ${before}`, (d) => d.transcript.rows.some((r) => r.kind === 'changes' && r.text === title && (r.height ?? 0) > before));
 });
 
 Then('the transcript shows {int} rows of pictures', async function (this: ThreadbearWorld, count: number) {

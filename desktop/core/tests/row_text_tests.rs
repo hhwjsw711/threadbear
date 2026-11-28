@@ -78,18 +78,7 @@ fn testOneItemWithThreePathsKeepsThreeDiffs() {
         "the repeated path replaced its diff"
     );
     assert_eq!(model.item("t:p1").map(|r| r.kind()), Some(RowKind::Diff));
-    // The Edited files card lists and counts all three.
-    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else {
-        panic!("no card")
-    };
-    assert_eq!(card.title(), "Edited 3 files");
-    assert_eq!(
-        card.files.iter().map(|f| f.name()).collect::<Vec<_>>(),
-        ["events.json", "events.html", "styles.css"]
-    );
-    assert_eq!(card.files.last().map(|f| f.added), Some(2));
-    assert_eq!(card.added(), 4);
-    assert_eq!(card.removed(), 1);
+    assert!(model.row("cf:t1").is_none());
 }
 
 #[test]
@@ -1026,13 +1015,6 @@ fn testFileRowsAndTheChangesCardUseTheThreadsFolder() {
     };
     assert_eq!(
         ToolPresentation::file_title(tool).map(|t| t.folder),
-        Some("scripts".to_owned())
-    );
-    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else {
-        panic!("a card")
-    };
-    assert_eq!(
-        card.files.first().map(|f| f.folder()),
         Some("scripts".to_owned())
     );
 }

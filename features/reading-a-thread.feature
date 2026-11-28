@@ -29,10 +29,11 @@ Feature: Reading a thread
     When I open the thread "Make uploads resume after a crash"
     Then a turn ends with a line saying "2m 14s, $0.38"
 
-  @transcript.changes
-  Scenario: A turn that edited files says so
+  @transcript.workedfor @transcript.turnfooter
+  Scenario: A turn that edited files keeps its edits folded with no changes card
     When I open the thread "Make uploads resume after a crash"
-    Then the transcript has a card saying "Edited 2 files"
+    Then the transcript has no changes card
+    And a turn ends with a line saying "2m 14s, $0.38"
 
   @transcript.error
   Scenario: A failed turn says what went wrong
@@ -62,12 +63,6 @@ Feature: Reading a thread
     Then the step called "Edit 3 files" is open and taller than one line
     When I show every line of the step called "Edit 3 files"
     Then the step called "Edit 3 files" got taller
-
-  @transcript.changes
-  Scenario: A file in the changes card opens to its diff
-    When I open the thread "Make a poster for the meetup"
-    And I open the first file in the card saying "Edited 3 files"
-    Then the card saying "Edited 3 files" got taller
 
   @transcript.images
   Scenario: Pictures the agent made show in the transcript

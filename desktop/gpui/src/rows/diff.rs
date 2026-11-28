@@ -1,12 +1,10 @@
-// Diffs: RowRenderer's diffText, diffWithNote, fileNameLine and changesRender,
-// and the Edited N files card (ChangesRowCell). A diff row is one flex row per
-// line: GPUI has no tab stops, so the number, sign and text sit in columns.
+// Diffs: RowRenderer's diffText, diffWithNote and fileNameLine. A diff row is
+// one flex row per line: GPUI has no tab stops, so the number, sign and text
+// sit in columns.
 use super::metrics::*;
-use super::parts::{icon, stats_text, DIGIT_WIDTH};
-use super::row_wrap;
+use super::parts::{stats_text, DIGIT_WIDTH};
 use crate::style::{self, size};
 use crate::thread::ThreadPane;
-use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -14,8 +12,7 @@ use gpui_kit::*;
 use crate::style::px;
 use crate::tips::Tip as _;
 use threadbear_core::reducer::{
-    ChangedFiles, DiffBuilder, DiffDisplayLine, DiffLineKind, DiffPreview, EditDiff, PathDisplay,
-    Row,
+    DiffBuilder, DiffDisplayLine, DiffLineKind, DiffPreview, EditDiff, PathDisplay, Row,
 };
 
 /// `previewLines`: how many lines a diff opened short shows (a break between
@@ -377,142 +374,5 @@ impl ThreadPane {
             .border_color(style::card_border(cx))
             .child(body)
             .into_any_element()
-    }
-
-    /// "Edited 3 files": each file with its folder and line counts; a click
-    /// opens its diff under it (`ChangesRowCell`).
-    pub(crate) fn changes_card(
-        &mut self,
-        ix: usize,
-        row: &Row,
-        changes: &ChangedFiles,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let (card_bg, border, hairline, label, faint, faint_icon, hover) = (
-            style::card_background(cx),
-            style::card_border(cx),
-            style::hairline(cx),
-            style::label_text(cx),
-            style::faint_text(cx),
-            style::faint_icon(cx),
-            style::hover_fill(cx),
-        );
-        let (added, removed) = (style::added_text(cx), style::removed_text(cx));
-        let header = h_flex()
-            .h(px(CHANGES_HEADER))
-            .px(px(CARD_PAD))
-            .items_center()
-            .justify_between()
-            .border_b_1()
-            .border_color(hairline)
-            .child(
-                div()
-                    .text_size(px(size::CARD_TITLE))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(label)
-                    .child(changes.title()),
-            )
-            .child(stats_text(
-                changes.added(),
-                changes.removed(),
-                added,
-                removed,
-            ));
-        let mut card = v_flex()
-            .rounded(px(10.))
-            .bg(card_bg)
-            .border_1()
-            .border_color(border)
-            .child(header);
-        for (i, file) in changes.files.iter().enumerate() {
-            let key = ChangedFiles::expansion_key(&changes.turn_id, &file.path);
-            let toggle_key = key.clone();
-            let line = h_flex()
-                .id(("change-file", ix * 1000 + i))
-                .role(Role::Button)
-                .w_full()
-                .h(px(CHANGES_FILE))
-                .px(px(CARD_PAD - 2.))
-                .items_center()
-                .cursor_pointer()
-                .rounded(px(6.))
-                .mx(px(4.))
-                .hover(move |s| s.bg(hover))
-                .tip(&file.path)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.toggle_changed_file(&toggle_key, cx)
-                }))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(16.))
-                        .flex()
-                        .items_center()
-                        .child(icon(
-                            if file.is_expanded {
-                                "chevron.down"
-                            } else {
-                                "chevron.right"
-                            },
-                            11.,
-                            faint_icon,
-                        )),
-                )
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .items_baseline()
-                        .text_size(px(size::WORK))
-                        .line_height(px(20.))
-                        .text_color(label)
-                        .child(div().min_w_0().flex_shrink_0().child(file.name()))
-                        .when(!file.folder().is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .ml(px(8.))
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(size::DETAIL))
-                                    .text_color(faint)
-                                    .child(file.folder()),
-                            )
-                        }),
-                )
-                .child(div().flex_none().ml(px(12.)).child(stats_text(
-                    file.added,
-                    file.removed,
-                    added,
-                    removed,
-                )));
-            card = card.child(line);
-            if file.is_expanded {
-                let note = if file.shows_all {
-                    DiffNote::Quiet
-                } else {
-                    let all = DiffPreview::all_key(&key);
-                    DiffNote::ShowMore(Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.show_all_changed(&all, cx)
-                    })))
-                };
-                let max = if file.shows_all {
-                    600
-                } else {
-                    preview_lines(&file.diffs)
-                };
-                let body = diff_with_note(
-                    SharedString::from(format!("change-diff-{ix}-{i}")),
-                    &file.diffs,
-                    max,
-                    CARD_PAD,
-                    None,
-                    note,
-                    cx,
-                );
-                card = card.child(div().pb(px(8.)).child(body));
-            }
-        }
-        row_wrap(row, div().pt(px(8.)).pb(px(6.)).child(card.pb(px(6.))))
     }
 }

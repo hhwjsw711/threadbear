@@ -66,8 +66,6 @@ pub const FOOTER_HEIGHT: f32 = 27.;
 /// note, with room before the work it starts.
 pub const RUNNER_TOP: f32 = 4.;
 pub const RUNNER_BOTTOM: f32 = 18.;
-pub const CHANGES_HEADER: f32 = 42.;
-pub const CHANGES_FILE: f32 = 34.;
 pub const GAP_HEIGHT: f32 = 34.;
 
 /// A code block's box reaches this far past its text (MarkdownRenderer.codePad).
