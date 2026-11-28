@@ -446,8 +446,13 @@ test('mailWatch: automated CI build emails are recognised, while human GitHub/Gi
     isBuildEmail({ id: 'g:gl:2', from: 'GitLab <gitlab@mg.gitlab.com>', subject: 'Data | Fixed pipeline for com.mikerosoft.threadbear.android | 05900d8f' }),
     true,
   );
+  assert.equal(
+    isBuildEmail({ id: 'g:gl:6', from: 'GitLab <gitlab@mg.gitlab.com>', subject: 'Data | Successful pipeline for main | 05900d8f' }),
+    true,
+  );
 
-  // Human GitHub discussions, issues, PRs and account alerts stay through.
+  // Human GitHub discussions, issues, PRs and account alerts stay through,
+  // including a long issue subject whose "(Issue #42)" suffix is truncated by parseEmails.
   assert.equal(
     isBuildEmail({ id: 'g:gh:5', from: 'Wayne Sutton <notifications@github.com>', subject: "Re: [mikecann/threadbear] Check-ups from other people's copies (Discussion #85)" }),
     false,
@@ -456,6 +461,16 @@ test('mailWatch: automated CI build emails are recognised, while human GitHub/Gi
     isBuildEmail({ id: 'g:gh:6', from: 'Alice <notifications@github.com>', subject: '[org/repo] Run failed: parser crashes (Issue #42)' }),
     false,
   );
+  const [longIssue] = parseEmails(
+    JSON.stringify([
+      {
+        id: 'g:gh:9',
+        from: 'Alice <notifications@github.com>',
+        subject: `[mikecann/${'r'.repeat(50)}] Run failed: ${'x'.repeat(230)} (Issue #42)`,
+      },
+    ]),
+  );
+  assert.equal(isBuildEmail(longIssue), false);
   assert.equal(
     isBuildEmail({ id: 'g:gh:7', from: 'GitHub <noreply@github.com>', subject: 'Your token expires in 7 days' }),
     false,
@@ -464,13 +479,51 @@ test('mailWatch: automated CI build emails are recognised, while human GitHub/Gi
     isBuildEmail({ id: 'g:gh:8', from: '"notifications@github.com" <bob@example.com>', subject: '[org/repo] Run failed: CI - main (1234567)' }),
     false,
   );
+  // Human GitLab issues, MRs and replies stay through even when titled like a pipeline alert.
   assert.equal(
     isBuildEmail({ id: 'g:gl:3', from: 'GitLab <gitlab@mg.gitlab.com>', subject: 'Re: Data | Crash on startup (#12)' }),
+    false,
+  );
+  assert.equal(
+    isBuildEmail({ id: 'g:gl:4', from: 'Alice <gitlab@mg.gitlab.com>', subject: 'Data | Failed pipeline for release (#12)' }),
+    false,
+  );
+  assert.equal(
+    isBuildEmail({ id: 'g:gl:5', from: 'Alice <gitlab@mg.gitlab.com>', subject: 'Re: Data | Failed pipeline for android (#12)' }),
+    false,
+  );
+  assert.equal(
+    isBuildEmail({ id: 'g:gl:7', from: 'Alice <gitlab@mg.gitlab.com>', subject: 'Data | Fixed pipeline for com.mikerosoft.threadbear.android (!45)' }),
+    false,
+  );
+  assert.equal(
+    isBuildEmail({ id: 'g:gl:8', from: 'Alice <gitlab@mg.gitlab.com>', subject: 'Re: Data | Failed pipeline for main | 05900d8f' }),
     false,
   );
   assert.equal(isBuildEmail(PETER), false);
   assert.equal(isBuildEmail(APPLE), false);
   assert.match(SORT_SYSTEM, /CI\/build/);
+});
+
+test('mailWatch: build emails already sitting in the persisted pile are dropped before the next digest', async () => {
+  const home = tmpDir();
+  fs.mkdirSync(path.join(home, 'runner'), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, 'runner', 'mail-watch.json'),
+    JSON.stringify({
+      seen: [GH_RUN_FAILED.id],
+      pile: [{ email: GH_RUN_FAILED, action: 'Fix CI', at: '2026-11-28T01:00:00Z' }],
+      done: [],
+      digest: { slot: '2026-11-28 09:00' },
+      acts: { count: 0 },
+    }),
+  );
+  const t = watcher({ home, emails: [[]] });
+  t.clock.set(Date.parse('2026-11-28T08:05:00Z')); // 16:05 Australia/Perth
+  const out = await t.w.look();
+  assert.equal(out?.digest, undefined);
+  assert.equal(t.started.length, 0);
+  assert.deepEqual(t.state().pile, []);
 });
 
 test('mailWatch: build emails are marked seen without calling the model, waking, holding or piling', async () => {

@@ -230,6 +230,7 @@ export class MailWatch {
     try {
       const out = { emails: 0, woke: 0, held: 0, acted: 0, piled: 0 } as { emails: number; ignored?: number; woke: number; held: number; acted: number; piled: number; digest?: string };
       const s = this.read();
+      s.pile = s.pile.filter((p) => !isBuildEmail(p.email));
       this.progress = s;
       const now = this.d.clock.now();
       s.lastRun = new Date(now).toISOString();
@@ -480,12 +481,15 @@ export function isBuildEmail(e: Email): boolean {
   if (!addr || !subject) return false;
   if (
     addr === 'notifications@github.com' &&
-    /^\[[^\]]+\]\s+(?:(?:(?:PR|Workflow)\s+)?Run\s+(?:failed|cancelled|canceled|succeeded|skipped)|Some jobs were not successful)\s*:/i.test(subject) &&
-    !/\((?:Issue|PR|Discussion)\s+#\d+\)\s*$/i.test(subject)
+    /^\[[^\]]+\]\s+(?:(?:(?:PR|Workflow)\s+)?Run\s+(?:failed|cancelled|canceled|succeeded|skipped)|Some jobs were not successful)\s*:.*\([0-9a-f]{7,40}\)\s*$/i.test(subject)
   ) {
     return true;
   }
-  if (addr.startsWith('gitlab@') && /(?:^|\|\s*)(?:Failed|Fixed|Canceled|Cancelled)\s+pipeline\s+for\s+/i.test(subject)) {
+  if (
+    addr.startsWith('gitlab@') &&
+    !/^(?:re|fwd?)\s*:/i.test(subject) &&
+    /(?:^|\|\s*)(?:Failed|Fixed|Successful|Canceled|Cancelled)\s+pipeline\s+for\s+.+\|\s*[0-9a-f]{7,40}\s*$/i.test(subject)
+  ) {
     return true;
   }
   return false;
