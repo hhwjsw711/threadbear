@@ -372,7 +372,7 @@ export function worktreeInstructions(w: WorktreeRecord): string {
   return [
     `This thread has its own git worktree of ${w.repo} at ${w.path}, on the branch ${w.branch}, made from ${MAIN}.`,
     `Commit your work there, on that branch. Other threads work in worktrees of their own, and the main checkout at ${w.mainCheckout} isn't yours to edit.`,
-    `When the work is done and checked, run \`tb land\` in the worktree: it rebases the branch on ${MAIN}, runs the repo's check and fast-forwards ${MAIN} to it. It may first wait for another thread's landing, so run it in the background with the longest timeout allowed. After landing you can carry on, and the next \`tb land\` lands only what's new.`,
+    `When the work is done and checked, run \`tb land\` in the worktree: it rebases the branch on ${MAIN}, runs the repo's check and fast-forwards ${MAIN} to it. It may first wait for another thread's landing, so run it in the background with a 2-hour timeout (7200000 ms; 30 minutes isn't enough when it waits behind other landings). After landing you can carry on, and the next \`tb land\` lands only what's new.`,
   ].join(' ');
 }
 
@@ -595,7 +595,7 @@ export async function land(t: LandTarget, opts: LandOptions = {}): Promise<numbe
         ? `it had already landed with its group (${now.result.landed.slice(0, 9)} on ${MAIN}); its next tb land moves ${t.branch} there.`
         : inCheck
           ? `${t.branch} stays in the line, as it was in a group check: the landings after it carry it and land it once a check with it passes, unless ${t.branch} drops those commits first. Its next tb land says whether it landed, and lands it if not.`
-          : `${t.branch} is out of the line and nothing of it landed. Run tb land again to rejoin (in the background, with the longest timeout).`;
+          : `${t.branch} is out of the line and nothing of it landed. Run tb land again to rejoin (in the background, with a 2-hour timeout).`;
       if (entry && !now?.result && !inCheck) leaveQueue(common, entry.id);
       err(`tb land was stopped (${signal}) while it waited in the landing queue: ${said}`);
       process.exit(128 + (os.constants.signals[signal] ?? 15));

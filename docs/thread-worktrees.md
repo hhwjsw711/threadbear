@@ -167,8 +167,10 @@ branches and tags are refused, so push work as `cloud/<topic>` and say so.
 
 The Land chip has an hour for waiting and checking; other command actions
 keep their usual ten-minute limit. In an agent tool with its own shorter
-command limit, run `tb land` in the background with the longest timeout and
-collect its result: landings waiting for the lock are checked together
+command limit, run `tb land` in the background with a 2-hour timeout (7200000
+ms) and collect its result. On 28 Nov 2026 Gemini on OpenCode gave it 30
+minutes, which a landing waiting behind others outlasted, and OpenCode stopped
+it: landings waiting for the lock are checked together
 (below, "Landing together"), so expect up to two checks' wait. If it
 refuses, it says why and what to fix: commit your changes, sort out the
 conflicting files, fix the check, or wait for whoever has uncommitted

@@ -68,7 +68,8 @@ thing on Tinker Desk's desktop from a throwaway copy (`ssh tinker-desk
   `git worktree add`) and gives it back with `--give-back <dir>` once landed. In a shared
   checkout, stage your own paths by name, never `git add -A`.
 - Land through `tb land` in your worktree (`runner/bin/tb` if `tb` isn't found), in the
-  background with the longest timeout. Never push main or merge by hand. If it refuses,
+  background with a 2-hour timeout (7200000 ms: a landing waiting in the queue outlasts
+  30 minutes). Never push main or merge by hand. If it refuses,
   it says what to fix (docs/thread-worktrees.md).
 - On Mike's Hetzner Cloud runner git may push only `cloud/**` branches: push your work as
   `cloud/<topic>` and say so. Landing happens from the main Mac.
