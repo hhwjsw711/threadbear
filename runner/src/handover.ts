@@ -345,9 +345,9 @@ export class Peers {
           await new Promise((r) => setTimeout(r, RETRY_MS));
         }
         if (!peer) {
-          if (failed && !fs.existsSync(drainFile(this.deps.home, info.pid))) {
+          if (!fs.existsSync(drainFile(this.deps.home, info.pid))) {
             // It finished and went while this one was connecting: not a fault.
-            this.deps.log.info('a draining runner finished as this one connected', { pid: info.pid, error: String(failed.extra.error) });
+            this.deps.log.info('a draining runner finished as this one connected', { pid: info.pid, error: failed ? String(failed.extra.error) : undefined });
           } else {
             if (failed) this.deps.log.error(failed.msg, failed.extra);
             this.deps.log.warn('a draining runner is gone; its threads load as after a crash', { pid: info.pid, threads: info.threads });

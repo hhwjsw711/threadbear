@@ -890,6 +890,28 @@ test('Peers: a draining runner that finishes and goes while startup connects is 
   peers.close();
 });
 
+test('Peers: a draining runner that went cleanly before startup reached it is no fault either', async () => {
+  const h = makeHarness();
+  const { writeDrainInfo, removeDrainInfo, Peers } = await import('../../src/handover.ts');
+  writeDrainInfo(h.home, { pid: 424273, port: 1, version: 'old', since: new Date().toISOString(), threads: [] });
+  writeDrainInfo(h.home, { pid: 424274, port: 2, version: 'old', since: new Date().toISOString(), threads: [] });
+  const { lines, log } = recordingLog();
+  const peers = new Peers({
+    home: h.home, token: 't', log, identified: () => true,
+    // The second finishes and goes while the first is being connected to.
+    alive: (pid) => pid === 424273 || fs.existsSync(path.join(h.home, 'run', `drain-${pid}.json`)),
+    runner: { adopt: () => undefined, publish: () => {}, waitedOnDeleted: () => {} },
+    sweep: async () => {},
+    connect: async () => {
+      removeDrainInfo(h.home, 424274);
+      return fakePeer({ threads: [] }).client as unknown as PeerClient;
+    },
+  });
+  await peers.connectAll();
+  assert.deepEqual(lines.filter((l) => l.level !== 'info'), []);
+  peers.close();
+});
+
 test('Peers: a runner that goes while startup waits on another, and startup then gives up, has nothing taken in', async () => {
   const h = makeHarness();
   const { writeDrainInfo, Peers } = await import('../../src/handover.ts');
