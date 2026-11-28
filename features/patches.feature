@@ -136,5 +136,5 @@ Feature: What a folder's patches give a thread
     And the "threadbear.files" section draws "files"
     When I show the "threadbear.highlights" section of the pane
     And I click the highlight "copy-review.md"
-    Then the "threadbear.highlights" section draws "preview copy-review.md"
+    Then the file "docs/copy-review.md" is open as a normal panel beside Highlights
     And the "threadbear.files" section draws "files"
