@@ -2018,8 +2018,8 @@ and anything left for you comes as a question. Anything it fixed gets reviewed
 again, just the new change, until a round finds nothing. Once the turn finishes,
 the round checklists fold into `Worked for …` (expanding it shows each round's
 checklist with Fixed, Disputed or Left in place), leaving one quiet line over
-the reply saying who reviewed and how it came out; that line folds like the
-agent's work, with any open findings still visible under it. Either way it stays
+the reply saying who reviewed and how it came out (how many are still open);
+click it to see every finding. Either way it stays
 off the done card, as it happens in the background. The review thread is archived when it's
 done, so it stays out of your inbox. That holds however the review ends:
 if it gives no verdict, asks you something or stops with an error, your

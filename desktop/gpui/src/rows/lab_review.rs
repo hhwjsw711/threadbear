@@ -5,8 +5,9 @@
 // the done card until 12 Nov 2026; Mike moved it into the transcript, as the
 // review runs in the background and needn't draw his eye. Since 20 Nov it
 // folds as the line of work does: a panel's eight answered findings ran a
-// screen tall over a reply that already said what was fixed. Folded, it's the
-// heading and any finding still open (LabReview::shown_findings). The ledger
+// screen tall over a reply that already said what was fixed. Since 28 Nov it's
+// the heading alone until clicked, open findings too: nine unanswered ones ran
+// a screen tall the same way (LabReview::shown_findings). The ledger
 // is `turn.completed`'s `review` (docs/protocol/needs-you.md, "Review by another lab").
 use super::metrics::{ROW_BOTTOM, TITLE_INDENT};
 use super::row_wrap;
@@ -58,11 +59,10 @@ fn finding_detail(finding: &ReviewFinding, word: &str, by: Option<String>) -> St
 }
 
 impl ThreadPane {
-    /// The ledger's row: a work line with the heading, its chevron when there
-    /// are answered findings to fold away, the findings under it small and
-    /// quiet, and once open a last line to the review's thread. A review with
-    /// nothing to fold (no findings, or every one still open) doesn't open,
-    /// so its line goes straight to the review's thread, as it always did.
+    /// The ledger's row: a work line with the heading and its chevron, once
+    /// open the findings under it small and quiet and a last line to the
+    /// review's thread. A review with no findings doesn't open, so its line
+    /// goes straight to the review's thread, as it always did.
     pub(crate) fn lab_review_row(
         &mut self,
         ix: usize,

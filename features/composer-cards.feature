@@ -153,12 +153,12 @@ Feature: The open card in the composer
     And the agent there finishes a turn another lab reviewed
     Then the card in the composer says "Done"
     And the transcript's review line says "Reviewed by Codex: 1 open"
-    And the transcript's review line says "#1 fixed: Drops the session on refresh."
     And the card doesn't show "Reviewed by"
-    # Folded as the line of work is, showing only what's still open (20 Nov).
+    # Folded to its heading as the line of work is, open findings too (28 Nov).
     And the transcript's review line is folded
     When I open the transcript's review line
     Then the transcript's review line is open
+    And the transcript's review line says "#1 fixed: Drops the session on refresh."
 
   @card.collapse
   Scenario: Folded, the card's picks show as chips over the box, and one can be taken back

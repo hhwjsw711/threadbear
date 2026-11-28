@@ -1051,7 +1051,7 @@ fn a_review_row_folds_its_answered_findings_away() {
         ["Finding 1", "Finding 2", "Finding 3"]
     );
 
-    // Some still open: those stay under the heading while it's folded.
+    // Some still open: folded, still the heading alone, which counts them.
     let mixed = panel(vec![
         finding(1, Some("fixed")),
         finding(2, Some("left")),
@@ -1060,9 +1060,9 @@ fn a_review_row_folds_its_answered_findings_away() {
     ]);
     assert_eq!(mixed.heading(), "Reviewed by Codex and Grok: 2 open");
     assert!(mixed.folds());
-    assert_eq!(
-        claims(mixed.shown_findings(false)),
-        ["Finding 2", "Finding 3"]
+    assert!(
+        mixed.shown_findings(false).is_empty(),
+        "open findings fold away too (28 Nov)"
     );
     assert_eq!(
         claims(mixed.shown_findings(true)),
@@ -1070,13 +1070,17 @@ fn a_review_row_folds_its_answered_findings_away() {
         "open, in the ledger's order"
     );
 
-    // Every one open, or none at all: nothing to fold, so no disclosure.
+    // Every one unanswered: it still folds to the heading (a turn that
+    // answered none of nine listed them all over the reply, 28 Nov).
     let open = panel(vec![finding(1, Some("left")), finding(2, None)]);
-    assert!(!open.folds());
+    assert_eq!(open.heading(), "Reviewed by Codex and Grok: 2 open");
+    assert!(open.folds());
+    assert!(open.shown_findings(false).is_empty());
     assert_eq!(
-        claims(open.shown_findings(false)),
+        claims(open.shown_findings(true)),
         ["Finding 1", "Finding 2"]
     );
+    // None at all: nothing to fold, so no disclosure.
     assert!(!panel(vec![]).folds());
 }
 

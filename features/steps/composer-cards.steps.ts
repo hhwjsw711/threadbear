@@ -124,7 +124,7 @@ Then("the transcript's review line says {string}", async function (this: Threadb
   await this.until(`a review line saying "${words}"`, (d) => d.transcript.rows.some((r) => r.kind === 'labReview' && r.text.includes(words)));
 });
 
-// It folds like the line of work: its answered findings hidden till opened.
+// It folds like the line of work: its findings hidden till opened.
 Then("the transcript's review line is folded", async function (this: ThreadbearWorld) {
   await this.until('a folded review line', (d) => d.transcript.rows.some((r) => r.kind === 'labReview' && r.expanded === false));
 });

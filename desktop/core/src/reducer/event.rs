@@ -1841,21 +1841,23 @@ impl LabReview {
         Some(if twin { by.to_owned() } else { name.to_owned() })
     }
 
-    /// Whether the row folds: it has answered findings to tuck away. Folded,
-    /// it's its heading and any finding still open; the agent's reply says
-    /// what it fixed, so a panel's answered findings (eight of them a screen
-    /// tall, 20 Nov 2026) fold away as the line of work does.
+    /// Whether the row folds: it has findings to tuck away. Folded, it's
+    /// the heading alone, which counts any still open; the agent's reply says
+    /// what it fixed and the card asks what's left for Mike. Open findings
+    /// used to stay listed under it, and a turn that answered none of nine
+    /// left a screen of "No answer" rows over the reply (Mike, 28 Nov 2026:
+    /// "remove this noisy block from chat").
     pub fn folds(&self) -> bool {
-        self.findings.iter().any(|f| !f.is_open())
+        !self.findings.is_empty()
     }
 
-    /// The findings the row draws: every one once Mike opens it; folded, only
-    /// those still open, as they may need him.
+    /// The findings the row draws: every one once Mike opens it, none folded.
     pub fn shown_findings(&self, open: bool) -> Vec<&ReviewFinding> {
-        self.findings
-            .iter()
-            .filter(|f| open || f.is_open())
-            .collect()
+        if open {
+            self.findings.iter().collect()
+        } else {
+            vec![]
+        }
     }
 
     /// The one line over the findings: who, how many rounds, how it came out
