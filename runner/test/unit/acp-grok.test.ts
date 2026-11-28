@@ -486,6 +486,30 @@ function grokRequest(s: AcpSession, call: Record<string, unknown>) {
 }
 const useTool = (name: string) => ({ variant: 'UseTool', tool_name: name, tool_input: { query: 'South West Devs' } });
 
+test('Scoped Grok: a runner-owned MCP read keeps its identity across split frames', async () => {
+  const name = 'threadbear__read_project';
+  const input = { tool_name: name, tool_input: { project: 'Example' } };
+  const checked: unknown[] = [];
+  const r = rig({ mode: 'full', tools: ['read_project'], opts: { coordinator: {
+    role: 'coordinator',
+    checkTool: ({ input }) => { checked.push(input); return undefined; },
+  } } });
+  await r.turn('hello');
+  grokFrame(r.s, { toolCallId: 'project', name: 'use_tool', title: 'use_tool', rawInput: input });
+  const replies = grokRequest(r.s, { toolCallId: 'project', kind: 'other', name, title: name, rawInput: { ...input, variant: 'UseTool' } });
+  assert.deepEqual(replies, [{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+  assert.deepEqual(checked.at(-1), input.tool_input);
+  grokFrame(r.s, { toolCallId: 'wrapper', kind: 'search', title: 'use_tool' });
+  assert.deepEqual(grokRequest(r.s, { toolCallId: 'wrapper' }), [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  const conflicting = { ...input, tool_name: 'documentation__search', variant: 'UseTool' };
+  const meta = { mcp: { server: 'threadbear', tool: 'read_project' } };
+  grokFrame(r.s, { toolCallId: 'mixed', kind: 'other', _meta: meta, rawInput: conflicting });
+  assert.deepEqual(grokRequest(r.s, { toolCallId: 'mixed', _meta: meta, rawInput: { ...input, variant: 'UseTool' } }), [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  grokFrame(r.s, { toolCallId: 'variant', kind: 'other', rawInput: { ...input, variant: 'ReadFile' } });
+  assert.deepEqual(grokRequest(r.s, { toolCallId: 'variant', rawInput: { ...input, variant: 'UseTool' } }), [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  assert.equal(r.cards.length, 0);
+});
+
 test('Grok gets Agent Archive, but its calls ask like any server\'s: a profile could take the name over', async () => {
   const r = rig({ mcpServers: archive, opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } } });
   await r.turn('hello');

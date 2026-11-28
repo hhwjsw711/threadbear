@@ -1290,6 +1290,96 @@ test('Antigravity: no read goes ahead for an MCP tool, or with a line number tha
 const frame = (s: AcpSession, update: Record<string, unknown>) =>
   (s as unknown as { proc: { onNotification: (m: string, p: unknown) => void } }).proc.onNotification('session/update', { update: { sessionUpdate: 'tool_call', ...update } });
 
+test('Scoped ACP: missing metadata is carried forward and conflicting metadata is refused', async () => {
+  const checked: string[] = [];
+  const r = rig({ mode: 'full', opts: { coordinator: { role: 'coordinator', checkTool: ({ name }) => { checked.push(name); return undefined; } } } });
+  const s = r.start();
+  await ready(r, s);
+  const allow = [{ outcome: { outcome: 'selected', optionId: 'once' } }];
+  const reject = [{ outcome: { outcome: 'selected', optionId: 'reject' } }];
+
+  frame(s, { toolCallId: 'split', kind: 'search' });
+  frame(s, { toolCallId: 'split', sessionUpdate: 'tool_call_update', name: 'grep' });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'split' }), allow);
+  assert.equal(checked.at(-1), 'grep');
+
+  frame(s, { toolCallId: 'kinds', kind: 'fetch', name: 'lookup' });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'kinds', kind: 'search', name: 'lookup' }), reject);
+
+  frame(s, { toolCallId: 'names', kind: 'search', name: 'grep' });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'names', name: 'glob' }), reject);
+
+  frame(s, { toolCallId: 'preview', kind: 'read', content: [{ type: 'diff', path: 'README.md', oldText: 'One', newText: 'Two' }] });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'preview' }), reject);
+  assert.equal(r.cards.length, 0);
+});
+
+test('Scoped ACP: helper questions and external tools follow the scope using partial updates', async () => {
+  const questions: unknown[] = [];
+  let paused = false;
+  const r = agy({ mode: 'full', opts: { coordinator: {
+    role: 'helper',
+    checkTool: () => paused ? 'The coordinator is paused.' : undefined,
+    helperQuestion: (_thread, qs) => { questions.push(...qs); },
+  } } });
+  const s = r.start();
+  await ready(r, s);
+  const rawInput = { questions: [{ question: 'Which project file?' }] };
+  frame(s, { toolCallId: 'question', kind: 'other', name: 'ask_question', rawInput });
+  const request = fakeRequest(r, s, { toolCallId: 'question' });
+  assert.deepEqual(request, [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  assert.deepEqual(questions, [{ question: 'Which project file?', header: 'Helper question', options: [], multiSelect: false }]);
+  frame(s, { toolCallId: 'replaced', name: 'ask_question', rawInput });
+  frame(s, { toolCallId: 'replaced', sessionUpdate: 'tool_call_update', rawInput: {} });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'replaced' }), request);
+
+  frame(s, { toolCallId: 'edit', kind: 'edit', name: 'edit_file' });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'edit' }), [{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'empty', kind: '' }), request);
+
+  frame(s, { toolCallId: 'external', kind: 'search', _meta: { mcp: { server: 'documentation', tool: 'search' } } });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'external' }), [{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+
+  const meta = { is_mcp_tool_call: true, mcp: { server: 'public-docs', tool: 'search' } };
+  frame(s, { toolCallId: 'confirmed', kind: 'search', name: 'public_docs_search', _meta: meta });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'confirmed' }), [{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+  frame(s, { toolCallId: 'externalMismatch', kind: 'search', name: 'find_project', _meta: meta });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'externalMismatch' }), request);
+
+  paused = true;
+  frame(s, { toolCallId: 'paused', name: 'ask_question' });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'paused', rawInput: { questions: [{ question: 'Which date?' }] } }), request);
+  assert.equal(questions.length, 1);
+  assert.equal(r.cards.length, 0);
+});
+
+test('Scoped ACP: Full access still checks runner-owned MCP identity across acting frames', async () => {
+  const r = agy({
+    mode: 'full',
+    opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } },
+    toolsFor: () => [{ name: 'read_project', description: 'Read project details', inputSchema: {}, handler: async () => ({ content: [] }) }],
+  });
+  const s = r.start();
+  await ready(r, s);
+  const meta = { is_mcp_tool_call: true, mcp: { server: 'threadbear', tool: 'read_project' } };
+  frame(s, { toolCallId: 'project', kind: 'other' });
+  const verified = fakeRequest(r, s, { toolCallId: 'project', _meta: meta });
+  assert.deepEqual(verified, [{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+  frame(s, { toolCallId: 'sparse', kind: 'other', name: 'threadbear_read_project', _meta: meta });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'sparse' }), verified);
+
+  frame(s, { toolCallId: 'ambiguous', kind: 'other', _meta: { is_mcp_tool_call: true } });
+  const ambiguous = fakeRequest(r, s, { toolCallId: 'ambiguous', kind: 'other', _meta: meta });
+  assert.deepEqual(ambiguous, [{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+  frame(s, { toolCallId: 'unconfirmed', kind: 'other', _meta: { mcp: meta.mcp } });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'unconfirmed' }), ambiguous);
+  frame(s, { toolCallId: 'markedNative', kind: 'other', _meta: meta });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'markedNative', _meta: { is_mcp_tool_call: false } }), ambiguous);
+  frame(s, { toolCallId: 'otherName', kind: 'other', name: 'search_project_index', _meta: meta });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'otherName' }), ambiguous);
+  assert.equal(r.cards.length, 0);
+});
+
 test('ACP coordinator refusals show the policy reason, including when the agent never reports a result', async () => {
   const r = rig({ mode: 'full', opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } } });
   const s = r.start();
@@ -1955,6 +2045,8 @@ test("Antigravity: a coordinator's Agent Archive read goes ahead; a mismatched o
   const ok = fakeRequest(r, s, { toolCallId: 'a1', kind: 'other', _meta: archiveMeta, rawInput: { arguments: { query: 'South West Devs' } } });
   await until(() => ok.length === 1);
   assert.deepEqual(ok[0], { outcome: { outcome: 'selected', optionId: 'once' } });
+  frame(s, { toolCallId: 'a0', kind: 'other', _meta: archiveMeta });
+  assert.deepEqual(fakeRequest(r, s, { toolCallId: 'a0' }), ok);
   // An earlier frame said it was another server's tool.
   frame(s, { toolCallId: 'a2', kind: 'other', _meta: { is_mcp_tool_call: true, mcp: { server: 'production', tool: 'exec' } } });
   const mixed = fakeRequest(r, s, { toolCallId: 'a2', kind: 'other', _meta: archiveMeta, rawInput: {} });

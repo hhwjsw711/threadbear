@@ -98,7 +98,7 @@ export function acpCoordinatorTool(p: { role: 'coordinator' | 'helper'; kind?: s
     return { reason: 'Delegate implementation to a helper with the coordinator tool (startHelper or resumeHelper), not native sub-agents.' };
   }
   if (p.kind && ACP_READ_KINDS.has(p.kind)) return {};
-  if (p.name && (p.name === 'AskUserQuestion' || p.name === 'ask_question')) return {};
+  if ((p.kind === undefined || p.kind === 'other') && (p.name === 'AskUserQuestion' || p.name === 'ask_question')) return {};
   if (p.kind === 'execute') return { reason: COORDINATOR_SHELL_REFUSAL('your read and search tools') };
   return { reason: 'The project coordinator can read and orchestrate. Delegate implementation to a helper with the coordinator tool (startHelper); this tool is not available to the coordinator.' };
 }

@@ -964,15 +964,15 @@ runs MCP tools without asking. A coordinator and its helpers cannot start or han
 coordinator (update_project refuses the option there, and their thread keys
 refuse every `coordinators.*` write), and neither coordinator nor helper shells
 may use thread-owned RPC to create threads or mutate other work.
-Coordinator read-only and helper non-escalation boundaries are enforced in each
-adapter before Full access (Claude `PreToolUse`, Codex read-only sandbox and
-approval refusal, ACP `session/request_permission` and Cursor `ask` mode), plus
-hidden helper suppression of user approval and question cards.
-When the runner blocks a coordinator or helper's ACP permission request, the
-transcript shows the policy reason even if the agent sends no final tool result.
-ACP sends the agent only the rejection. Antigravity coordinators are told to
-delegate web search because it can be reported as `other`. A name or query cannot
-identify a trusted read-only tool. Claude coordinators get built-in Grep and Glob.
+Each adapter enforces coordinator read-only and helper non-escalation before Full
+access. Claude uses `PreToolUse` and Codex uses its read-only sandbox and approval
+refusal. ACP's `session/request_permission` checks names, kinds and MCP identities
+across frames. Missing fields can retain earlier metadata. Disagreeing metadata
+and coordinator file-edit previews are refused. Cursor uses `ask`. Hidden helpers
+show no user approval or question cards. The runner shows ACP refusals in the
+transcript even without a final tool result. ACP sends only the rejection.
+Antigravity coordinators delegate web search that can be reported as `other`.
+A name or query cannot verify a read-only tool. Claude has built-in Grep and Glob.
 
 Pause blocks new dispatch and all coordinator/helper tool calls, cancels pending
 wake timers and interrupts its CLI. Resume reconciles interrupted work. If a

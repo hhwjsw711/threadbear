@@ -24,7 +24,7 @@ import { commandRule, ruleMayCover, shellWords } from '../codex/approvals.ts';
 import { toolGuidance, type ToolDefinition } from '../codex/tools.ts';
 import { fileContext, truncateResultText, type NormalizerContext } from '../context.ts';
 import { formContent, formQuestions, type FormSchema } from '../elicitation.ts';
-import { acpCoordinatorTool, archiveReadTool, isHelperQuestionTool } from '../../coordinator-policy.ts';
+import { acpCoordinatorTool, archiveReadTool, HELPER_REPORT, isHelperQuestionTool, threadbearToolName } from '../../coordinator-policy.ts';
 import type { AdapterOutput, AgentAdapter, AgentSession, BackgroundTask, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
 import { SessionNotFoundError, SessionUsageLimitError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
@@ -490,7 +490,12 @@ export class AcpSession implements AgentSession {
   // can't wash out what an earlier one said (Codex's and Gemini's third
   // reviews, 20 Nov 2026). Kept for the session's life: a call can ask after
   // its turn.
-  private callFrames = new Map<string, { mcp: boolean; ids: Set<string>; names: Set<string>; acting: number; named: Map<string, number>; inputs: Record<string, unknown>[]; kinds: Set<string>; paths: Set<string>; diffs: Record<string, unknown>[]; otherContent: unknown[]; last?: string }>();
+  private callFrames = new Map<string, {
+    mcp: boolean; confirmedMcp?: Set<string>; markedNative?: boolean; grokUseTool?: boolean; scopedInput?: Record<string, unknown>;
+    ids: Set<string>; names: Set<string>; acting: number; named: Map<string, number>;
+    inputs: Record<string, unknown>[]; kinds: Set<string>; paths: Set<string>;
+    diffs: Record<string, unknown>[]; otherContent: unknown[]; last?: string;
+  }>();
   private configOptions: ConfigOption[] = [];
   // The plugin whose hook must be reported running before the model does
   // anything in a turn (Grok's guard), and whether it has been this turn.
@@ -979,10 +984,15 @@ export class AcpSession implements AgentSession {
 
   // A tool call's arguments in the names the runner reads (AcpAgent.toolInput).
   private mapInput(u: unknown): unknown {
+    if (!isPlainObject(u) || u.rawInput == null) return u;
+    const frames = typeof u.toolCallId === 'string' ? this.callFrames.get(u.toolCallId) : undefined;
     const map = this.deps.agent.toolInput;
-    if (!map || !isPlainObject(u) || !isPlainObject(u.rawInput)) return u;
-    const mcp = typeof u.toolCallId === 'string' && u.toolCallId !== '' && this.callFrames.get(u.toolCallId)?.mcp === true;
-    return { ...u, rawInput: map(u.rawInput, mcp ? { ...u, mcp: true } : u) };
+    const raw = u.rawInput;
+    const input = map && isPlainObject(raw) ? map(raw, frames?.mcp ? { ...u, mcp: true } : u) : raw;
+    // ACP treats omission/null as no update. An explicit empty object is
+    // new input, so a helper question cannot reuse replaced arguments.
+    if (this.opts.coordinator && frames) frames.scopedInput = isPlainObject(input) ? input : {};
+    return input === raw ? u : { ...u, rawInput: input };
   }
 
   // A read the agent's own rules would allow (AcpAgent.readsInFolderGoAhead):
@@ -1055,8 +1065,21 @@ export class AcpSession implements AgentSession {
     // for one of Threadbear's own tools only when every such frame named it
     // (Codex's and Gemini's ninth reviews, 20 Nov 2026).
     const raw = isPlainObject(u.rawInput) ? u.rawInput : undefined;
-    const id = mcpIdOf(u) ?? (this.deps.agent.provider === 'grok' && typeof raw?.tool_name === 'string' && raw.tool_name.trim() ? raw.tool_name : undefined);
+    const grokId = this.deps.agent.provider === 'grok' && typeof raw?.tool_name === 'string' && raw.tool_name.trim() ? raw.tool_name : undefined;
+    const id = mcpIdOf(u) ?? grokId;
     if (id) f.ids.add(id);
+    if (this.opts.coordinator) {
+      // Grok's input names the actual tool. Retain it even if the same
+      // frame also claims an MCP identity in _meta.
+      if (grokId) f.ids.add(grokId);
+      const mcpName = this.deps.agent.mcpToolName?.(u as AcpToolCall);
+      if (mcpName) (f.confirmedMcp ??= new Set<string>()).add(mcpName);
+      if (this.deps.agent.provider === 'antigravity' && isPlainObject(u._meta) && u._meta.is_mcp_tool_call === false) f.markedNative = true;
+      if (this.deps.agent.provider === 'grok') {
+        if (u.title === 'use_tool' || u.name === 'use_tool' || raw?.variant === 'UseTool') f.grokUseTool = true;
+        if (typeof raw?.variant === 'string' && raw.variant !== 'UseTool') f.markedNative = true;
+      }
+    }
     if (typeof u.name === 'string' && u.name) f.names.add(u.name);
     const acting =
       (raw !== undefined && Object.keys(raw).length > 0) ||
@@ -1225,44 +1248,82 @@ export class AcpSession implements AgentSession {
   // saying it was that same tool and none running or writing anything, as
   // for the threadbear tools below. A call with no history never counts.
   private archiveRead(mcpName: string | undefined, frames: ReturnType<typeof this.callFrames.get>): boolean {
-    return Boolean(this.archiveOurs && this.deps.agent.trustsRunnerMcp && mcpName && archiveReadTool(mcpName) && frames && [...frames.ids].every((i) => i === mcpName) && frames.named.get(mcpName) === frames.acting && frames.kinds.size <= 1 && ![...frames.kinds].some((k) => k === 'execute' || writesFiles(k)));
+    return Boolean(this.archiveOurs && this.deps.agent.trustsRunnerMcp && mcpName && archiveReadTool(mcpName) && this.sameMcpTool(mcpName, frames));
+  }
+
+  private sameMcpTool(mcpName: string, frames: ReturnType<typeof this.callFrames.get>): boolean {
+    return Boolean(frames && frames.ids.size === 1 && frames.ids.has(mcpName) && frames.named.get(mcpName) === frames.acting &&
+      frames.kinds.size <= 1 && ![...frames.kinds].some((k) => k === 'execute' || writesFiles(k)));
+  }
+
+  private matchesMcpName(name: string, mcpName: string): boolean {
+    if (name === mcpName || name === `mcp__${mcpName}`) return true;
+    // These spellings only corroborate an MCP identity already confirmed
+    // by the provider. They never establish one on their own.
+    if (this.deps.agent.provider === 'grok') return name === 'use_tool';
+    const separator = mcpName.indexOf('__');
+    if (this.deps.agent.provider !== 'antigravity' || separator < 0) return false;
+    const server = mcpName.slice(0, separator);
+    const tool = mcpName.slice(separator + 2);
+    return name === tool || name === `${server}_${tool}` || name === `${server.replaceAll('-', '_')}_${tool}`;
   }
 
   private async permission(id: RequestId, p: { toolCall?: AcpToolCall; options?: PermissionOption[] }): Promise<void> {
     const options = Array.isArray(p.options) ? p.options : [];
     const frames = typeof p.toolCall?.toolCallId === 'string' && p.toolCall.toolCallId !== '' ? this.callFrames.get(p.toolCall.toolCallId) : undefined;
     const mcpCall = Boolean(frames?.mcp) || (p.toolCall !== undefined && isMcpFrame(p.toolCall));
+    const coord = this.opts.coordinator;
+    const mcpName = coord ? frames?.confirmedMcp?.values().next().value : p.toolCall ? this.deps.agent.mcpToolName?.(p.toolCall) : undefined;
+    const ownMcp = Boolean(mcpName && this.ownTools.has(mcpName) && this.sameMcpTool(mcpName, frames));
     const seen = this.normalizer.noteCall(p.toolCall ?? {});
     this.emit(this.normalizer.flush());
-    const coord = this.opts.coordinator;
     if (coord) {
-      const mcpNameEarly = p.toolCall ? this.deps.agent.mcpToolName?.(p.toolCall) : undefined;
-      const toolName = typeof p.toolCall?.name === 'string' ? p.toolCall.name : undefined;
-      const externalEarly = (mcpCall || mcpNameEarly !== undefined) && !(mcpNameEarly !== undefined && this.ownTools.has(mcpNameEarly));
-      const rawArgs = isPlainObject(p.toolCall?.rawInput) ? (p.toolCall.rawInput as Record<string, unknown>) : seen.input;
-      const policy = acpCoordinatorTool({ role: coord.role, kind: seen.kind, name: toolName, mcpName: mcpNameEarly, external: externalEarly, readOnlyMcp: this.archiveRead(mcpNameEarly, frames) });
-      const checkName = mcpNameEarly ? `mcp__${mcpNameEarly}` : (toolName ?? seen.kind ?? 'tool');
+      const unverifiable = 'The runner could not verify this coordinator operation.';
+      const next = coord.role === 'helper' ? HELPER_REPORT : 'Delegate implementation to a helper with the coordinator tool (startHelper).';
+      const inconsistent = `Its frames did not consistently identify the operation. ${next}`;
+      const toolName = frames?.names.values().next().value;
+      const mcpId = frames?.ids.values().next().value;
+      const readOnlyMcp = this.archiveRead(mcpName, frames);
+      // Even the permission request can be an id-only update. The earlier
+      // name, kind and provider-confirmed MCP identity still apply, provided
+      // every supplied value agrees.
+      const namesAgree = mcpName === undefined ? (frames?.names.size ?? 0) <= 1 :
+        Array.from(frames?.names ?? []).every((name) => this.matchesMcpName(name, mcpName));
+      if (!frames || !namesAgree || frames.kinds.has('') || frames.kinds.size > 1 || frames.ids.size > 1 || (frames.confirmedMcp?.size ?? 0) > 1 ||
+          (mcpName !== undefined && mcpId !== mcpName) || ((mcpCall || mcpName !== undefined) && frames.markedNative) ||
+          (coord.role === 'coordinator' && frames.diffs.length > 0)) {
+        return this.answer(id, options, false, seen.id, `Threadbear blocked this tool call. ${inconsistent}`);
+      }
+      const kind = frames.kinds.values().next().value;
+      // An unconfirmed external identity can't grant a scope exception,
+      // but a helper may still use external tools within its ordinary mode.
+      const external = mcpCall || mcpId !== undefined || Boolean(frames.grokUseTool);
+      const unverifiedThreadbear = mcpId !== undefined && threadbearToolName(mcpId) !== undefined && !ownMcp;
+      const input = frames.scopedInput ?? {};
+      const rawArgs = frames.grokUseTool && mcpName !== undefined && input.tool_name === mcpName && isPlainObject(input.tool_input) ? input.tool_input : input;
+      const policy = acpCoordinatorTool({ role: coord.role, kind, name: toolName, mcpName, external, readOnlyMcp });
       // Antigravity can report websearch as `other`. Its name only explains
       // the refusal. Neither the name nor the query proves it is read-only.
-      const unclassifiedSearch = coord.role === 'coordinator' && this.deps.agent.provider === 'antigravity' && !mcpCall && mcpNameEarly === undefined &&
-        (seen.name ?? seen.title) === 'websearch' && (seen.kind === 'other' || seen.kind === undefined) &&
-        ![...(frames?.kinds ?? [])].some((kind) => kind !== 'other');
+      const unclassifiedSearch = coord.role === 'coordinator' && this.deps.agent.provider === 'antigravity' && !external &&
+        (seen.name ?? seen.title) === 'websearch' && (kind === 'other' || kind === undefined);
       const policyReason = policy.reason && unclassifiedSearch
         ? 'Threadbear could not verify this web search as read-only. Delegate the lookup to a helper with the coordinator tool (startHelper).'
         : policy.reason;
-      let refused: string | undefined;
+      const checkName = mcpName ? `mcp__${mcpName}` : (toolName ?? kind ?? 'tool');
+      let gateRefusal: string | undefined;
       try {
-        refused = coord.checkTool({ name: checkName, input: rawArgs, agentId: coord.role === 'helper' ? this.opts.threadId : undefined }) ?? policyReason;
+        gateRefusal = coord.checkTool({ name: checkName, input: rawArgs, agentId: coord.role === 'helper' ? this.opts.threadId : undefined });
       } catch {
-        refused = 'The runner could not verify this coordinator operation.';
+        gateRefusal = unverifiable;
       }
-      if (coord.role === 'helper' && toolName && isHelperQuestionTool(toolName)) {
+      if (!gateRefusal && !external && coord.role === 'helper' && (kind === undefined || kind === 'other') && toolName && isHelperQuestionTool(toolName)) {
         const rawQs = Array.isArray(rawArgs.questions) ? rawArgs.questions : [];
         const qs: Question[] = rawQs
           .filter((q): q is Record<string, unknown> => isPlainObject(q) && typeof q.question === 'string')
           .map((q) => ({ question: String(q.question), header: typeof q.header === 'string' ? q.header : 'Helper question', options: Array.isArray(q.options) ? q.options.filter((o): o is { label: string; description?: string } => isPlainObject(o) && typeof o.label === 'string') : [], multiSelect: Boolean(q.multiSelect ?? q.is_multi_select) }));
         if (qs.length) coord.helperQuestion?.(this.opts.threadId, qs);
       }
+      const refused = gateRefusal ?? policyReason ?? (unverifiedThreadbear ? inconsistent : undefined);
       if (refused) {
         // ACP has no reason field for a rejected permission. Keep the
         // reason on our row even if the agent calls it a user decision.
@@ -1272,17 +1333,16 @@ export class AcpSession implements AgentSession {
     // Read at the moment it's asked, not when the turn began.
     if (this.mode === 'full') return this.answer(id, options, true, seen.id);
     // Agent Archive only reads, so its tools go ahead in any mode.
-    if (this.archiveRead(p.toolCall ? this.deps.agent.mcpToolName?.(p.toolCall) : undefined, frames)) return this.answer(id, options, true, seen.id);
+    if (this.archiveRead(mcpName, frames)) return this.answer(id, options, true, seen.id);
     // One of this session's own threadbear tools: its MCP server asks where
     // the tool needs it (tool-gate.ts), so a card here would be a second one.
     // Grok names the tool exactly, and a name it can't find doesn't run.
-    const mcpName = p.toolCall ? this.deps.agent.mcpToolName?.(p.toolCall) : undefined;
     // Only when every frame of the call said it was that same tool, and one
     // kind of call: a later frame can't make another server's tool ours
     // (Codex's eighth review, 20 Nov 2026).
     // A call with no id has no history to check, so it never goes ahead this
     // way (Codex's tenth review, 20 Nov 2026).
-    if (mcpName && this.ownTools.has(mcpName) && frames && [...frames.ids].every((i) => i === mcpName) && frames.named.get(mcpName) === frames.acting && frames.kinds.size <= 1 && ![...frames.kinds].some((k) => k === 'execute' || writesFiles(k))) return this.answer(id, options, true, seen.id);
+    if (ownMcp) return this.answer(id, options, true, seen.id);
 
     const { kind } = seen;
     // A read of the thread's own files, for an agent whose own rules can't
